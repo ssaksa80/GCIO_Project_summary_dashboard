@@ -1,8 +1,15 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** approved, not yet implemented
-**Supersedes nothing.** Builds on `2026-08-23-cio-section-order-design.md`.
+**Status:** in build — Phase 0 largely delivered
+**Amended 2026-08-24:** the stack changed after this was approved. DExDashBoard
+(DEDB) and FMD already run this organisation's dashboards in production on
+**SQL Server with LDAP and Entra SSO**, so GCIO mirrors that rather than
+introducing PostgreSQL and a second OIDC library. The original decisions are
+kept below, struck through, so the change of mind is visible rather than
+quietly rewritten.
+
+Builds on `2026-08-23-cio-section-order-design.md`.
 
 ## Why
 
@@ -13,16 +20,19 @@ viewers. It cannot be the CIO's system of record until the gaps below are shut.
 
 ## Decisions taken
 
-| Question | Decision |
-| --- | --- |
-| Where it runs | On-premises Windows server, behind IIS |
-| Who gets in | Entra ID (Azure AD) SSO, group-mapped roles |
-| How much history | Full history in PostgreSQL |
-| Where data comes from | Excel stays the source of truth |
+| Question | Decision | Amended |
+| --- | --- | --- |
+| Where it runs | On-premises Windows server, behind IIS | unchanged |
+| Who gets in | Group-mapped roles | LDAP **and** Entra SSO, both mirrored from DEDB, either usable |
+| Database | ~~PostgreSQL~~ | **SQL Server**, the engine DEDB and FMD already run |
+| Driver | ~~`pg`~~ | `mssql`, with DEDB's pool / executor / repository layering |
+| Auth library | ~~`openid-client`~~ | `ldapts` + `jose`, as DEDB uses |
+| How much history | Full history | unchanged in intent; the temporal model is **not yet built** — see Phase 1 |
+| Where data comes from | Excel stays the source of truth | unchanged |
 
 ## Scope
 
-**In scope:** authentication and authorisation, transport security, PostgreSQL
+**In scope:** authentication and authorisation, transport security, SQL Server
 persistence with full history, audit, ingestion hardening and a file vault,
 observability, backups, an automated test suite, and Windows service packaging.
 
@@ -48,20 +58,21 @@ shape below, not the layering.
    │                                                          │
    │  http/     routes · auth · validation · rate limits      │
    │  domain/   sections · summarize · chain   (pure, unchanged)│
-   │  data/     repository interface                          │
-   │  adapters/ pg/  ·  memory/                               │
-   │  ingest/   watcher · worker-thread parser · writer       │
+   │  repos/    projects · posture · sessions · roleMapping   │
+   │            · audit    (Executor interface, DEDB style)   │
+   │  db/       pool · executor · migrations                  │
+   │  ingest/   watcher · parser · writer                     │
    └──────────────────────────────────────────────────────────┘
                           │
-              PostgreSQL — current state, history, audit
+              SQL Server — current state, history, audit
                           │
               File vault — immutable copy of every workbook
 ```
 
 One box runs `ROLE=all`. The roles exist so the web tier can later be scaled or
 failed over without a code change. Exactly one ingester may run: the ingest role
-takes a **Postgres advisory lock** at startup and only watches the drop-folder
-while it holds it. A second instance starts, fails to take the lock, and serves
+takes a **SQL Server application lock** (`sp_getapplock`, owner `Session`) at
+startup and only watches the drop-folder while it holds it. A second instance starts, fails to take the lock, and serves
 web traffic only — it never double-imports.
 
 Workbook parsing moves into a **worker thread**. A 20 MB workbook currently
@@ -70,15 +81,17 @@ blocks the event loop; after this, an upload cannot freeze other users' screens.
 ### Module boundaries
 
 - `domain/` stays pure functions over plain objects, exactly as today. It must
-  not import `pg`, `express`, or the config module. This is what keeps the
+  not import `mssql`, `express`, or the config module. This is what keeps the
   ranking rules testable and unchanged.
-- `data/repository.js` defines the interface the domain consumes:
-  `getProjects(asOf)`, `getProject(id, asOf)`, `putIngestResult(...)`,
-  `listSourceFiles()`, `appendAudit(event)`.
-- Two adapters implement it: `adapters/pg` for production and
-  `adapters/memory` for demos, tests, and the offline sample portfolio.
-  `STORE=memory` must keep working after this work — it is how the product is
-  demonstrated without a database.
+- Repositories are factories over an **Executor** (`query` / `tx`), as DEDB
+  writes them. The executor accepts a pool *getter*, so a reconnect is picked up
+  without rebuilding every repository, and a dead pool raises a clean 503.
+- `SqlStore` presents the same synchronous read surface as the in-memory
+  `Store`: SQL is the system of record and a read model is refreshed after each
+  ingest. The section engine stays synchronous and untouched, and a database
+  outage degrades to the last known portfolio rather than a blank page.
+- `STORE=memory` must keep working — it is how the product is demonstrated
+  without a database, and every API test uses it.
 
 ## Data model
 
@@ -86,7 +99,10 @@ Temporal, because history was the point.
 
 | Table | Purpose |
 | --- | --- |
-| `source_file` | every workbook ever ingested: name, sha256, bytes, uploaded_by, uploaded_at, vault_path |
+| `Project` / `ProjectChild` | **built.** Current portfolio state, children as JSON payloads read and written whole per project |
+| `PostureDomain` | **built.** Section 5, replaced per source workbook |
+| `Sessions`, `RoleMapping`, `AuditEvent` | **built.** Server-side sessions, group-to-role map, audit trail |
+| `source_file` | *planned.* every workbook ever ingested: name, sha256, bytes, uploaded_by, uploaded_at, vault_path |
 | `ingest_run` | one per file event: source_file_id, started_at, finished_at, outcome, projects_seen, projects_changed, rows_rejected, error |
 | `project_version` | a row **only when the project's content hash changes**: project_id, ingest_run_id, valid_from, valid_to, all project fields, content_hash |
 | `milestone`, `update_note`, `risk`, `question` | children of a `project_version` |
@@ -120,16 +136,28 @@ current design cannot express because it has no memory of what it asked.
 5. Write inside one transaction: close changed `project_version` rows
    (`valid_to = now()`), insert the new ones, refresh children, upsert
    `question_asked`, finish the `ingest_run`.
-6. `NOTIFY gcio_ingest` so every web instance pushes SSE to its clients.
+6. Refresh the read model and push SSE to connected clients. One instance owns
+   ingestion today, so this is in-process; a scaled web tier needs a shared
+   channel (Service Broker, or polling `ingest_run`) before that holds.
 
 Deletion of a watched file marks its projects' versions closed with a reason;
 it must not hard-delete history.
 
 ## Authentication and authorisation
 
-OIDC authorization-code flow with PKCE against Entra (`openid-client`).
-Session cookie: `httpOnly`, `secure`, `SameSite=Lax`, encrypted, server-side
-record in `app_session`, idle timeout 8 hours, absolute 24 hours.
+Two routes in, both mirrored from DEDB:
+
+- **LDAP** — bind as the user, so verifying a credential needs no service-account
+  password, then read `memberOf`.
+- **Entra SSO** — the browser obtains an ID token and posts it to
+  `/api/auth/sso`; issuer, audience, signature, expiry and the `mfa` claim are
+  all checked before a session exists. A token signed by an unknown key means
+  Entra rotated, so the key set is refetched once and the token retried.
+
+Either way the role is resolved server-side from directory groups. The session
+cookie is `httpOnly`, `secure` in production, **`SameSite=Strict`**, and carries
+only an opaque id; the record lives in `dbo.Sessions` with absolute expiry and
+the idle window both enforced in the WHERE clause.
 
 | Role | Granted by Entra group | May |
 | --- | --- | --- |
@@ -146,10 +174,16 @@ building" is the question an auditor actually asks.
 
 ## Hardening
 
-- `helmet` with a Content-Security-Policy that allows only self; the client
-  already ships its own fonts, so no external origins are needed.
-- CSRF token on every state-changing request, paired with `SameSite=Lax`.
-- Rate limits: uploads and exports per user, login attempts per IP.
+- Dependency-free security headers, as DEDB does it: nosniff, `X-Frame-Options:
+  DENY`, no-referrer, a self-only CSP, HSTS behind TLS. The client ships its own
+  fonts, so no external origin is allowed.
+- **No CSRF token.** DEDB carries none and the reasoning holds here: the session
+  cookie is `SameSite=Strict`, the app is same-origin with no CORS, and every
+  state-changing route requires that cookie, so a cross-site post arrives
+  unauthenticated and is refused. Recorded in
+  `server/middleware/securityHeaders.js` so it is not rediscovered as a gap.
+- In-memory per-IP throttle on the credential endpoints, and a separate cap on
+  exports.
 - Upload validation: extension **and** magic bytes (`.xlsx`/`.xlsm` must be a
   ZIP container, `.xls` an OLE2 one), size cap, count cap, filename sanitised
   as today.
@@ -203,8 +237,11 @@ Each phase ships independently and leaves the product working.
 - **Entra app registration is not ours to create.** P0 cannot finish without a
   client id, tenant id, redirect URI and the three group names. Everything else
   in P0 can proceed in parallel.
-- **PostgreSQL on-prem needs a host, a backup slot and a DBA contact.** If that
-  approval is slow, P1 slips; P0 does not depend on it.
+- **SQL Server access is the live blocker.** The instance on the build machine
+  has `sa` disabled and no other sysadmin, so the database cannot be created
+  without recovering administrative access. Everything else in Phase 0 is done;
+  the SQL path is tested against a fake pool and has never touched a live
+  instance.
 - **The corporate certificate and IIS access** gate the TLS work.
 - **Sample-data mode must not rot.** Every phase keeps `STORE=memory` in the
   test matrix, or the demo path quietly dies.
@@ -212,6 +249,9 @@ Each phase ships independently and leaves the product working.
 ## Open questions for the organisation
 
 1. Entra: client id, tenant id, redirect URI, and the three group names.
-2. PostgreSQL: version, host, whether the DBA team or we own migrations.
+2. SQL Server: which instance, which service account, and whether the DBA team
+   or we own migrations. Note that the `mssql` driver's default transport does
+   not implement Windows Integrated auth from `trustedConnection` alone — see
+   `server/db/pool.js`.
 3. Retention: how long history and the vault are kept before archiving.
 4. Whether audit must ship to a central SIEM as well as the local database.
