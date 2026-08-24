@@ -1,0 +1,1240 @@
+<!doctype html>
+<html lang="en" data-theme="navy" data-font="arial">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GCIO Dashboard — Redesign Demo</title>
+<style>
+  /* ============================================================
+     BRAND PALETTE — mandated ratio
+     40% Pantone 281 C · 40% Pantone 354 C · 15% Pantone 375 C
+      5% secondary: 638 C, 2665 C, 192 C, 1575 C, 7408 C, rgb(65,65,65)
+     Hex values are screen approximations of the coated references.
+     ============================================================ */
+  :root {
+    --p281: #00205B; --p281-2: #0a3378; --p281-3: #143f8f;
+    --p354: #00B140; --p354-2: #00d24d; --p354-dim: #0a7a34;
+    --p375: #97D700;
+    --s638: #00A3E0; --s2665: #9063CD; --s192: #E40046; --s1575: #FF8200; --s7408: #F6BE00; --sgrey: #414141;
+
+    --good: var(--p354); --warn: var(--s7408); --bad: var(--s192);
+    --font-ui: Arial, Helvetica, "Liberation Sans", sans-serif;
+  }
+  :root[data-font="aptos"] { --font-ui: Aptos, "Aptos Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+
+  /* Navy identity — 281 C carries the ground */
+  :root[data-theme="navy"] {
+    --ground: #001238; --surface: #00205B; --surface-2: #0a3378; --well: #082c6e;
+    --ink: #f2f6ff; --ink2: #b8c8e8; --muted: #7f95c4;
+    --line: rgba(151, 215, 0, 0.16); --line-soft: rgba(255,255,255,0.10);
+    --accent: var(--p354); --accent-ink: #00220e; --highlight: var(--p375);
+    --shadow: 0 14px 40px rgba(0, 8, 30, 0.55);
+    color-scheme: dark;
+  }
+  /* Ivory identity — 281 C becomes ink and header bands, 354 C the accent */
+  :root[data-theme="ivory"] {
+    --ground: #f4f6fa; --surface: #ffffff; --surface-2: #eef2f8; --well: #e7edf6;
+    --ink: #00205B; --ink2: #33507f; --muted: #6b7fa3;
+    --line: rgba(0, 32, 91, 0.14); --line-soft: rgba(0, 32, 91, 0.08);
+    --accent: #00913a; --accent-ink: #ffffff; --highlight: #6fa300;
+    --shadow: 0 10px 28px rgba(0, 32, 91, 0.10);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 { margin: 0; font-weight: 700; }
+  button { font: inherit; color: inherit; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 22px 80px; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 40; background: var(--surface);
+    border-bottom: 1px solid var(--line); box-shadow: var(--shadow);
+  }
+  .topbar-in { max-width: 1440px; margin: 0 auto; padding: 10px 22px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: baseline; gap: 9px; }
+  .brand b { font-size: 16px; letter-spacing: .02em; }
+  .brand span { font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { background: none; border: none; padding: 6px 13px; font-size: 12.5px; cursor: pointer; color: var(--ink2); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  .spacer { margin-left: auto; }
+  .btn {
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+    padding: 6px 13px; font-size: 12.5px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 700; }
+  .live { font-size: 11.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--p354); box-shadow: 0 0 0 3px rgba(0,177,64,.22); }
+
+  /* ---------- kpi strip ---------- */
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 16px 0 14px; }
+  @media (max-width: 1080px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 620px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { background: var(--surface); border: 1px solid var(--line-soft); border-radius: 11px; padding: 11px 13px; }
+  .kpi .lab { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); }
+  .kpi .val { font-size: 23px; font-weight: 700; line-height: 1.15; margin-top: 3px; letter-spacing: -.01em; }
+  .kpi .sub { font-size: 11.5px; color: var(--ink2); }
+  .rag { display: inline-flex; gap: 4px; align-items: center; margin-top: 5px; }
+  .rag i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+  .rag span { font-size: 11px; color: var(--ink2); margin-right: 6px; }
+
+  /* ---------- section nav ---------- */
+  .secnav {
+    position: sticky; top: 51px; z-index: 30; display: flex; gap: 6px; flex-wrap: wrap;
+    background: var(--ground); padding: 9px 0 11px; border-bottom: 1px solid var(--line-soft); margin-bottom: 6px;
+  }
+  .secnav a {
+    text-decoration: none; color: var(--ink2); font-size: 12.5px; padding: 6px 13px;
+    border: 1px solid var(--line-soft); border-radius: 999px; display: inline-flex; gap: 8px; align-items: center;
+  }
+  .secnav a .n { font-weight: 700; color: var(--highlight); }
+  .secnav a.on { background: var(--surface); border-color: var(--accent); color: var(--ink); }
+
+  /* ---------- section shell ---------- */
+  section.block { scroll-margin-top: 108px; padding-top: 26px; }
+  .sec-head { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; border-bottom: 2px solid var(--accent); padding-bottom: 9px; margin-bottom: 16px; }
+  .sec-n {
+    width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+    display: grid; place-items: center; font-weight: 700; font-size: 15px;
+  }
+  .sec-title { font-size: 21px; letter-spacing: -.01em; }
+  .sec-sub { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+
+  .cards { display: grid; gap: 12px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g23 { grid-template-columns: 2fr 1fr; }
+  @media (max-width: 980px) { .g2, .g23 { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--line-soft); border-radius: 12px; padding: 15px 16px; }
+  .card > h3 { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); margin-bottom: 11px; }
+
+  .item { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+  .item:last-child { border-bottom: none; padding-bottom: 0; }
+  .item:first-of-type { padding-top: 0; }
+  .pname { font-weight: 700; cursor: pointer; text-align: left; background: none; border: none; padding: 0; }
+  .pname:hover { color: var(--highlight); text-decoration: underline; }
+  .meta { font-size: 12px; color: var(--ink2); margin-top: 3px; }
+  .micro { font-size: 11px; color: var(--muted); }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; border-radius: 999px; padding: 2px 9px; border: 1px solid currentColor;
+  }
+  .chip.green { color: var(--good); } .chip.amber { color: var(--warn); } .chip.red { color: var(--bad); }
+  .chip.info { color: var(--s638); } .chip.plum { color: var(--s2665); } .chip.orange { color: var(--s1575); }
+  .chip.grey { color: var(--muted); }
+  .chip.solid { background: color-mix(in srgb, currentColor 16%, transparent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .bar { height: 7px; border-radius: 99px; background: var(--well); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+
+  /* priorities */
+  .prio { display: grid; grid-template-columns: 38px 1fr 190px; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line-soft); align-items: start; }
+  .prio:last-child { border-bottom: none; }
+  .rank { font-size: 22px; font-weight: 700; color: var(--highlight); text-align: center; line-height: 1.1; }
+  .rank small { display: block; font-size: 9px; letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+  .ask { font-size: 12.5px; color: var(--ink); background: var(--well); border-left: 3px solid var(--highlight); padding: 7px 10px; border-radius: 0 8px 8px 0; margin-top: 7px; }
+  .score { text-align: right; }
+  .score .v { font-size: 17px; font-weight: 700; }
+  @media (max-width: 720px) { .prio { grid-template-columns: 30px 1fr; } .score { grid-column: 2; text-align: left; } }
+
+  /* roadmap */
+  .lane { display: grid; grid-template-columns: 230px 1fr; gap: 12px; align-items: center; padding: 7px 0; }
+  .lane .track { position: relative; height: 22px; background: var(--well); border-radius: 6px; overflow: hidden; }
+  .lane .seg2 { position: absolute; top: 0; bottom: 0; border-radius: 6px; display: flex; align-items: center; padding: 0 8px; font-size: 10.5px; font-weight: 700; color: #00220e; white-space: nowrap; }
+  .axis { display: grid; grid-template-columns: 230px 1fr; gap: 12px; font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+  .axis .ticks { display: flex; justify-content: space-between; }
+  @media (max-width: 720px) { .lane, .axis { grid-template-columns: 1fr; } }
+
+  details.allproj { margin-top: 34px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px 16px; }
+  details.allproj summary { cursor: pointer; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+
+  /* drawer */
+  .scrim { position: fixed; inset: 0; background: rgba(0, 6, 22, .62); backdrop-filter: blur(3px); z-index: 60; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 96vw); background: var(--surface);
+    border-left: 1px solid var(--line); z-index: 61; overflow-y: auto; padding: 20px 22px 60px; box-shadow: var(--shadow);
+  }
+  .drawer h2 { font-size: 19px; margin-bottom: 4px; }
+  .dl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin: 14px 0; }
+  .dl div { border-bottom: 1px solid var(--line-soft); padding-bottom: 7px; }
+  .dl dt { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .dl dd { margin: 2px 0 0; font-size: 13.5px; }
+  .x { position: absolute; top: 14px; right: 18px; background: none; border: none; font-size: 19px; cursor: pointer; color: var(--muted); }
+
+  .note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .demoflag {
+    background: color-mix(in srgb, var(--s1575) 14%, transparent); border: 1px solid color-mix(in srgb, var(--s1575) 45%, transparent);
+    color: var(--ink); border-radius: 10px; padding: 9px 13px; font-size: 12.5px; margin: 14px 0 0;
+  }
+  :focus-visible { outline: 2px solid var(--highlight); outline-offset: 2px; }
+  @media print { .topbar, .secnav, .btn, .demoflag { display: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand"><b>GCIO</b><span>Project Intelligence</span></div>
+    <div class="seg" role="group" aria-label="Period">
+      <button data-period="daily">Daily</button>
+      <button data-period="weekly" aria-pressed="true">Weekly</button>
+      <button data-period="monthly">Monthly</button>
+      <button data-period="yearly">Yearly</button>
+    </div>
+    <span class="live"><i class="dot"></i> Live · 59 projects · updated 14:22</span>
+    <div class="spacer"></div>
+    <div class="seg" role="group" aria-label="Typeface">
+      <button data-font="arial" aria-pressed="true">Arial</button>
+      <button data-font="aptos">Aptos</button>
+    </div>
+    <div class="seg" role="group" aria-label="Identity">
+      <button data-theme="navy" aria-pressed="true">Navy</button>
+      <button data-theme="ivory">Ivory</button>
+    </div>
+    <button class="btn" id="make-ppt">&#9113; PPT</button>
+    <button class="btn" id="save-html">&#10515; Save HTML</button>
+    <button class="btn" id="print-btn">&#128438; PDF</button>
+    <button class="btn primary">Export brief</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="kpis" id="kpis"></div>
+
+  <nav class="secnav" id="secnav">
+    <a href="#s1" class="on"><span class="n">1</span> Successes</a>
+    <a href="#s2"><span class="n">2</span> Questions, Risks &amp; Issues</a>
+    <a href="#s3"><span class="n">3</span> Priorities</a>
+    <a href="#s4"><span class="n">4</span> Roadmap / Planned</a>
+  </nav>
+
+  <div class="demoflag">
+    <b>Structural demo.</b> Fixed sample portfolio, brand palette (40% 281 C · 40% 354 C · 15% 375 C · 5% secondaries), Arial default.
+    Section order is the CIO sequence. Period, identity and typeface switches are live; project names open the drawer.
+  </div>
+
+  <!-- 1 SUCCESSES -->
+  <section class="block" id="s1">
+    <div class="sec-head">
+      <div class="sec-n">1</div><h2 class="sec-title">Successes</h2>
+      <span class="sec-sub" id="s1sub"></span>
+    </div>
+    <div class="cards g23">
+      <div class="card">
+        <h3>Delivered this period</h3>
+        <div id="delivered"></div>
+      </div>
+      <div class="card">
+        <h3>Milestones completed</h3>
+        <div id="msdone"></div>
+      </div>
+    </div>
+    <div class="cards g23" style="margin-top:12px">
+      <div class="card">
+        <h3>Delivery trend — completed · approved · started</h3>
+        <div id="trend"></div>
+      </div>
+      <div class="card">
+        <h3>On final approach (&ge;90%)</h3>
+        <div id="nearly"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 QUESTIONS, RISKS & ISSUES -->
+  <section class="block" id="s2">
+    <div class="sec-head">
+      <div class="sec-n">2</div><h2 class="sec-title">Questions, Risks &amp; Issues</h2>
+      <span class="sec-sub" id="s2sub"></span>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h3>Questions — decisions awaiting the CIO</h3>
+      <div id="questions"></div>
+      <p class="note">PM-authored questions come from the workbook's <b>Questions</b> sheet; <span class="chip grey">derived</span> items are inferred from portfolio state.</p>
+    </div>
+
+    <div class="cards g23">
+      <div class="card">
+        <h3>Open risks — severity ranked</h3>
+        <table id="risks"></table>
+      </div>
+      <div class="card">
+        <h3>Health by department</h3>
+        <div id="deptchart"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>Issues — live, already materialised</h3>
+      <table id="issues"></table>
+    </div>
+  </section>
+
+  <!-- 3 PRIORITIES -->
+  <section class="block" id="s3">
+    <div class="sec-head">
+      <div class="sec-n">3</div><h2 class="sec-title">Priorities</h2>
+      <span class="sec-sub" id="s3sub"></span>
+    </div>
+    <div class="card"><div id="priorities"></div></div>
+  </section>
+
+  <!-- 4 ROADMAP -->
+  <section class="block" id="s4">
+    <div class="sec-head">
+      <div class="sec-n">4</div><h2 class="sec-title">Roadmap / Planned Projects</h2>
+      <span class="sec-sub" id="s4sub"></span>
+    </div>
+    <div class="card">
+      <h3>Delivery horizon — in flight</h3>
+      <div id="gantt"></div>
+    </div>
+    <div class="cards g2" style="margin-top:12px">
+      <div class="card">
+        <h3>Planned pipeline — proposed &amp; approved, not yet started</h3>
+        <table id="pipeline"></table>
+      </div>
+      <div class="card">
+        <h3>Milestones falling due next period</h3>
+        <div id="upms"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Committed spend by strategic pillar</h3>
+      <div id="pillars"></div>
+    </div>
+  </section>
+
+  <details class="allproj">
+    <summary>All projects — reference table</summary>
+    <table id="allproj" style="margin-top:12px"></table>
+  </details>
+</div>
+
+<script>
+/* ---------------- demo portfolio ---------------- */
+const M = (n) => "AED " + (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : (n / 1e3).toFixed(0) + "K");
+const P = [
+  {id:"P-1042",n:"Unified Digital Identity Platform",d:"Digital Services",pl:"Digital Government",own:"H. Al Mazrouei",sp:"CIO Office",st:"In Progress",h:"Amber",pr:"Critical",pc:72,b:14200000,s:11050000,tgt:"2026-11-30",fc:"2026-12-24",risk:"Federation gateway vendor slipped SIT by 3 weeks",openR:4},
+  {id:"P-1108",n:"Core Network Segmentation",d:"Infrastructure",pl:"Cyber Resilience",own:"S. Rahman",sp:"CISO",st:"In Progress",h:"Red",pr:"Critical",pc:41,b:9800000,s:7600000,tgt:"2026-09-15",fc:"2026-12-02",risk:"Change window contention with the data-centre migration",openR:6},
+  {id:"P-0977",n:"Data Centre Consolidation — Phase 2",d:"Infrastructure",pl:"Cloud First",own:"K. Ibrahim",sp:"COO",st:"In Progress",h:"Amber",pr:"High",pc:58,b:23400000,s:16900000,tgt:"2027-03-31",fc:"2027-04-20",risk:"Rack decommission dependency on legacy ERP cutover",openR:3},
+  {id:"P-1201",n:"Citizen Services Portal Rewrite",d:"Digital Services",pl:"Digital Government",own:"N. Haddad",sp:"CIO Office",st:"In Progress",h:"Green",pr:"High",pc:93,b:6400000,s:5720000,tgt:"2026-09-05",fc:"2026-09-05",risk:"",openR:1},
+  {id:"P-1155",n:"Enterprise Data Lakehouse",d:"Data & Analytics",pl:"Data Driven",own:"A. Fernandes",sp:"Chief Data Officer",st:"In Progress",h:"Green",pr:"High",pc:66,b:11800000,s:6900000,tgt:"2027-01-31",fc:"2027-01-31",risk:"",openR:2},
+  {id:"P-0834",n:"Legacy ERP Decommission",d:"Corporate Systems",pl:"Simplification",own:"M. Osman",sp:"CFO",st:"On Hold",h:"Red",pr:"High",pc:34,b:7200000,s:4100000,tgt:"2026-10-31",fc:"—",risk:"Awaiting finance sign-off on the parallel-run exit criteria",openR:5},
+  {id:"P-1233",n:"SOC Modernisation & 24×7 Monitoring",d:"Cyber",pl:"Cyber Resilience",own:"L. Chen",sp:"CISO",st:"In Progress",h:"Amber",pr:"Critical",pc:47,b:8600000,s:5300000,tgt:"2026-12-15",fc:"2027-01-28",risk:"Tier-2 analyst hiring at 40% of plan",openR:4},
+  {id:"P-1290",n:"Smart Inspection Mobile Suite",d:"Field Operations",pl:"Digital Government",own:"R. Suleiman",sp:"COO",st:"In Progress",h:"Green",pr:"Medium",pc:91,b:3100000,s:2650000,tgt:"2026-09-18",fc:"2026-09-18",risk:"",openR:0},
+  {id:"P-1077",n:"Government Cloud Landing Zone",d:"Infrastructure",pl:"Cloud First",own:"K. Ibrahim",sp:"CIO Office",st:"Completed",h:"Green",pr:"High",pc:100,b:5400000,s:4980000,tgt:"2026-08-20",fc:"2026-08-18",risk:"",openR:0},
+  {id:"P-1186",n:"HR Payroll Cloud Migration",d:"Corporate Systems",pl:"Cloud First",own:"F. Darwish",sp:"CHRO",st:"Completed",h:"Green",pr:"Medium",pc:100,b:2900000,s:2740000,tgt:"2026-08-21",fc:"2026-08-19",risk:"",openR:0},
+  {id:"P-1310",n:"API Gateway Consolidation",d:"Digital Services",pl:"Simplification",own:"N. Haddad",sp:"CIO Office",st:"Completed",h:"Green",pr:"Medium",pc:100,b:1850000,s:1610000,tgt:"2026-08-22",fc:"2026-08-22",risk:"",openR:0},
+  {id:"P-1344",n:"AI Document Triage Pilot",d:"Data & Analytics",pl:"Data Driven",own:"A. Fernandes",sp:"Chief Data Officer",st:"Approved",h:"Green",pr:"High",pc:0,b:2400000,s:0,tgt:"2027-02-28",fc:"2027-02-28",risk:"",openR:0,start:"2026-09-15"},
+  {id:"P-1351",n:"Zero-Trust Access Rollout",d:"Cyber",pl:"Cyber Resilience",own:"L. Chen",sp:"CISO",st:"Approved",h:"Green",pr:"Critical",pc:0,b:6900000,s:0,tgt:"2027-06-30",fc:"2027-06-30",risk:"",openR:0,start:"2026-10-01"},
+  {id:"P-1362",n:"Unified Contact Centre",d:"Digital Services",pl:"Digital Government",own:"—",sp:"—",st:"Proposed",h:"Green",pr:"Medium",pc:0,b:4300000,s:0,tgt:"2027-09-30",fc:"2027-09-30",risk:"",openR:0,start:"2026-11-01"},
+  {id:"P-1370",n:"Quantum-Safe Cryptography Study",d:"Cyber",pl:"Cyber Resilience",own:"—",sp:"CISO",st:"Proposed",h:"Green",pr:"Low",pc:0,b:900000,s:0,tgt:"2027-04-30",fc:"2027-04-30",risk:"",openR:0,start:"2027-01-10"},
+];
+const byId = Object.fromEntries(P.map((p) => [p.id, p]));
+const ragChip = (h) => '<span class="chip solid ' + h.toLowerCase() + '">' + h + '</span>';
+const link = (p) => '<button class="pname" data-open="' + p.id + '">' + p.n + '</button>';
+const el = (id) => document.getElementById(id);
+
+/* ---------------- KPI strip ---------------- */
+el("kpis").innerHTML = [
+  { lab: "Portfolio", val: "59", sub: "47 active · 8 on hold" },
+  { lab: "Health mix", rag: true },
+  { lab: "Committed", val: "AED 265.9M", sub: "64% consumed" },
+  { lab: "Delivered this period", val: "3", sub: "all within budget" },
+  { lab: "Overdue", val: "6", sub: "4 milestones slipped" },
+  { lab: "Open questions", val: "5", sub: "2 need a decision this week" },
+].map((k) => '<div class="kpi"><div class="lab">' + k.lab + '</div>' + (
+  k.rag
+    ? '<div class="rag" style="margin-top:6px"><i style="background:var(--good)"></i><span>38</span>' +
+      '<i style="background:var(--warn)"></i><span>15</span><i style="background:var(--bad)"></i><span>6</span></div>' +
+      '<div class="sub">64% healthy</div>'
+    : '<div class="val">' + k.val + '</div><div class="sub">' + k.sub + '</div>'
+) + '</div>').join("");
+
+/* ---------------- 1 successes ---------------- */
+const delivered = P.filter((p) => p.st === "Completed");
+el("s1sub").textContent = "17 Aug 2026 — 23 Aug 2026 · what went right";
+el("delivered").innerHTML = delivered.map((p) =>
+  '<div class="item"><div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">' +
+  link(p) + ' <span class="chip solid green">Delivered</span>' +
+  '<span class="micro" style="margin-left:auto">' + p.d + '</span></div>' +
+  '<div class="meta">Closed ' + p.fc.slice(8) + ' Aug — ' + M(p.s) + ' of ' + M(p.b) + ' (' +
+  Math.round((p.s / p.b) * 100) + '% of allocation, under budget by ' + M(p.b - p.s) + ').</div></div>').join("");
+
+el("msdone").innerHTML = [
+  ["Federation SIT entry", "P-1042", "19 Aug"],
+  ["Lakehouse ingest layer live", "P-1155", "20 Aug"],
+  ["Portal accessibility audit passed", "P-1201", "21 Aug"],
+  ["Segment 3 firewall cutover", "P-1108", "22 Aug"],
+  ["Inspection app store release", "P-1290", "22 Aug"],
+].map((m) => '<div class="item"><div style="font-weight:700;font-size:13px">' + m[0] + '</div>' +
+  '<div class="meta">' + byId[m[1]].n + ' · <span class="micro">' + m[2] + '</span></div></div>').join("");
+
+const TREND = [["W30",1,2,1],["W31",0,1,2],["W32",2,1,0],["W33",1,3,1],["W34",2,0,2],["W35",3,2,1]];
+el("trend").innerHTML = '<svg viewBox="0 0 520 190" style="width:100%;height:auto" role="img" aria-label="Delivery trend by week">' +
+  TREND.map((t, i) => {
+    const x = 34 + i * 80, sc = 26;
+    return '<g>' +
+      '<rect x="' + x + '" y="' + (150 - t[1] * sc) + '" width="20" height="' + (t[1] * sc) + '" rx="3" fill="var(--p354)"></rect>' +
+      '<rect x="' + (x + 22) + '" y="' + (150 - t[2] * sc) + '" width="20" height="' + (t[2] * sc) + '" rx="3" fill="var(--s638)"></rect>' +
+      '<rect x="' + (x + 44) + '" y="' + (150 - t[3] * sc) + '" width="20" height="' + (t[3] * sc) + '" rx="3" fill="var(--p375)"></rect>' +
+      '<text x="' + (x + 32) + '" y="168" fill="var(--muted)" font-size="11" text-anchor="middle">' + t[0] + '</text></g>';
+  }).join("") +
+  '<line x1="24" y1="150" x2="510" y2="150" stroke="var(--line)"></line>' +
+  '<g font-size="11" fill="var(--ink2)"><rect x="26" y="12" width="10" height="10" rx="2" fill="var(--p354)"></rect><text x="42" y="21">Completed</text>' +
+  '<rect x="126" y="12" width="10" height="10" rx="2" fill="var(--s638)"></rect><text x="142" y="21">Approved</text>' +
+  '<rect x="226" y="12" width="10" height="10" rx="2" fill="var(--p375)"></rect><text x="242" y="21">Started</text></g></svg>';
+
+el("nearly").innerHTML = P.filter((p) => p.pc >= 90 && p.st === "In Progress")
+  .map((p) => '<div class="item">' + link(p) +
+    '<div class="meta">' + p.pc + '% complete · target ' + p.tgt + '</div>' +
+    '<div class="bar" style="margin-top:6px"><i style="width:' + p.pc + '%"></i></div></div>').join("");
+
+/* ---------------- 2 questions, risks, issues ---------------- */
+const QS = [
+  { q: "Approve the 6-week re-baseline of Core Network Segmentation, or hold the September date and de-scope segment 7?", p: "P-1108", who: "S. Rahman", by: "29 Aug 2026", src: "pm", sev: "critical" },
+  { q: "Release the parallel-run exit criteria for Legacy ERP so the decommission can leave hold?", p: "P-0834", who: "M. Osman", by: "31 Aug 2026", src: "pm", sev: "critical" },
+  { q: "Fund the SOC tier-2 hiring gap from central contingency, or accept 12×5 coverage until Q1?", p: "P-1233", who: "L. Chen", by: "15 Sep 2026", src: "pm", sev: "serious" },
+  { q: "Unified Contact Centre has no owner or sponsor assigned and is 10 weeks from planned start — who leads it?", p: "P-1362", who: "derived", by: "—", src: "derived", sev: "serious" },
+  { q: "Identity Platform forecast (24 Dec) is past its 30 Nov target — confirm the slip or trigger recovery?", p: "P-1042", who: "derived", by: "—", src: "derived", sev: "serious" },
+];
+el("s2sub").textContent = "5 questions · 20 open risks (3 critical) · 9 live issues";
+el("questions").innerHTML = QS.map((q) =>
+  '<div class="item"><div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">' +
+  '<span class="chip solid ' + (q.sev === "critical" ? "red" : "orange") + '">' + (q.sev === "critical" ? "Decision now" : "Decision soon") + '</span>' +
+  (q.src === "derived" ? '<span class="chip grey">derived</span>' : '<span class="chip info">from PM</span>') +
+  '<span class="micro" style="margin-left:auto">' + (q.by !== "—" ? "Needed by " + q.by : "No date set") + '</span></div>' +
+  '<div style="margin-top:6px;font-size:13.5px">' + q.q + '</div>' +
+  '<div class="meta">' + link(byId[q.p]) + ' · raised by ' + (q.who === "derived" ? "the system" : q.who) + '</div></div>').join("");
+
+const RISKS = [
+  ["Critical", "Federation gateway vendor cannot meet SIT date", "P-1042", "Vendor", "Escalated to procurement — penalty clause invoked"],
+  ["Critical", "Change-window contention with DC migration", "P-1108", "Delivery", "Joint CAB scheduled 27 Aug"],
+  ["Critical", "Tier-2 SOC staffing at 40% of plan", "P-1233", "Resource", "Managed-service bridge under evaluation"],
+  ["High", "Legacy ERP data-quality gaps block cutover", "P-0834", "Data", "Cleansing sprint proposed, unfunded"],
+  ["High", "Rack decommission depends on ERP exit", "P-0977", "Dependency", "Sequenced behind P-0834 — at risk"],
+  ["Medium", "Lakehouse cost run-rate above forecast", "P-1155", "Financial", "Reserved capacity purchase in review"],
+];
+el("risks").innerHTML = '<thead><tr><th>Sev</th><th>Risk</th><th>Project</th><th>Mitigation</th></tr></thead><tbody>' +
+  RISKS.map((r) => '<tr><td><span class="chip solid ' + (r[0] === "Critical" ? "red" : r[0] === "High" ? "amber" : "grey") + '">' + r[0] + '</span></td>' +
+    '<td><div style="font-weight:700">' + r[1] + '</div><div class="micro">' + r[3] + '</div></td>' +
+    '<td>' + link(byId[r[2]]) + '</td><td class="micro">' + r[4] + '</td></tr>').join("") + '</tbody>';
+
+const DEPTS = [["Infrastructure",4,3,2],["Cyber",5,2,2],["Digital Services",9,3,1],["Corporate Systems",6,3,1],["Data & Analytics",8,2,0],["Field Operations",6,2,0]];
+el("deptchart").innerHTML = DEPTS.map((d) => {
+  const t = d[1] + d[2] + d[3];
+  return '<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:12px">' +
+    '<span>' + d[0] + '</span><span class="micro">' + t + '</span></div>' +
+    '<div style="display:flex;height:11px;border-radius:4px;overflow:hidden;margin-top:4px">' +
+    '<i style="width:' + (d[1] / t) * 100 + '%;background:var(--good)"></i>' +
+    '<i style="width:' + (d[2] / t) * 100 + '%;background:var(--warn)"></i>' +
+    '<i style="width:' + (d[3] / t) * 100 + '%;background:var(--bad)"></i></div></div>';
+}).join("");
+
+const ISSUES = [
+  ["P-1108", "41% complete against 68% elapsed — 6 weeks behind schedule", "Schedule", "Red"],
+  ["P-0834", "On hold 47 days awaiting finance decision", "Decision", "Red"],
+  ["P-1042", "Forecast 24 Dec vs 30 Nov target — 24-day slip", "Schedule", "Amber"],
+  ["P-1233", "Spend 62% at 47% complete — burn ahead of delivery", "Financial", "Amber"],
+  ["P-0977", "2 milestones overdue (rack decom gate, network re-patch)", "Milestone", "Amber"],
+];
+el("issues").innerHTML = '<thead><tr><th>Project</th><th>Issue</th><th>Type</th><th>Health</th></tr></thead><tbody>' +
+  ISSUES.map((i) => '<tr><td>' + link(byId[i[0]]) + '</td><td>' + i[1] + '</td><td class="micro">' + i[2] + '</td><td>' + ragChip(i[3]) + '</td></tr>').join("") + '</tbody>';
+
+/* ---------------- 3 priorities ---------------- */
+const PRIO = [
+  { id: "P-1108", score: 94, why: "Critical priority · Red health · 6 weeks behind · 6 open risks · blocks two dependent programmes", ask: "Decide re-baseline vs de-scope at the 27 Aug CAB — a week of drift pushes the DC consolidation gate too." },
+  { id: "P-0834", score: 88, why: "On hold 47 days · Red · unblocks AED 23.4M of dependent decommission work", ask: "Release parallel-run exit criteria, or reassign the decision to the CFO delegate." },
+  { id: "P-1042", score: 81, why: "Critical priority · flagship service · 24-day forecast slip · vendor risk escalated", ask: "Approve the vendor penalty route and confirm the December landing date to stakeholders." },
+  { id: "P-1233", score: 74, why: "Critical priority · staffing gap · security coverage exposure", ask: "Fund the managed-service bridge, or accept 12×5 monitoring on record until Q1." },
+  { id: "P-0977", score: 63, why: "Largest budget in flight (AED 23.4M) · dependency on a held project", ask: "No decision needed this week — watch the ERP outcome; re-sequence if the hold extends past 31 Aug." },
+];
+el("s3sub").textContent = "Ranked by priority, health, schedule, risk and dependency weight";
+el("priorities").innerHTML = PRIO.map((r, i) => {
+  const p = byId[r.id];
+  const col = r.score > 85 ? "var(--bad)" : r.score > 70 ? "var(--warn)" : "var(--accent)";
+  return '<div class="prio"><div class="rank">' + (i + 1) + '<small>rank</small></div><div>' +
+    '<div style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap">' + link(p) + ' ' + ragChip(p.h) +
+    '<span class="chip ' + (p.pr === "Critical" ? "red" : "amber") + '">' + p.pr + '</span>' +
+    '<span class="micro">' + p.own + ' · ' + p.d + '</span></div>' +
+    '<div class="meta">' + r.why + '</div><div class="ask"><b>Needed:</b> ' + r.ask + '</div></div>' +
+    '<div class="score"><div class="v">' + r.score + '</div><div class="micro">urgency score</div>' +
+    '<div class="bar" style="margin-top:6px"><i style="width:' + r.score + '%;background:' + col + '"></i></div>' +
+    '<div class="micro" style="margin-top:6px">' + M(p.b) + ' committed<br>' + p.pc + '% complete</div></div></div>';
+}).join("");
+
+/* ---------------- 4 roadmap ---------------- */
+el("s4sub").textContent = "Sep 2026 — Sep 2027 · in flight, then planned";
+const T0 = new Date("2026-09-01"), T1 = new Date("2027-09-30");
+const pos = (d) => ((new Date(d) - T0) / (T1 - T0)) * 100;
+el("gantt").innerHTML = P.filter((p) => p.st === "In Progress").sort((a, b) => a.tgt.localeCompare(b.tgt)).map((p) => {
+  const l = 0, r = Math.min(100, pos(p.fc === "—" ? p.tgt : p.fc)), t = Math.min(100, pos(p.tgt));
+  const slip = p.fc !== "—" && p.fc > p.tgt;
+  return '<div class="lane"><div style="min-width:0">' +
+    '<div style="font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + p.n + '</div>' +
+    '<div class="micro">' + p.own + ' · ' + p.pc + '%</div></div>' +
+    '<div class="track"><div class="seg2" style="left:' + l + '%;width:' + Math.max(6, r - l) + '%;background:' + (slip ? "var(--warn)" : "var(--p354)") + '">' + p.tgt.slice(0, 7) + '</div>' +
+    '<div style="position:absolute;left:' + t + '%;top:-2px;bottom:-2px;width:2px;background:var(--highlight)"></div>' +
+    (slip ? '<div style="position:absolute;left:' + t + '%;width:' + (r - t) + '%;top:0;bottom:0;background:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(228,0,70,.55) 4px,rgba(228,0,70,.55) 8px)"></div>' : "") +
+    '</div></div>';
+}).join("") +
+  '<div class="axis"><span></span><div class="ticks"><span>Sep 26</span><span>Dec 26</span><span>Mar 27</span><span>Jun 27</span><span>Sep 27</span></div></div>' +
+  '<p class="note"><span style="color:var(--highlight)">&#9612;</span> target date · solid bar = forecast · hatched = forecast slip beyond target</p>';
+
+el("pipeline").innerHTML = '<thead><tr><th>Project</th><th>Status</th><th>Starts</th><th class="num">Budget</th></tr></thead><tbody>' +
+  P.filter((p) => p.st === "Approved" || p.st === "Proposed").sort((a, b) => a.start.localeCompare(b.start))
+    .map((p) => '<tr><td>' + link(p) + '<div class="micro">' + p.pl + '</div></td>' +
+      '<td><span class="chip ' + (p.st === "Approved" ? "green" : "grey") + '">' + p.st + '</span></td>' +
+      '<td class="micro">' + p.start + '</td><td class="num">' + M(p.b) + '</td></tr>').join("") + '</tbody>';
+
+el("upms").innerHTML = [
+  ["Portal go-live gate", "P-1201", "05 Sep"],
+  ["Inspection suite full rollout", "P-1290", "18 Sep"],
+  ["Zero-trust design authority review", "P-1351", "22 Sep"],
+  ["Lakehouse semantic layer", "P-1155", "28 Sep"],
+  ["DC Phase 2 rack decom gate", "P-0977", "30 Sep"],
+].map((m) => '<div class="item"><div style="display:flex;justify-content:space-between;gap:10px">' +
+  '<span style="font-weight:700;font-size:13px">' + m[0] + '</span><span class="micro">' + m[2] + '</span></div>' +
+  '<div class="meta">' + byId[m[1]].n + '</div></div>').join("");
+
+const PILLARS = [["Digital Government", 88.4, "var(--p354)"], ["Cyber Resilience", 62.1, "var(--s638)"], ["Cloud First", 54.7, "var(--p375)"], ["Data Driven", 37.2, "var(--s2665)"], ["Simplification", 23.5, "var(--s1575)"]];
+el("pillars").innerHTML = PILLARS.map((p) =>
+  '<div style="display:grid;grid-template-columns:170px 1fr 90px;gap:12px;align-items:center;margin-bottom:8px">' +
+  '<span style="font-size:12.5px">' + p[0] + '</span>' +
+  '<div class="bar" style="height:14px"><i style="width:' + (p[1] / 88.4) * 100 + '%;background:' + p[2] + '"></i></div>' +
+  '<span class="num micro">AED ' + p[1] + 'M</span></div>').join("");
+
+/* ---------------- all projects ---------------- */
+el("allproj").innerHTML = '<thead><tr><th>ID</th><th>Project</th><th>Dept</th><th>Status</th><th>Health</th><th class="num">%</th><th class="num">Budget</th><th>Target</th></tr></thead><tbody>' +
+  P.map((p) => '<tr><td class="micro">' + p.id + '</td><td>' + link(p) + '</td><td class="micro">' + p.d + '</td>' +
+    '<td class="micro">' + p.st + '</td><td>' + ragChip(p.h) + '</td><td class="num">' + p.pc + '%</td>' +
+    '<td class="num">' + M(p.b) + '</td><td class="micro">' + p.tgt + '</td></tr>').join("") + '</tbody>' +
+  '<tfoot><tr><td colspan="8" class="micro" style="padding-top:10px">Demo shows 15 rows — the live dashboard paginates, filters and sorts the full portfolio here.</td></tr></tfoot>';
+
+/* ---------------- interactions ---------------- */
+function closeDrawer() { document.querySelectorAll(".scrim,.drawer").forEach((n) => n.remove()); }
+function drawer(p) {
+  closeDrawer();
+  const scrim = document.createElement("div"); scrim.className = "scrim";
+  const d = document.createElement("aside"); d.className = "drawer";
+  d.innerHTML = '<button class="x" aria-label="Close">&#10005;</button>' +
+    '<div class="micro">' + p.id + ' · ' + p.pl + '</div><h2>' + p.n + '</h2>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + ragChip(p.h) +
+    '<span class="chip ' + (p.pr === "Critical" ? "red" : "grey") + '">' + p.pr + ' priority</span>' +
+    '<span class="chip info">' + p.st + '</span></div>' +
+    '<dl class="dl">' +
+    '<div><dt>Owner</dt><dd>' + p.own + '</dd></div><div><dt>Sponsor</dt><dd>' + p.sp + '</dd></div>' +
+    '<div><dt>Department</dt><dd>' + p.d + '</dd></div><div><dt>Phase</dt><dd>' + (p.st === "Completed" ? "Closure" : "Execution") + '</dd></div>' +
+    '<div><dt>Target end</dt><dd>' + p.tgt + '</dd></div><div><dt>Forecast end</dt><dd>' + p.fc + '</dd></div>' +
+    '<div><dt>Budget</dt><dd>' + M(p.b) + '</dd></div><div><dt>Spent</dt><dd>' + M(p.s) + ' · ' + Math.round((p.s / p.b) * 100 || 0) + '%</dd></div></dl>' +
+    '<h3 style="font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)">Completion</h3>' +
+    '<div class="bar" style="height:10px;margin:8px 0 16px"><i style="width:' + p.pc + '%"></i></div>' +
+    '<h3 style="font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)">Open risks (' + p.openR + ')</h3>' +
+    '<p style="font-size:13px;color:var(--ink2)">' + (p.risk || "No open risks recorded.") + '</p>' +
+    '<p class="note">In the live dashboard this drawer carries the full milestone timeline, risk register, update feed and the parent &rarr; child project chain.</p>';
+  document.body.append(scrim, d);
+}
+
+document.addEventListener("click", (e) => {
+  const open = e.target.closest("[data-open]");
+  if (open) { drawer(byId[open.dataset.open]); return; }
+  const seg = e.target.closest(".seg button");
+  if (seg) {
+    seg.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === seg)));
+    if (seg.dataset.theme) document.documentElement.setAttribute("data-theme", seg.dataset.theme);
+    if (seg.dataset.font) document.documentElement.setAttribute("data-font", seg.dataset.font);
+    if (seg.dataset.period) {
+      const L = {
+        daily: "23 Aug 2026 · what went right today",
+        weekly: "17 Aug 2026 — 23 Aug 2026 · what went right",
+        monthly: "1 — 23 Aug 2026 · what went right this month",
+        yearly: "Jan — Aug 2026 · what went right this year",
+      };
+      el("s1sub").textContent = L[seg.dataset.period];
+    }
+  }
+  if (e.target.classList.contains("scrim") || e.target.classList.contains("x")) closeDrawer();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+/* scroll-spy */
+const navLinks = Array.prototype.slice.call(document.querySelectorAll("#secnav a"));
+const obs = new IntersectionObserver((ents) => {
+  ents.forEach((en) => {
+    if (en.isIntersecting) navLinks.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + en.target.id));
+  });
+}, { rootMargin: "-120px 0px -65% 0px" });
+document.querySelectorAll("section.block").forEach((s) => obs.observe(s));
+
+
+/* ---------------- one-click PowerPoint ---------------- */
+/**
+ * pptx-lite — dependency-free PowerPoint (.pptx) writer.
+ *
+ * Produces a valid OOXML presentation package with a store-only ZIP writer, so
+ * it runs unchanged in the browser (one-click export from the dashboard) and in
+ * Node (server-side brief generation). No external libraries, which keeps the
+ * standalone demo file self-contained and the server dependency list unchanged.
+ *
+ * Deck shape:
+ *   { title, subtitle, footer, slides: [ Slide ] }
+ * Slide:
+ *   { eyebrow, title, kpis: [{lab, val, sub}], bullets: [{text, sub, tag, tone}],
+ *     cover: true }
+ * tone: "good" | "warn" | "bad" | "info" | "neutral"
+ */
+
+/* ---------------------------------------------------------------- palette */
+/* Brand ratio: 40% Pantone 281 C, 40% 354 C, 15% 375 C, 5% secondaries. */
+const BRAND = {
+  p281: "00205B",
+  p281dark: "001238",
+  p354: "00B140",
+  p375: "97D700",
+  s638: "00A3E0",
+  s2665: "9063CD",
+  s192: "E40046",
+  s1575: "FF8200",
+  s7408: "F6BE00",
+  grey: "414141",
+  paper: "FFFFFF",
+  ink: "10233F",
+  ink2: "4A5C74",
+};
+
+const TONE = {
+  good: BRAND.p354,
+  warn: BRAND.s7408,
+  bad: BRAND.s192,
+  info: BRAND.s638,
+  plum: BRAND.s2665,
+  neutral: BRAND.grey,
+};
+
+/* ------------------------------------------------------------------- zip */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * Build a store-only (uncompressed) ZIP archive.
+ * @param {Array<{name: string, data: Uint8Array}>} files
+ * @returns {Uint8Array}
+ */
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  const u16 = (n) => [n & 0xff, (n >> 8) & 0xff];
+  const u32 = (n) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff];
+
+  for (const file of files) {
+    const nameBytes = enc.encode(file.name);
+    const crc = crc32(file.data);
+    const local = [
+      ...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(0), ...u16(0x21), // 1980-01-01, fixed for reproducible output
+      ...u32(crc), ...u32(file.data.length), ...u32(file.data.length),
+      ...u16(nameBytes.length), ...u16(0),
+    ];
+    chunks.push(Uint8Array.from(local), nameBytes, file.data);
+    central.push({ nameBytes, crc, size: file.data.length, offset });
+    offset += local.length + nameBytes.length + file.data.length;
+  }
+
+  const dir = [];
+  for (const e of central) {
+    dir.push(
+      ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(0), ...u16(0x21),
+      ...u32(e.crc), ...u32(e.size), ...u32(e.size),
+      ...u16(e.nameBytes.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(e.offset),
+      ...Array.from(e.nameBytes)
+    );
+  }
+  const dirBytes = Uint8Array.from(dir);
+  const end = Uint8Array.from([
+    ...u32(0x06054b50), ...u16(0), ...u16(0),
+    ...u16(central.length), ...u16(central.length),
+    ...u32(dirBytes.length), ...u32(offset), ...u16(0),
+  ]);
+
+  let total = dirBytes.length + end.length;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const c of chunks) { out.set(c, pos); pos += c.length; }
+  out.set(dirBytes, pos); pos += dirBytes.length;
+  out.set(end, pos);
+  return out;
+}
+
+/* ------------------------------------------------------------------ ooxml */
+const EMU = 914400;
+const SLIDE_W = Math.round(13.333 * EMU);
+const SLIDE_H = 7.5 * EMU;
+
+const esc = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+
+/** One text run paragraph. */
+function para(text, { size = 1400, bold = false, color = BRAND.ink, spcBef = 0, italic = false } = {}) {
+  return (
+    `<a:p><a:pPr${spcBef ? `><a:spcBef><a:spcPts val="${spcBef}"/></a:spcBef></a:pPr` : "/"}>` +
+    `<a:r><a:rPr lang="en-US" sz="${size}" b="${bold ? 1 : 0}" i="${italic ? 1 : 0}" dirty="0">` +
+    `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>` +
+    `<a:latin typeface="Arial"/><a:cs typeface="Arial"/></a:rPr>` +
+    `<a:t>${esc(text)}</a:t></a:r></a:p>`
+  );
+}
+
+function textBox(id, name, x, y, w, h, paragraphs, { anchor = "t", noWrap = false } = {}) {
+  return (
+    `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${esc(name)}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>` +
+    `<p:spPr><a:xfrm><a:off x="${Math.round(x)}" y="${Math.round(y)}"/><a:ext cx="${Math.round(w)}" cy="${Math.round(h)}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
+    `<p:txBody><a:bodyPr wrap="${noWrap ? "none" : "square"}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${anchor}"><a:normAutofit/></a:bodyPr>` +
+    `<a:lstStyle/>${paragraphs || para("")}</p:txBody></p:sp>`
+  );
+}
+
+function rect(id, x, y, w, h, fill, { line = null, radius = false } = {}) {
+  return (
+    `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Rect ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>` +
+    `<p:spPr><a:xfrm><a:off x="${Math.round(x)}" y="${Math.round(y)}"/><a:ext cx="${Math.round(w)}" cy="${Math.round(h)}"/></a:xfrm>` +
+    `<a:prstGeom prst="${radius ? "roundRect" : "rect"}">` +
+    (radius ? '<a:avLst><a:gd name="adj" fmla="val 12000"/></a:avLst>' : "<a:avLst/>") +
+    "</a:prstGeom>" +
+    `<a:solidFill><a:srgbClr val="${fill}"/></a:solidFill>` +
+    (line ? `<a:ln w="12700"><a:solidFill><a:srgbClr val="${line}"/></a:solidFill></a:ln>` : "<a:ln><a:noFill/></a:ln>") +
+    `</p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>`
+  );
+}
+
+/* ------------------------------------------------------------ measuring */
+/*
+ * PowerPoint wraps text itself, but the writer has to know how tall a run will
+ * end up before it can place the next one — otherwise a two-line bullet is
+ * drawn over the row beneath it. These are conservative Arial estimates: they
+ * over-count slightly, which costs a little whitespace and never overlaps.
+ */
+const PT_PER_INCH = 72;
+
+/** Average glyph advance as a fraction of point size (Arial, mixed case). */
+const CHAR_RATIO = 0.52;
+const BOLD_RATIO = 0.56;
+
+/** Estimated wrapped line count for `text` inside `widthIn` inches. */
+function lineCount(text, widthIn, sizeHundredths, bold = false) {
+  const body = String(text || "");
+  if (!body) return 0;
+  const sizePt = sizeHundredths / 100;
+  const charsPerLine = Math.max(6, Math.floor((widthIn * PT_PER_INCH) / (sizePt * (bold ? BOLD_RATIO : CHAR_RATIO))));
+  let lines = 0;
+  for (const paragraph of body.split("\n")) {
+    lines += Math.max(1, Math.ceil(paragraph.length / charsPerLine));
+  }
+  return lines;
+}
+
+/** Height in inches of `lines` lines at the given size, including leading. */
+function textHeight(lines, sizeHundredths) {
+  return (lines * (sizeHundredths / 100) * 1.22) / PT_PER_INCH;
+}
+
+/** Uppercase bold glyphs run wider than the mixed-case average. */
+const CAPS_RATIO = 0.70;
+
+/** Pill width in inches for a tag label, which is always drawn uppercase. */
+function tagWidth(label, sizeHundredths = 800) {
+  const sizePt = sizeHundredths / 100;
+  return (String(label).length * sizePt * CAPS_RATIO) / PT_PER_INCH + 0.22;
+}
+
+/** Render one slide's shape tree. */
+function slideXml(slide, index, deck) {
+  const shapes = [];
+  let id = 2;
+  const next = () => (id += 1);
+
+  if (slide.cover) {
+    shapes.push(rect(next(), 0, 0, SLIDE_W, SLIDE_H, BRAND.p281dark));
+    shapes.push(rect(next(), 0, SLIDE_H - 0.28 * EMU, SLIDE_W, 0.28 * EMU, BRAND.p354));
+    shapes.push(rect(next(), 0.9 * EMU, 2.05 * EMU, 0.9 * EMU, 0.06 * EMU, BRAND.p375));
+    shapes.push(textBox(next(), "eyebrow", 0.9 * EMU, 1.55 * EMU, 10 * EMU, 0.4 * EMU,
+      para(slide.eyebrow || "GCIO · PROJECT INTELLIGENCE", { size: 1200, bold: true, color: BRAND.p375 })));
+    const coverTitleH = textHeight(lineCount(slide.title, 11, 3600, true), 3600);
+    shapes.push(textBox(next(), "title", 0.9 * EMU, 2.35 * EMU, 11 * EMU, coverTitleH * EMU,
+      para(slide.title, { size: 3600, bold: true, color: "FFFFFF" })));
+    if (slide.subtitle) {
+      const subH = textHeight(lineCount(slide.subtitle, 11, 1600), 1600);
+      shapes.push(textBox(next(), "subtitle", 0.9 * EMU, (2.5 + coverTitleH) * EMU, 11 * EMU, subH * EMU,
+        para(slide.subtitle, { size: 1600, color: "B8C8E8" })));
+    }
+    if (slide.kpis?.length) {
+      const boxW = (11.5 * EMU) / slide.kpis.length - 0.18 * EMU;
+      slide.kpis.forEach((k, i) => {
+        const x = 0.9 * EMU + i * (boxW + 0.18 * EMU);
+        shapes.push(rect(next(), x, 5.05 * EMU, boxW, 1.15 * EMU, "0A2A63", { radius: true }));
+        shapes.push(textBox(next(), "kpi-lab", x + 0.2 * EMU, 5.22 * EMU, boxW - 0.4 * EMU, 0.3 * EMU,
+          para(String(k.lab).toUpperCase(), { size: 900, bold: true, color: "7F95C4" })));
+        const coverValSize = lineCount(k.val, (boxW / EMU) - 0.4, 2000, true) > 1 ? 1500 : 2000;
+        shapes.push(textBox(next(), "kpi-val", x + 0.2 * EMU, 5.5 * EMU, boxW - 0.4 * EMU, 0.45 * EMU,
+          para(k.val, { size: coverValSize, bold: true, color: "FFFFFF" })));
+        if (k.sub) {
+          shapes.push(textBox(next(), "kpi-sub", x + 0.2 * EMU, 5.92 * EMU, boxW - 0.4 * EMU, 0.3 * EMU,
+            para(k.sub, { size: 900, color: "B8C8E8" })));
+        }
+      });
+    }
+  } else {
+    /* content slide */
+    shapes.push(rect(next(), 0, 0, SLIDE_W, SLIDE_H, "FFFFFF"));
+    shapes.push(rect(next(), 0, 0, SLIDE_W, 1.05 * EMU, BRAND.p281));
+    shapes.push(rect(next(), 0, 1.05 * EMU, SLIDE_W, 0.06 * EMU, BRAND.p354));
+    if (slide.eyebrow) {
+      shapes.push(textBox(next(), "eyebrow", 0.55 * EMU, 0.22 * EMU, 10 * EMU, 0.28 * EMU,
+        para(slide.eyebrow.toUpperCase(), { size: 900, bold: true, color: BRAND.p375 })));
+    }
+    shapes.push(textBox(next(), "title", 0.55 * EMU, 0.5 * EMU, 11.4 * EMU, 0.46 * EMU,
+      para(slide.title, { size: 2200, bold: true, color: "FFFFFF" })));
+
+    let y = 1.45 * EMU;
+
+    if (slide.kpis?.length) {
+      const boxW = (12.2 * EMU) / slide.kpis.length - 0.16 * EMU;
+      slide.kpis.forEach((k, i) => {
+        const x = 0.55 * EMU + i * (boxW + 0.16 * EMU);
+        shapes.push(rect(next(), x, y, boxW, 0.85 * EMU, "F1F5FA", { radius: true }));
+        shapes.push(textBox(next(), "k", x + 0.16 * EMU, y + 0.11 * EMU, boxW - 0.32 * EMU, 0.22 * EMU,
+          para(String(k.lab).toUpperCase(), { size: 800, bold: true, color: BRAND.ink2 })));
+        /* Long money values shrink a step rather than spilling out of the tile. */
+        const valSize = lineCount(k.val, (boxW / EMU) - 0.32, 1600, true) > 1 ? 1250 : 1600;
+        shapes.push(textBox(next(), "k", x + 0.16 * EMU, y + 0.36 * EMU, boxW - 0.32 * EMU, 0.42 * EMU,
+          para(k.val, { size: valSize, bold: true, color: BRAND.p281 })));
+      });
+      y += 1.1 * EMU;
+    }
+
+    /* Bullets are measured before they are placed, so a wrapped line pushes
+       the next row down instead of being painted over it. Anything that will
+       not fit is handed back to the caller for a continuation slide. */
+    const titleSize = slide.dense ? 1150 : 1250;
+    const subSize = slide.dense ? 950 : 1050;
+    const LEFT = 0.55;
+    const TEXT_LEFT = 0.78;
+    const RIGHT_EDGE = 12.75;
+    const BOTTOM_LIMIT = slide.note ? 6.62 : 6.92;
+
+    const bullets = slide.bullets || [];
+    const overflow = [];
+
+    for (let i = 0; i < bullets.length; i += 1) {
+      const b = bullets[i];
+      const tone = TONE[b.tone] || BRAND.p354;
+      const tagW = b.tag ? tagWidth(b.tag) : 0;
+      const textLeft = TEXT_LEFT + (b.tag ? tagW + 0.14 : 0);
+      const titleW = RIGHT_EDGE - textLeft;
+      const subW = RIGHT_EDGE - TEXT_LEFT;
+
+      const titleLines = lineCount(b.text, titleW, titleSize, true);
+      const subLines = b.sub ? lineCount(b.sub, subW, subSize) : 0;
+      const titleH = textHeight(titleLines, titleSize);
+      const subH = subLines ? textHeight(subLines, subSize) : 0;
+      const rowH = 0.08 + titleH + (subH ? subH + 0.04 : 0) + (slide.dense ? 0.13 : 0.2);
+
+      /* Keep at least one bullet on the slide, even if it is a monster. */
+      if (i > 0 && (y / EMU) + rowH > BOTTOM_LIMIT) {
+        overflow.push(...bullets.slice(i));
+        break;
+      }
+
+      shapes.push(rect(next(), LEFT * EMU, y + 0.05 * EMU, 0.055 * EMU, (rowH - 0.14) * EMU, tone));
+
+      if (b.tag) {
+        shapes.push(rect(next(), TEXT_LEFT * EMU, y + 0.03 * EMU, tagW * EMU, 0.24 * EMU, tone, { radius: true }));
+        shapes.push(textBox(next(), "tag", (TEXT_LEFT + 0.11) * EMU, y + 0.03 * EMU, (tagW - 0.22) * EMU, 0.24 * EMU,
+          para(b.tag.toUpperCase(), { size: 800, bold: true, color: "FFFFFF" }), { anchor: "ctr", noWrap: true }));
+      }
+
+      shapes.push(textBox(next(), "b", textLeft * EMU, y + 0.02 * EMU, titleW * EMU, titleH * EMU,
+        para(b.text, { size: titleSize, bold: true, color: BRAND.ink })));
+
+      if (b.sub) {
+        const subParas = String(b.sub).split("\n")
+          .map((line) => para(line, { size: subSize, color: BRAND.ink2 }))
+          .join("");
+        shapes.push(textBox(next(), "s", TEXT_LEFT * EMU, y + (0.06 + titleH) * EMU, subW * EMU, subH * EMU, subParas));
+      }
+
+      y += rowH * EMU;
+    }
+
+    if (slide.note) {
+      const noteLines = lineCount(slide.note, 12.2, 900);
+      const noteH = textHeight(noteLines, 900);
+      shapes.push(textBox(next(), "note", 0.55 * EMU, (7.02 - noteH) * EMU, 12.2 * EMU, noteH * EMU,
+        para(slide.note, { size: 900, italic: true, color: BRAND.ink2 })));
+    }
+
+    slide.__overflow = overflow;
+    shapes.push(rect(next(), 0, SLIDE_H - 0.1 * EMU, SLIDE_W, 0.1 * EMU, BRAND.p354));
+    shapes.push(textBox(next(), "pg", 12.35 * EMU, 0.55 * EMU, 0.5 * EMU, 0.3 * EMU,
+      para(String(index), { size: 1100, bold: true, color: BRAND.p375 })));
+  }
+
+  if (deck.footer && !slide.cover) {
+    shapes.push(textBox(next(), "footer", 0.55 * EMU, 7.05 * EMU, 8 * EMU, 0.28 * EMU,
+      para(deck.footer, { size: 850, color: "8798AD" })));
+  }
+
+  return XML +
+    '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">' +
+    '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+    '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/>' +
+    '<a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>' +
+    shapes.join("") +
+    '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>';
+}
+
+const THEME_XML = XML +
+  '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="GCIO Brand">' +
+  '<a:themeElements><a:clrScheme name="GCIO">' +
+  '<a:dk1><a:srgbClr val="10233F"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>' +
+  '<a:dk2><a:srgbClr val="00205B"/></a:dk2><a:lt2><a:srgbClr val="F1F5FA"/></a:lt2>' +
+  '<a:accent1><a:srgbClr val="00B140"/></a:accent1><a:accent2><a:srgbClr val="97D700"/></a:accent2>' +
+  '<a:accent3><a:srgbClr val="00A3E0"/></a:accent3><a:accent4><a:srgbClr val="9063CD"/></a:accent4>' +
+  '<a:accent5><a:srgbClr val="F6BE00"/></a:accent5><a:accent6><a:srgbClr val="E40046"/></a:accent6>' +
+  '<a:hlink><a:srgbClr val="00A3E0"/></a:hlink><a:folHlink><a:srgbClr val="9063CD"/></a:folHlink>' +
+  '</a:clrScheme><a:fontScheme name="Arial">' +
+  '<a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>' +
+  '<a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>' +
+  '</a:fontScheme><a:fmtScheme name="Office">' +
+  '<a:fillStyleLst>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '</a:fillStyleLst><a:lnStyleLst>' +
+  '<a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>' +
+  '<a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>' +
+  '<a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>' +
+  '</a:lnStyleLst><a:effectStyleLst>' +
+  '<a:effectStyle><a:effectLst/></a:effectStyle>' +
+  '<a:effectStyle><a:effectLst/></a:effectStyle>' +
+  '<a:effectStyle><a:effectLst/></a:effectStyle>' +
+  '</a:effectStyleLst><a:bgFillStyleLst>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' +
+  '</a:bgFillStyleLst></a:fmtScheme></a:themeElements>' +
+  '<a:objectDefaults/><a:extraClrSchemeLst/></a:theme>';
+
+const MASTER_XML = XML +
+  '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+  'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">' +
+  '<p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' +
+  '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+  '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/>' +
+  '<a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld>' +
+  '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" ' +
+  'accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>' +
+  '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>' +
+  '<p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="2400"/></a:lvl1pPr></p:titleStyle>' +
+  '<p:bodyStyle><a:lvl1pPr><a:defRPr sz="1400"/></a:lvl1pPr></p:bodyStyle>' +
+  '<p:otherStyle><a:lvl1pPr><a:defRPr sz="1400"/></a:lvl1pPr></p:otherStyle></p:txStyles></p:sldMaster>';
+
+const LAYOUT_XML = XML +
+  '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+  'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">' +
+  '<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+  '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/>' +
+  '<a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld>' +
+  '<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>';
+
+/**
+ * Build a .pptx package.
+ * @param {{title: string, subtitle?: string, footer?: string, slides: Array}} deck
+ * @returns {Uint8Array} pptx bytes
+ */
+function buildPptx(deck) {
+  const enc = new TextEncoder();
+  const files = [];
+
+  /* Lay every slide out first: a slide whose bullets do not fit spills the
+     remainder onto a "(cont.)" slide, repeatedly, so nothing is ever hidden
+     underneath something else or silently dropped. */
+  const expanded = [];
+  for (const slide of deck.slides || []) {
+    let current = { ...slide };
+    let guard = 0;
+    for (;;) {
+      const xml = slideXml(current, expanded.length + 1, deck);
+      expanded.push({ ...current, __xml: xml });
+      const leftover = current.__overflow || [];
+      if (!leftover.length || guard > 12) break;
+      guard += 1;
+      current = {
+        ...slide,
+        title: /\(cont\.\)$/.test(current.title) ? current.title : `${slide.title} (cont.)`,
+        kpis: null,
+        bullets: leftover,
+        __overflow: [],
+      };
+    }
+  }
+  const slides = expanded;
+  const add = (name, text) => files.push({ name, data: enc.encode(text) });
+
+  const slideOverrides = slides
+    .map((_, i) => `<Override PartName="/ppt/slides/slide${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`)
+    .join("");
+
+  add("[Content_Types].xml", XML +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
+    '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
+    '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
+    '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
+    '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
+    '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>' +
+    slideOverrides + '</Types>');
+
+  add("_rels/.rels", XML +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>' +
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>' +
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>' +
+    '</Relationships>');
+
+  add("docProps/core.xml", XML +
+    '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" ' +
+    'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
+    'xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+    `<dc:title>${esc(deck.title)}</dc:title>` +
+    '<dc:creator>GCIO Project Intelligence</dc:creator>' +
+    '<cp:lastModifiedBy>GCIO Project Intelligence</cp:lastModifiedBy>' +
+    '</cp:coreProperties>');
+
+  add("docProps/app.xml", XML +
+    '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" ' +
+    'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">' +
+    `<Application>GCIO Project Intelligence</Application><Slides>${slides.length}</Slides>` +
+    '</Properties>');
+
+  const slideRels = slides
+    .map((_, i) => `<Relationship Id="rId${i + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i + 1}.xml"/>`)
+    .join("");
+  add("ppt/_rels/presentation.xml.rels", XML +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>' +
+    slideRels +
+    `<Relationship Id="rId${slides.length + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>` +
+    '</Relationships>');
+
+  const sldIds = slides
+    .map((_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 2}"/>`)
+    .join("");
+  add("ppt/presentation.xml", XML +
+    '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1">' +
+    '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>' +
+    `<p:sldIdLst>${sldIds}</p:sldIdLst>` +
+    `<p:sldSz cx="${SLIDE_W}" cy="${SLIDE_H}"/><p:notesSz cx="${SLIDE_H}" cy="${SLIDE_W}"/>` +
+    '</p:presentation>');
+
+  add("ppt/theme/theme1.xml", THEME_XML);
+
+  add("ppt/slideMasters/slideMaster1.xml", MASTER_XML);
+  add("ppt/slideMasters/_rels/slideMaster1.xml.rels", XML +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' +
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>' +
+    '</Relationships>');
+
+  add("ppt/slideLayouts/slideLayout1.xml", LAYOUT_XML);
+  add("ppt/slideLayouts/_rels/slideLayout1.xml.rels", XML +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>' +
+    '</Relationships>');
+
+  expanded.forEach((slide, i) => {
+    add(`ppt/slides/slide${i + 1}.xml`, slide.__xml);
+    add(`ppt/slides/_rels/slide${i + 1}.xml.rels`, XML +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' +
+      '</Relationships>');
+  });
+
+  return zipStore(files);
+}
+
+
+function buildDeckFromDemo() {
+  const delivered = P.filter((p) => p.st === "Completed");
+  const clip = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + "…" : String(t));
+  return {
+    title: "GCIO Weekly Executive Summary",
+    footer: "GCIO Project Intelligence · 17 – 23 August 2026 · demonstration data",
+    slides: [
+      {
+        cover: true,
+        eyebrow: "GCIO · PROJECT INTELLIGENCE",
+        title: "Weekly Executive Summary",
+        subtitle: "17 – 23 August 2026 · 59 projects · AED 265.9M committed",
+        kpis: [
+          { lab: "Portfolio", val: "59", sub: "47 active" },
+          { lab: "Healthy", val: "64%", sub: "38 green · 6 red" },
+          { lab: "Committed", val: "AED 265.9M", sub: "64% consumed" },
+          { lab: "Open questions", val: "5", sub: "2 need a decision now" },
+        ],
+      },
+      {
+        eyebrow: "Section 1",
+        title: "Successes",
+        kpis: [
+          { lab: "Delivered", val: String(delivered.length) },
+          { lab: "Milestones closed", val: "5" },
+          { lab: "Near complete", val: "2" },
+        ],
+        bullets: delivered.map((p) => ({
+          tag: "Delivered", tone: "good", text: clip(p.n, 78),
+          sub: "Closed " + p.fc.slice(8) + " Aug — " + M(p.s) + " of " + M(p.b) + ", under budget by " + M(p.b - p.s),
+        })),
+      },
+      {
+        eyebrow: "Section 2 · part 1",
+        title: "Questions — decisions awaiting the CIO",
+        dense: true,
+        bullets: QS.map((q) => ({
+          tag: q.sev === "critical" ? "Decision now" : "Decision soon",
+          tone: q.sev === "critical" ? "bad" : "warn",
+          text: clip(q.q, 126),
+          sub: byId[q.p].n + " · " + (q.src === "pm" ? "raised by " + q.who : "derived from portfolio state") +
+               (q.by !== "—" ? " · needed by " + q.by : ""),
+        })),
+      },
+      {
+        eyebrow: "Section 2 · part 2",
+        title: "Risks & Issues",
+        dense: true,
+        bullets: RISKS.slice(0, 4).map((r) => ({
+          tag: r[0], tone: r[0] === "Critical" ? "bad" : r[0] === "High" ? "warn" : "neutral",
+          text: clip(r[1], 110), sub: byId[r[2]].n + " · " + r[4],
+        })).concat(ISSUES.slice(0, 4).map((i) => ({
+          tag: i[2], tone: i[3] === "Red" ? "bad" : "warn",
+          text: clip(i[1], 110), sub: byId[i[0]].n,
+        }))),
+      },
+      {
+        eyebrow: "Section 3",
+        title: "Priorities",
+        dense: true,
+        bullets: PRIO.map((r, i) => ({
+          tag: "#" + (i + 1) + " · " + r.score,
+          tone: r.score > 85 ? "bad" : r.score > 70 ? "warn" : "good",
+          text: clip(byId[r.id].n, 76),
+          sub: clip(r.why, 92) + " — needed: " + clip(r.ask, 92),
+        })),
+      },
+      {
+        eyebrow: "Section 4",
+        title: "Roadmap / Planned Projects",
+        dense: true,
+        bullets: P.filter((p) => p.st === "In Progress").slice(0, 4).map((p) => ({
+          tag: p.fc > p.tgt ? "slipping" : "on plan",
+          tone: p.fc > p.tgt ? "warn" : "good",
+          text: clip(p.n, 76),
+          sub: p.pc + "% · target " + p.tgt + (p.fc > p.tgt ? " · forecast " + p.fc : ""),
+        })).concat(P.filter((p) => p.st === "Approved" || p.st === "Proposed").slice(0, 4).map((p) => ({
+          tag: p.st, tone: p.st === "Approved" ? "good" : "neutral",
+          text: clip(p.n, 76),
+          sub: p.pl + " · starts " + p.start + " · " + M(p.b),
+        }))),
+      },
+    ],
+  };
+}
+
+el("make-ppt").addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  const label = btn.innerHTML;
+  btn.innerHTML = "Building deck…";
+  btn.disabled = true;
+  try {
+    const bytes = buildPptx(buildDeckFromDemo());
+    const url = URL.createObjectURL(new Blob([bytes], {
+      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "GCIO_Weekly_Executive_Summary.pptx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (err) {
+    console.error("PPT build failed:", err);
+    alert("Could not build the deck: " + err.message);
+  } finally {
+    btn.innerHTML = label;
+    btn.disabled = false;
+  }
+});
+
+/* save a copy of this page / print */
+el("print-btn").addEventListener("click", () => window.print());
+el("save-html").addEventListener("click", () => {
+  const html = "<!doctype html>\n" + document.documentElement.outerHTML;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "GCIO_Dashboard_Redesign_Demo.html";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+});
+</script>
+</body>
+</html>

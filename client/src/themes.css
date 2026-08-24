@@ -1,0 +1,174 @@
+/* ============================================================================
+   GCIO identities — all four built from the mandated brand palette.
+
+     40%  Pantone 281 C  #00205B   grounds, headers, primary surfaces
+     40%  Pantone 354 C  #00B140   accents, positive states, primary series
+     15%  Pantone 375 C  #97D700   highlights, focus, emphasis rules
+      5%  secondaries    638 C #00A3E0 · 2665 C #9063CD · 192 C #E40046
+                         1575 C #FF8200 · 7408 C #F6BE00 · rgb(65,65,65)
+                         status marks and categorical chart series only
+
+   Hex values are screen approximations of the coated Pantone references.
+   ========================================================================= */
+
+:root {
+  --p281: #00205b;
+  --p354: #00b140;
+  --p375: #97d700;
+  --s638: #00a3e0;
+  --s2665: #9063cd;
+  --s192: #e40046;
+  --s1575: #ff8200;
+  --s7408: #f6be00;
+  --sgrey: #414141;
+
+  /* Categorical series — ordered so neighbours stay separable under CVD. */
+  --series-1: var(--p354);
+  --series-2: var(--p375);
+  --series-3: var(--s638);
+  --series-4: var(--s2665);
+  --series-5: var(--s1575);
+  --series-6: var(--s7408);
+
+  --font-ui: Arial, Helvetica, "Liberation Sans", sans-serif;
+  --font-display: Arial, Helvetica, "Liberation Sans", sans-serif;
+  --radius: 12px;
+  --radius-sm: 9px;
+}
+
+:root[data-font="aptos"] {
+  --font-ui: Aptos, "Aptos Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Aptos Display", Aptos, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+}
+
+/* ---------------------------------------------------------- A · Obsidian */
+/* Midnight navy ground (281 C driven to near-black) with the 354 C accent. */
+:root[data-theme="obsidian"] {
+  --ground: #000d24;
+  --ground-2: #00132f;
+  --surface: #001a3f;
+  --surface-2: #00265a;
+  --well: #002a63;
+  --chart-surface: #001a3f;
+
+  --ink: #eef4ff;
+  --ink-2: #b3c6e6;
+  --muted: #7b92bd;
+  --hairline: rgba(151, 215, 0, 0.14);
+  --hairline-soft: rgba(255, 255, 255, 0.09);
+
+  --accent: var(--p354);
+  --accent-ink: #00230f;
+  --highlight: var(--p375);
+  --good: var(--p354);
+  --warn: var(--s7408);
+  --critical: var(--s192);
+  --info: var(--s638);
+
+  --glow-accent: rgba(0, 177, 64, 0.42);
+  --glow-highlight: rgba(151, 215, 0, 0.34);
+  --glow-critical: rgba(228, 0, 70, 0.38);
+  --card-glow: 0 0 0 1px rgba(151, 215, 0, 0.06), 0 18px 44px rgba(0, 6, 22, 0.6);
+  --aurora: radial-gradient(1100px 460px at 12% -8%, rgba(0, 177, 64, 0.16), transparent 62%),
+            radial-gradient(900px 420px at 88% -12%, rgba(0, 163, 224, 0.14), transparent 60%);
+  color-scheme: dark;
+}
+
+/* ---------------------------------------------------------- B · Platinum */
+/* Ivory ground; 281 C becomes the ink and header band, 354 C the accent. */
+:root[data-theme="platinum"] {
+  --ground: #f4f6fb;
+  --ground-2: #eef2f9;
+  --surface: #ffffff;
+  --surface-2: #f2f6fc;
+  --well: #e9eff8;
+  --chart-surface: #ffffff;
+
+  --ink: #00205b;
+  --ink-2: #31507f;
+  --muted: #6a7fa3;
+  --hairline: rgba(0, 32, 91, 0.16);
+  --hairline-soft: rgba(0, 32, 91, 0.08);
+
+  --accent: #00913a;
+  --accent-ink: #ffffff;
+  --highlight: #63960a;
+  --good: #00913a;
+  --warn: #b98600;
+  --critical: #c8003d;
+  --info: #0071a3;
+
+  --glow-accent: rgba(0, 145, 58, 0.24);
+  --glow-highlight: rgba(99, 150, 10, 0.22);
+  --glow-critical: rgba(200, 0, 61, 0.2);
+  --card-glow: 0 0 0 1px rgba(0, 32, 91, 0.04), 0 12px 30px rgba(0, 32, 91, 0.09);
+  --aurora: radial-gradient(1000px 420px at 8% -10%, rgba(0, 177, 64, 0.10), transparent 60%),
+            radial-gradient(820px 380px at 92% -14%, rgba(0, 32, 91, 0.08), transparent 58%);
+  color-scheme: light;
+}
+
+/* ---------------------------------------------------------- C · Sapphire */
+/* 281 C at full strength with 7408 C gold — the ceremonial identity. */
+:root[data-theme="sapphire"] {
+  --ground: #001336;
+  --ground-2: #00205b;
+  --surface: #002566;
+  --surface-2: #003078;
+  --well: #003a8c;
+  --chart-surface: #002566;
+
+  --ink: #f0f5ff;
+  --ink-2: #c3d3f0;
+  --muted: #8ba3ce;
+  --hairline: rgba(246, 190, 0, 0.20);
+  --hairline-soft: rgba(255, 255, 255, 0.10);
+
+  --accent: var(--s7408);
+  --accent-ink: #2a1d00;
+  --highlight: var(--p375);
+  --good: var(--p354);
+  --warn: var(--s1575);
+  --critical: var(--s192);
+  --info: var(--s638);
+
+  --glow-accent: rgba(246, 190, 0, 0.4);
+  --glow-highlight: rgba(151, 215, 0, 0.3);
+  --glow-critical: rgba(228, 0, 70, 0.36);
+  --card-glow: 0 0 0 1px rgba(246, 190, 0, 0.08), 0 18px 44px rgba(0, 10, 34, 0.6);
+  --aurora: radial-gradient(1100px 460px at 15% -10%, rgba(246, 190, 0, 0.14), transparent 60%),
+            radial-gradient(900px 420px at 85% -12%, rgba(0, 177, 64, 0.12), transparent 58%);
+  color-scheme: dark;
+}
+
+/* ----------------------------------------------------------- D · Emerald */
+/* Graphite ground (the neutral grey) with the 375 C lime highlight. */
+:root[data-theme="emerald"] {
+  --ground: #121513;
+  --ground-2: #181c19;
+  --surface: #1d221f;
+  --surface-2: #252b27;
+  --well: #2b322d;
+  --chart-surface: #1d221f;
+
+  --ink: #eef4ee;
+  --ink-2: #bccbbf;
+  --muted: #8b9a8e;
+  --hairline: rgba(151, 215, 0, 0.16);
+  --hairline-soft: rgba(255, 255, 255, 0.08);
+
+  --accent: var(--p354);
+  --accent-ink: #04240f;
+  --highlight: var(--p375);
+  --good: var(--p354);
+  --warn: var(--s7408);
+  --critical: var(--s192);
+  --info: var(--s638);
+
+  --glow-accent: rgba(0, 177, 64, 0.4);
+  --glow-highlight: rgba(151, 215, 0, 0.36);
+  --glow-critical: rgba(228, 0, 70, 0.36);
+  --card-glow: 0 0 0 1px rgba(151, 215, 0, 0.07), 0 16px 40px rgba(0, 0, 0, 0.5);
+  --aurora: radial-gradient(1000px 440px at 10% -10%, rgba(151, 215, 0, 0.12), transparent 60%),
+            radial-gradient(880px 400px at 90% -12%, rgba(0, 177, 64, 0.12), transparent 58%);
+  color-scheme: dark;
+}

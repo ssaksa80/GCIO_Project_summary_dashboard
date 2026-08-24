@@ -1,0 +1,33 @@
+{
+  "name": "gcio-project-summary-dashboard",
+  "version": "1.0.0",
+  "description": "GCIO Project Intelligence — 24x7 live executive portfolio dashboard with Excel ingestion, C-suite summarization, drill-down, and rich Excel/Word/HTML briefing exports.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "vite --config vite.config.js",
+    "build": "vite build --config vite.config.js",
+    "sample-data": "node scripts/generate-sample-data.js"
+  },
+  "dependencies": {
+    "@fontsource-variable/fraunces": "^5.2.5",
+    "@fontsource-variable/inter": "^5.2.5",
+    "chokidar": "^4.0.3",
+    "dayjs": "^1.11.13",
+    "docx": "^9.5.0",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "gsap": "^3.15.0",
+    "multer": "^2.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "puppeteer-core": "^25.8.0",
+    "vite": "^6.3.5"
+  }
+}

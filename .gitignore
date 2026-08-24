@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output — regenerate with: npm run build
+client/dist/
+
+# Generated export artifacts (decks, workbooks, briefs, smoke-test output)
+exports/
+
+# The CIO briefing is generated from docs/screenshots by its builder, and is
+# ~1.9MB per version. Rebuild on demand instead of carrying every re-shoot in
+# history:  node scripts/build-briefing.mjs
+GCIO_Theme_Selection_Briefing.html
+
+# The watched drop-folder: live portfolio workbooks and the snapshot cache.
+# Real portfolio data must never be committed.
+data/*
+!data/.gitkeep
+
+# Logs and OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

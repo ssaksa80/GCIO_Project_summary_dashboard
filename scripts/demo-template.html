@@ -1,0 +1,321 @@
+<title>GCIO Theme Selection</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,420;9..144,560;9..144,640&family=Inter:wght@400;460;560;640&display=swap">
+<style>
+  :root {
+    --paper: #f6f5f1;
+    --card: #fdfdfb;
+    --well: #edecE6;
+    --ink: #16140f;
+    --ink2: #57544b;
+    --muted: #8a877c;
+    --hairline: rgba(20, 18, 14, 0.12);
+    --accent: #1c5cab;
+    --gold: #a8852f;
+    --good: #0a7c0a;
+    --shadow: 0 10px 30px rgba(20, 18, 14, 0.09);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0d0f13;
+      --card: #14171e;
+      --well: #191d26;
+      --ink: #eef0f5;
+      --ink2: #b0b6c2;
+      --muted: #7d8494;
+      --hairline: rgba(255, 255, 255, 0.1);
+      --accent: #5b96f5;
+      --gold: #d4af5a;
+      --good: #3fbf3f;
+      --shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0d0f13;
+    --card: #14171e;
+    --well: #191d26;
+    --ink: #eef0f5;
+    --ink2: #b0b6c2;
+    --muted: #7d8494;
+    --hairline: rgba(255, 255, 255, 0.1);
+    --accent: #5b96f5;
+    --gold: #d4af5a;
+    --good: #3fbf3f;
+    --shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 56px 28px 80px; }
+
+  .masthead { border-bottom: 1px solid var(--hairline); padding-bottom: 28px; margin-bottom: 40px; }
+  .eyebrow {
+    font-size: 11.5px; font-weight: 640; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--gold); margin: 0 0 14px;
+  }
+  h1 {
+    font-family: Fraunces, Georgia, serif; font-size: clamp(30px, 5vw, 42px);
+    font-weight: 560; line-height: 1.12; margin: 0 0 14px; text-wrap: balance;
+  }
+  .lede { max-width: 62ch; color: var(--ink2); margin: 0; }
+  .lede b { color: var(--ink); font-weight: 560; }
+
+  .meta-line { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 20px; font-size: 12.5px; color: var(--muted); }
+  .meta-line span b { color: var(--ink2); font-weight: 560; }
+
+  h2 {
+    font-family: Fraunces, Georgia, serif; font-size: 24px; font-weight: 560;
+    margin: 52px 0 8px; text-wrap: balance;
+  }
+  .sub { color: var(--ink2); margin: 0 0 22px; max-width: 68ch; }
+
+  .option {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 26px 28px; margin-bottom: 26px;
+  }
+  .opt-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+  .opt-letter {
+    font-family: Fraunces, Georgia, serif; font-size: 15px; font-weight: 640;
+    color: var(--gold); border: 1px solid var(--hairline); border-radius: 8px;
+    padding: 2px 10px; background: var(--well);
+  }
+  .opt-name { font-family: Fraunces, Georgia, serif; font-size: 22px; font-weight: 600; }
+  .opt-tag { font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 560; }
+  .badge {
+    margin-left: auto; font-size: 11px; font-weight: 640; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 9%, transparent); border-radius: 999px; padding: 3px 11px;
+  }
+  .opt-desc { color: var(--ink2); margin: 6px 0 16px; max-width: 74ch; }
+  .swatches { display: flex; gap: 6px; margin-bottom: 16px; }
+  .sw { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--hairline); }
+
+  .shot { border-radius: 10px; overflow: hidden; border: 1px solid var(--hairline); cursor: zoom-in; display: block; padding: 0; width: 100%; background: none; }
+  .shot img { width: 100%; display: block; }
+  .shot-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+  .traits { overflow-x: auto; margin-top: 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 640px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 640; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--hairline);
+  }
+  td { padding: 11px 14px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+  td:first-child { font-weight: 560; white-space: nowrap; }
+
+  .same-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 18px; }
+  .same-card { background: var(--card); border: 1px solid var(--hairline); border-radius: 12px; padding: 16px 18px; }
+  .same-card h3 { margin: 0 0 6px; font-size: 14px; font-weight: 620; font-family: Inter, system-ui, sans-serif; }
+  .same-card p { margin: 0; font-size: 13px; color: var(--ink2); }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
+  .two-col figure { margin: 0; }
+  .two-col figcaption { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+
+  .respond {
+    margin-top: 56px; border: 1px solid color-mix(in srgb, var(--gold) 55%, transparent);
+    background: color-mix(in srgb, var(--gold) 7%, transparent);
+    border-radius: 14px; padding: 24px 28px;
+  }
+  .respond h2 { margin-top: 0; }
+  .respond p { color: var(--ink2); max-width: 70ch; }
+  .respond .options-line { font-weight: 560; color: var(--ink); }
+
+  footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--hairline); font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+
+  dialog {
+    border: none; border-radius: 12px; padding: 0; max-width: min(96vw, 1500px); width: 96vw;
+    background: var(--card); box-shadow: 0 30px 90px rgba(0,0,0,.5);
+  }
+  dialog::backdrop { background: rgba(8, 9, 12, 0.72); backdrop-filter: blur(4px); }
+  dialog img { width: 100%; display: block; border-radius: 12px; }
+  dialog .close {
+    position: absolute; top: 10px; right: 10px; border: none; background: rgba(0,0,0,.55); color: #fff;
+    width: 34px; height: 34px; border-radius: 9px; font-size: 15px; cursor: pointer;
+  }
+  .zoom-hint { font-size: 11.5px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .option { transition: transform 180ms ease; }
+  }
+  button:focus-visible, .shot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <p class="eyebrow">GCIO · Project Intelligence — Executive Briefing</p>
+    <h1>Four looks for the portfolio dashboard. One decision.</h1>
+    <p class="lede">
+      The live CIO dashboard is <b>built and running</b>: 24×7 Excel ingestion, daily-to-yearly executive
+      summaries, full project drill-down, and boardroom-grade exports. What remains is a taste decision —
+      the visual identity it presents to the executive floor. All four options below are <b>live in the product
+      today</b> and switchable at any time; the one you choose becomes the default for every screen.
+    </p>
+    <div class="meta-line">
+      <span><b>59-project</b> demonstration portfolio</span>
+      <span>As of <b>23 Aug 2026</b></span>
+      <span>Identical data &amp; features in every option</span>
+      <span class="zoom-hint">Click any screenshot to view it full-size</span>
+    </div>
+  </header>
+
+  <h2>The options</h2>
+  <p class="sub">Each is a complete identity — ground, accent, and mood — over the same accessibility-validated
+  chart palette, so the numbers read identically in all four.</p>
+
+  <!-- A · Obsidian -->
+  <section class="option">
+    <div class="opt-head">
+      <span class="opt-letter">A</span>
+      <span class="opt-name">Obsidian</span>
+      <span class="opt-tag">Midnight executive</span>
+      <span class="badge">Current default</span>
+    </div>
+    <p class="opt-desc">Deep charcoal with an electric-blue accent and a faint aurora glow. A command-center
+    presence — strongest in low-lit offices and on wall displays, where it reads as calm control.</p>
+    <div class="swatches" aria-hidden="true">
+      <span class="sw" style="background:#0a0c10"></span><span class="sw" style="background:#161a23"></span>
+      <span class="sw" style="background:#4f8ff7"></span><span class="sw" style="background:#8b7bff"></span>
+      <span class="sw" style="background:#f2f4f8"></span>
+    </div>
+    <button class="shot" data-zoom="obsidian" aria-label="View Obsidian theme full-size"><img src="{{IMG:theme-obsidian}}" alt="Obsidian theme — weekly executive summary with KPI tiles, briefing narrative, and attention list on deep charcoal"></button>
+  </section>
+
+  <!-- B · Platinum -->
+  <section class="option">
+    <div class="opt-head">
+      <span class="opt-letter">B</span>
+      <span class="opt-name">Platinum</span>
+      <span class="opt-tag">Ivory boardroom</span>
+    </div>
+    <p class="opt-desc">Warm ivory, navy ink, gold detail. The print-adjacent formality of a bound board pack —
+    strongest in bright rooms and on projectors, and the closest match to printed briefing material.</p>
+    <div class="swatches" aria-hidden="true">
+      <span class="sw" style="background:#f7f6f2"></span><span class="sw" style="background:#ffffff"></span>
+      <span class="sw" style="background:#1c5cab"></span><span class="sw" style="background:#b08d3e"></span>
+      <span class="sw" style="background:#14120e"></span>
+    </div>
+    <button class="shot" data-zoom="platinum" aria-label="View Platinum theme full-size"><img src="{{IMG:theme-platinum}}" alt="Platinum theme — the same weekly executive summary on warm ivory with navy ink"></button>
+  </section>
+
+  <!-- C · Sapphire -->
+  <section class="option">
+    <div class="opt-head">
+      <span class="opt-letter">C</span>
+      <span class="opt-name">Sapphire</span>
+      <span class="opt-tag">Navy &amp; gold</span>
+    </div>
+    <p class="opt-desc">Deep sapphire ground with gold accents — ceremonial and sovereign. The most
+    brand-forward of the four; it carries institutional weight in stakeholder and government settings.</p>
+    <div class="swatches" aria-hidden="true">
+      <span class="sw" style="background:#081124"></span><span class="sw" style="background:#122040"></span>
+      <span class="sw" style="background:#d4af5a"></span><span class="sw" style="background:#3987e5"></span>
+      <span class="sw" style="background:#eef2fb"></span>
+    </div>
+    <button class="shot" data-zoom="sapphire" aria-label="View Sapphire theme full-size"><img src="{{IMG:theme-sapphire}}" alt="Sapphire theme — the executive summary on deep navy with gold accents"></button>
+  </section>
+
+  <!-- D · Emerald -->
+  <section class="option">
+    <div class="opt-head">
+      <span class="opt-letter">D</span>
+      <span class="opt-name">Emerald</span>
+      <span class="opt-tag">Graphite &amp; jade</span>
+    </div>
+    <p class="opt-desc">Graphite ground with a jade accent — modern, understated, quietly technical. The most
+    contemporary read; it signals engineering confidence without raising its voice.</p>
+    <div class="swatches" aria-hidden="true">
+      <span class="sw" style="background:#0e1211"></span><span class="sw" style="background:#1a211f"></span>
+      <span class="sw" style="background:#2bd48f"></span><span class="sw" style="background:#7cc5ff"></span>
+      <span class="sw" style="background:#eef4f1"></span>
+    </div>
+    <button class="shot" data-zoom="emerald" aria-label="View Emerald theme full-size"><img src="{{IMG:theme-emerald}}" alt="Emerald theme — the executive summary on graphite with a jade accent"></button>
+  </section>
+
+  <h2>At a glance</h2>
+  <div class="traits">
+    <table>
+      <thead><tr><th>Option</th><th>Mood</th><th>Strongest setting</th><th>Ground / accent</th></tr></thead>
+      <tbody>
+        <tr><td>A · Obsidian</td><td>Calm command center</td><td>Low-lit offices, wall displays</td><td>Charcoal / electric blue</td></tr>
+        <tr><td>B · Platinum</td><td>Board-pack formality</td><td>Bright rooms, projection, print</td><td>Ivory / navy &amp; gold</td></tr>
+        <tr><td>C · Sapphire</td><td>Sovereign, ceremonial</td><td>Stakeholder &amp; government settings</td><td>Navy / gold</td></tr>
+        <tr><td>D · Emerald</td><td>Modern technical</td><td>Day-to-day operations review</td><td>Graphite / jade</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Identical in every option</h2>
+  <p class="sub">The theme changes the dress, never the substance. Every option ships with:</p>
+  <div class="same-grid">
+    <div class="same-card"><h3>Live 24×7 ingestion</h3><p>Drop Excel files — single or bulk, .xlsx/.xls/.csv — into a watched folder or upload in-app; every open screen updates within a second.</p></div>
+    <div class="same-card"><h3>Intelligent Excel reading</h3><p>Column headers, RAG values, date formats, and money notation are matched intelligently across differently-authored workbooks.</p></div>
+    <div class="same-card"><h3>Written executive briefing</h3><p>A machine-written narrative — headline, developments, wins, watch-list, outlook — recomposed for daily, weekly, monthly, and yearly views.</p></div>
+    <div class="same-card"><h3>Full project drill-down</h3><p>Owner, sponsor, approval-to-forecast dates, budget burn, milestone timeline, risk register, update feed, and the parent→child project chain.</p></div>
+    <div class="same-card"><h3>Boardroom exports</h3><p>One click produces a styled Excel workbook, a Word briefing with cover page and per-project briefs, or a self-contained HTML brief — with chart images embedded.</p></div>
+    <div class="same-card"><h3>Validated chart color</h3><p>The series palette passes color-vision-deficiency and contrast gates on every theme's surface, so charts stay legible for every reader.</p></div>
+  </div>
+
+  <h2>The drill-down, in two of the options</h2>
+  <p class="sub">Selecting any project opens its complete record — the same depth in all four themes.</p>
+  <div class="two-col">
+    <figure>
+      <button class="shot" data-zoom="drill-a" aria-label="View Obsidian drill-down full-size"><img src="{{IMG:drilldown}}" alt="Obsidian drill-down drawer: project record with owner, sponsor, dates, budget, and milestone timeline"></button>
+      <figcaption>A · Obsidian — project record, schedule analytics, and timeline</figcaption>
+    </figure>
+    <figure>
+      <button class="shot" data-zoom="drill-b" aria-label="View Platinum drill-down full-size"><img src="{{IMG:drilldown-platinum}}" alt="Platinum drill-down drawer: the same project record on ivory"></button>
+      <figcaption>B · Platinum — the same record in the ivory identity</figcaption>
+    </figure>
+  </div>
+
+  <section class="respond">
+    <h2>How to decide</h2>
+    <p>Every option is live now — the dashboard's top bar switches between them instantly, so they can also be
+    compared side-by-side in the product before deciding. The chosen option becomes the default identity for
+    all users; individuals keep the ability to switch unless we lock it.</p>
+    <p class="options-line">Reply with a letter — A · Obsidian, B · Platinum, C · Sapphire, or D · Emerald.</p>
+  </section>
+
+  <footer>
+    <span>GCIO Project Intelligence · theme selection briefing</span>
+    <span>Demonstration data — not actual portfolio figures</span>
+  </footer>
+</div>
+
+<dialog id="zoom" aria-label="Full-size screenshot">
+  <button class="close" id="zoom-close" aria-label="Close">✕</button>
+  <img id="zoom-img" src="" alt="Full-size screenshot">
+</dialog>
+
+<script>
+  const FULL = {
+    obsidian: "{{IMG:theme-obsidian-full}}",
+    platinum: "{{IMG:theme-platinum}}",
+    sapphire: "{{IMG:theme-sapphire}}",
+    emerald: "{{IMG:theme-emerald}}",
+    "drill-a": "{{IMG:drilldown}}",
+    "drill-b": "{{IMG:drilldown-platinum}}"
+  };
+  const dlg = document.getElementById("zoom");
+  const img = document.getElementById("zoom-img");
+  document.querySelectorAll("[data-zoom]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      img.src = FULL[btn.dataset.zoom];
+      dlg.showModal();
+    });
+  });
+  document.getElementById("zoom-close").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+</script>

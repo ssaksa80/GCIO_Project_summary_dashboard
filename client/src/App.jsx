@@ -1,0 +1,173 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getJSON, useLiveEvents } from "./lib/api.js";
+import { fmtDate } from "./lib/format.js";
+import TopBar from "./components/TopBar.jsx";
+import KpiStrip from "./components/KpiStrip.jsx";
+import SectionNav from "./components/SectionNav.jsx";
+import SectionSuccesses from "./components/SectionSuccesses.jsx";
+import SectionQRI from "./components/SectionQRI.jsx";
+import SectionPriorities from "./components/SectionPriorities.jsx";
+import SectionRoadmap from "./components/SectionRoadmap.jsx";
+import ProjectTable from "./components/ProjectTable.jsx";
+import ProjectDrawer from "./components/ProjectDrawer.jsx";
+import UploadPanel from "./components/UploadPanel.jsx";
+import EmptyState from "./components/EmptyState.jsx";
+
+const THEMES = ["obsidian", "platinum", "sapphire", "emerald"];
+const FONTS = ["arial", "aptos"];
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+/* URL controls, so a view can be linked, printed or captured exactly:
+     ?snapshot=1        settled, non-live render (no event stream)
+     ?theme=sapphire    open in a specific identity
+     ?font=aptos        open in a specific typeface
+     ?project=P-1042    open straight into a project's record
+     ?table=1           expand the all-projects reference table              */
+const params = () =>
+  new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
+const snapshotMode = () => params().has("snapshot");
+const paramIn = (key, allowed) => {
+  const value = (params().get(key) || "").toLowerCase();
+  return allowed.includes(value) ? value : null;
+};
+
+const PERIOD_TITLE = {
+  daily: "Daily Executive Summary",
+  weekly: "Weekly Executive Summary",
+  monthly: "Monthly Executive Summary",
+  yearly: "Annual Executive Summary",
+};
+
+export default function App() {
+  const [period, setPeriod] = useState("weekly");
+  const [date, setDate] = useState(todayISO());
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem("gcio-theme");
+    return paramIn("theme", THEMES) || (THEMES.includes(saved) ? saved : "obsidian");
+  });
+  const [font, setFont] = useState(() => {
+    const saved = localStorage.getItem("gcio-font");
+    return paramIn("font", FONTS) || (FONTS.includes(saved) ? saved : "arial");
+  });
+  const [summary, setSummary] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [drawerId, setDrawerId] = useState(() => params().get("project"));
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [error, setError] = useState(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("gcio-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-font", font);
+    localStorage.setItem("gcio-font", font);
+  }, [font]);
+
+  const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      getJSON(`/api/summary?period=${period}&date=${date}`),
+      getJSON("/api/health"),
+      getJSON("/api/meta"),
+    ])
+      .then(([s, h, m]) => {
+        if (cancelled) return;
+        setSummary(s);
+        setHealth(h);
+        setMeta(m);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+        console.error("summary fetch failed:", err);
+      });
+    return () => { cancelled = true; };
+  }, [period, date, refreshTick]);
+
+  useLiveEvents(() => refresh(), !snapshotMode());
+
+  const hasData = (health?.projectCount ?? 0) > 0;
+  const rangeLabel = useMemo(() => {
+    if (!summary) return "";
+    return summary.rangeStart === summary.rangeEnd
+      ? fmtDate(summary.rangeStart)
+      : `${fmtDate(summary.rangeStart)} — ${fmtDate(summary.rangeEnd)}`;
+  }, [summary]);
+
+  const sections = summary?.sections;
+
+  return (
+    <div className="shell">
+      <TopBar
+        period={period}
+        onPeriod={setPeriod}
+        date={date}
+        onDate={setDate}
+        theme={theme}
+        onTheme={setTheme}
+        font={font}
+        onFont={setFont}
+        health={health}
+        onUpload={() => setUploadOpen(true)}
+      />
+
+      {error && (
+        <div className="card panel error-panel">
+          <span className="micro critical-ink">Connection issue</span>
+          <div className="meta">{error} — retrying on next refresh.</div>
+        </div>
+      )}
+
+      {!hasData && health && <EmptyState onUpload={() => setUploadOpen(true)} />}
+
+      {hasData && summary && sections && (
+        <>
+          <div className="page-head">
+            <h1 className="page-title display">{PERIOD_TITLE[period]}</h1>
+            <span className="page-range">
+              {rangeLabel}{health?.demoMode ? "  ·  demonstration portfolio" : ""}
+            </span>
+          </div>
+
+          <KpiStrip
+            kpis={summary.kpis}
+            questionCount={sections.qri.counts.questions}
+            lastIngestAt={health?.lastIngestAt}
+          />
+
+          <SectionNav />
+
+          <SectionSuccesses data={sections.successes} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
+          <SectionQRI data={sections.qri} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
+          <SectionPriorities data={sections.priorities} onOpen={setDrawerId} />
+          <SectionRoadmap data={sections.roadmap} theme={theme} onOpen={setDrawerId} />
+
+          <details className="all-projects" open={params().has("table")}>
+            <summary>All projects — reference table ({health.projectCount})</summary>
+            <ProjectTable meta={meta} onOpen={setDrawerId} refreshTick={refreshTick} />
+          </details>
+        </>
+      )}
+
+      {!summary && !error && (
+        <div className="skeleton-stack">
+          <div className="skeleton" style={{ height: 96 }} />
+          <div className="skeleton" style={{ height: 320 }} />
+          <div className="skeleton" style={{ height: 280 }} />
+        </div>
+      )}
+
+      {drawerId && (
+        <ProjectDrawer id={drawerId} onClose={() => setDrawerId(null)} onNavigate={setDrawerId} period={period} date={date} />
+      )}
+
+      {uploadOpen && <UploadPanel onClose={() => setUploadOpen(false)} onDone={refresh} />}
+    </div>
+  );
+}
