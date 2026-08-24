@@ -74,7 +74,11 @@ export function createApp(deps) {
   /* Identity, then the gate. /api/me answers for signed-out callers too, so
      the client can tell "not signed in" from "server is broken". */
   app.use(attachSession({ sessions, idleMinutes: config.sessionIdleMinutes }));
-  app.use(authRoutes({ config, sessions, roleMapping, audit, ldapAuthenticate: deps.ldapAuthenticate }));
+  app.use(authRoutes({
+    config, sessions, roleMapping, audit,
+    ldapAuthenticate: deps.ldapAuthenticate,
+    entraJwks: deps.entraJwks,
+  }));
   app.use("/api", (req, res, next) => {
     if (req.path === "/me" || req.path.startsWith("/auth/")) return next();
     return requireSession(req, res, next);

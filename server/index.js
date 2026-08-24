@@ -24,6 +24,7 @@ import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
 import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
+import { makeEntraJwks } from "./auth/entraJwks.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -143,9 +144,14 @@ watchDataDir(store, DATA_DIR, async (batch) => {
 
 /* ---------------------------------------------------------------- serve */
 
+const entraJwks = config.ssoEnabled
+  ? makeEntraJwks({ tenantId: config.entra.tenantId, offlineKeys: config.entra.offlineKeys })
+  : null;
+
 const app = createApp({
   store,
   config,
+  entraJwks,
   sessions: backends.sessions,
   roleMapping: backends.roleMapping,
   audit: backends.audit,

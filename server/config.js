@@ -42,6 +42,24 @@ export function loadConfig(env = process.env) {
     ldap.upnSuffix = String(env.LDAP_UPN_SUFFIX || "").trim();
   }
 
+  /* SSO is additive: it can be enabled alongside LDAP so people may use
+     either, which is how DEDB runs. */
+  const ssoEnabled = String(env.SSO_ENABLED || "false") === "true";
+  const entra = { tenantId: "", clientId: "", issuer: "", requireMfaClaim: true, offlineKeys: null };
+  if (ssoEnabled) {
+    entra.tenantId = need("ENTRA_TENANT_ID");
+    entra.clientId = need("ENTRA_CLIENT_ID");
+    entra.issuer = env.ENTRA_ISSUER || `https://login.microsoftonline.com/${entra.tenantId}/v2.0`;
+    entra.requireMfaClaim = String(env.ENTRA_REQUIRE_MFA || "true") === "true";
+    if (env.ENTRA_OFFLINE_JWKS) {
+      try {
+        entra.offlineKeys = JSON.parse(env.ENTRA_OFFLINE_JWKS);
+      } catch {
+        problems.push("ENTRA_OFFLINE_JWKS is not valid JSON");
+      }
+    }
+  }
+
   const devRole = String(env.DEV_ROLE || "admin").toLowerCase();
   if (authMode === "dev" && !["viewer", "pm", "admin"].includes(devRole)) {
     problems.push("DEV_ROLE must be viewer, pm or admin");
@@ -60,6 +78,8 @@ export function loadConfig(env = process.env) {
     authMode,
     devRole,
     ldap: Object.freeze(ldap),
+    ssoEnabled,
+    entra: Object.freeze(entra),
     sessionAbsoluteHours: env.SESSION_ABSOLUTE_HOURS || "8",
     sessionIdleMinutes: Number(env.SESSION_IDLE_MINUTES || 240),
     auditDir: env.AUDIT_DIR || "audit",

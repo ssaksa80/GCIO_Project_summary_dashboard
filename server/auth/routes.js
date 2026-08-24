@@ -11,6 +11,7 @@ import { resolveAccess } from "./authz.js";
 import { computeExpiry } from "../repos/sessions.js";
 import { setSessionCookie, clearSessionCookie, SESSION_COOKIE } from "./session.js";
 import { AuthError, badCredentials } from "./errors.js";
+import { validateWithRefresh, SSO_FAILURE_MESSAGE } from "./entraToken.js";
 
 /**
  * @param {{
@@ -69,6 +70,54 @@ export function authRoutes(deps) {
     }
   });
 
+  /**
+   * Single sign-on. The browser obtains an Entra ID token (MSAL) and posts it
+   * here; the token is the identity claim, so it is validated in full —
+   * issuer, audience, signature, expiry, MFA — before any session exists.
+   */
+  router.post("/api/auth/sso", async (req, res, next) => {
+    if (!config.ssoEnabled || !deps.entraJwks) {
+      return res.status(404).json({ error: { code: "sso_disabled", message: "single sign-on is not enabled" } });
+    }
+    const { idToken, nonce } = req.body || {};
+    try {
+      const verdict = await validateWithRefresh(idToken, config.entra, deps.entraJwks, { nonce });
+      if (!verdict.ok) {
+        await auditFrom(req, { actor: "unknown", action: "signin.sso.failed", subject: verdict.reason });
+        const status = verdict.reason === "no_keys" || verdict.reason === "unknown_kid" ? 503 : 401;
+        return res.status(status).json({
+          error: { code: verdict.reason, message: SSO_FAILURE_MESSAGE[verdict.reason] || "sign-in failed" },
+        });
+      }
+
+      const identity = {
+        principal: String(verdict.payload.preferred_username || verdict.payload.upn || verdict.sam),
+        displayName: String(verdict.payload.name || verdict.sam),
+        groups: verdict.groups,
+      };
+      const { role } = await resolveAccess(identity, { roleMapping });
+
+      const sessionId = await sessions.create({
+        principal: identity.principal,
+        displayName: identity.displayName,
+        role,
+        groups: identity.groups,
+        expiresAt: computeExpiry(config.sessionAbsoluteHours),
+        ip: req.ip,
+      });
+
+      setSessionCookie(res, sessionId, { secure });
+      await auditFrom(req, { actor: identity.principal, action: "signin.sso", subject: role });
+      res.json({ authenticated: true, principal: identity.principal, displayName: identity.displayName, role });
+    } catch (err) {
+      if (err instanceof AuthError) {
+        await auditFrom(req, { actor: "unknown", action: "signin.denied", subject: err.code });
+        return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+      }
+      next(err);
+    }
+  });
+
   router.post("/api/auth/logout", async (req, res, next) => {
     try {
       const sid = req.cookies?.[SESSION_COOKIE];
@@ -82,7 +131,13 @@ export function authRoutes(deps) {
   });
 
   router.get("/api/me", (req, res) => {
-    if (!req.session) return res.json({ authenticated: false });
+    if (!req.session) {
+      return res.json({
+        authenticated: false,
+        sso: Boolean(config.ssoEnabled),
+        devMode: config.authMode === "dev",
+      });
+    }
     const { principal, displayName, role, expiresAt } = req.session;
     res.json({ authenticated: true, principal, displayName, role, expiresAt });
   });
