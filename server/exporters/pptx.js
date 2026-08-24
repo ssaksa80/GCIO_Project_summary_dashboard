@@ -26,7 +26,7 @@ const clip = (text, n = 150) => (String(text).length > n ? `${String(text).slice
 export function buildPptxDeck(payload) {
   const { summary, meta = {} } = payload;
   const { kpis, sections } = summary;
-  const { successes, qri, priorities, roadmap } = sections;
+  const { successes, qri, priorities, roadmap, posture } = sections;
 
   const slides = [];
 
@@ -145,6 +145,36 @@ export function buildPptxDeck(payload) {
       })),
     ],
   });
+
+  /* 5 — Security Posture, last, and only when a Posture sheet was provided. */
+  if (posture?.available) {
+    const tone = (status) =>
+      status === "Compliant" ? "good" : status === "Partial" ? "warn"
+        : status === "Non-Compliant" ? "bad" : "neutral";
+
+    slides.push({
+      eyebrow: "Section 5",
+      title: "Security Posture",
+      dense: true,
+      kpis: [
+        { lab: "Overall maturity", val: `${Math.round(posture.overallScore)}%` },
+        { lab: "Target", val: `${Math.round(posture.targetScore)}%` },
+        { lab: "Non-compliant", val: String(posture.counts.nonCompliant) },
+        { lab: "Critical findings", val: String(posture.counts.criticalFindings) },
+      ],
+      bullets: posture.weakest.slice(0, 6).map((d) => ({
+        tag: d.status,
+        tone: tone(d.status),
+        text: clip(d.control ? `${d.domain} — ${d.control}` : d.domain, 90),
+        sub: `${Math.round(d.score)}% against a ${Math.round(d.target)}% target`
+          + (d.gap > 0 ? `, ${Math.round(d.gap)} points short` : "")
+          + (d.criticalFindings ? ` · ${d.criticalFindings} critical finding${d.criticalFindings === 1 ? "" : "s"}` : "")
+          + (d.owner ? ` · ${d.owner}` : "")
+          + (d.linkedProject ? `\nRemediation: ${clip(d.linkedProject.name, 70)} (${d.linkedProject.health}, ${Math.round(d.linkedProject.percentComplete)}%)` : ""),
+      })),
+      note: posture.headline,
+    });
+  }
 
   return buildPptx({
     title: `GCIO ${PERIOD_TITLE[summary.period] || "Executive Summary"}`,

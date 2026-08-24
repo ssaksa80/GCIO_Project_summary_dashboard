@@ -839,6 +839,54 @@ function styleHeaderRow(ws, colCount) {
   ws.views = [{ state: "frozen", ySplit: 1 }];
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Security posture (section 5)                                        */
+/* ------------------------------------------------------------------ */
+
+const POSTURE_COLS = [
+  { h: "Domain", w: 30 }, { h: "Control", w: 34 }, { h: "Status", w: 15 },
+  { h: "Score", w: 9 }, { h: "Target", w: 9 }, { h: "Owner", w: 20 },
+  { h: "Last Assessed", w: 15 }, { h: "Next Review", w: 14 },
+  { h: "Open Findings", w: 14 }, { h: "Critical Findings", w: 16 },
+  { h: "Notes", w: 60 }, { h: "Project ID", w: 13 },
+];
+
+/**
+ * Fixed posture rows for the demonstration portfolio. Deliberately hand-written
+ * so the section reads as a real picture rather than noise: identity and
+ * vulnerability management are the weak points, and each is linked to the
+ * remediation project already in the portfolio.
+ */
+const POSTURE_ROWS = [
+  ["Identity & Access Management", "Privileged access recertification", "Non-Compliant", 0.52, 0.95, "CISO",
+   "2026-07-31", "2026-08-15", 18, 4,
+   "Quarterly recertification overdue in three directorates; break-glass accounts not reviewed since March.", "PRJ-3005"],
+  ["Vulnerability Management", "Critical patch SLA (14 days)", "Non-Compliant", 0.61, 0.90, "Head of Infrastructure",
+   "2026-08-10", "2026-09-10", 27, 6,
+   "Server estate is inside SLA; the clinical device estate is not, and cannot be patched in-hours.", "PRJ-3004"],
+  ["Network Security", "Segmentation between clinical and corporate", "Partial", 0.74, 0.95, "Network Lead",
+   "2026-08-01", "2026-11-01", 9, 1,
+   "Core segmentation complete; three legacy VLANs still flat pending the migration.", "PRJ-1043"],
+  ["Endpoint Protection", "EDR coverage and policy compliance", "Partial", 0.88, 0.98, "Head of Digital Workplace",
+   "2026-08-12", "2026-11-12", 6, 0,
+   "Coverage at 88% of managed endpoints; the gap is shared clinical workstations.", ""],
+  ["Data Protection", "Encryption at rest and in transit", "Compliant", 0.96, 0.95, "Chief Data Officer",
+   "2026-07-20", "2027-01-20", 2, 0, "Meets policy across all tier-1 systems.", ""],
+  ["Backup & Recovery", "Tested restore of tier-1 systems", "Compliant", 0.93, 0.90, "Head of Infrastructure",
+   "2026-06-30", "2026-12-30", 3, 0, "Last full restore test passed within the target window.", ""],
+  ["Security Monitoring", "24x7 detection coverage", "Partial", 0.70, 0.95, "SOC Manager",
+   "2026-08-05", "2026-11-05", 11, 2,
+   "12x5 today; tier-2 analyst recruitment is behind plan, so out-of-hours relies on on-call.", "PRJ-1015"],
+  ["Third-Party Risk", "Supplier security assessments", "Partial", 0.66, 0.85, "Procurement Lead",
+   "2026-07-15", "2026-10-15", 14, 1,
+   "Assessments complete for tier-1 suppliers only; tier-2 backlog is growing.", ""],
+  ["Awareness & Training", "Annual mandatory training completion", "Compliant", 0.94, 0.90, "Head of People",
+   "2026-08-18", "2027-02-18", 1, 0, "Completion above target for the second quarter running.", ""],
+  ["Incident Response", "Tested IR plan and playbooks", "Not Assessed", 0, 0.90, "SOC Manager",
+   "", "2026-09-30", 0, 0, "Scheduled for assessment after the SOC modernisation go-live.", "PRJ-1015"],
+];
+
 /**
  * Add a styled sheet to an exceljs workbook and fill it with rows.
  * @param {import("exceljs").Workbook} wb
@@ -880,7 +928,7 @@ function flattenChildren(projects) {
  * @param {Col[]} projectCols
  * @returns {Promise<number>} number of sheets written
  */
-async function writeXlsxWorkbook(filePath, projects, projectCols) {
+async function writeXlsxWorkbook(filePath, projects, projectCols, { withPosture = false } = {}) {
   const wb = new ExcelJS.Workbook();
   wb.creator = "GCIO Project Intelligence";
   wb.created = new Date(`${TODAY}T08:00:00Z`);
@@ -895,8 +943,14 @@ async function writeXlsxWorkbook(filePath, projects, projectCols) {
   addSheet(wb, "Updates", UPDATE_COLS, kids.updates);
   addSheet(wb, "Risks", RISK_COLS, kids.risks);
 
+  let sheets = 4;
+  if (withPosture) {
+    addSheet(wb, "Posture", POSTURE_COLS, POSTURE_ROWS);
+    sheets += 1;
+  }
+
   await wb.xlsx.writeFile(filePath);
-  return 4;
+  return sheets;
 }
 
 /**
@@ -1007,7 +1061,9 @@ async function main() {
   ];
   for (const t of targets) {
     const outPath = path.join(OUT_DIR, t.file);
-    const sheets = await writeXlsxWorkbook(outPath, t.projects, t.cols);
+    const sheets = await writeXlsxWorkbook(outPath, t.projects, t.cols, {
+      withPosture: t.file === "GCIO_Portfolio_Master.xlsx",
+    });
     manifest.push({ file: t.file, format: "xlsx", projects: t.projects.length, sheets, bytes: fs.statSync(outPath).size });
   }
 

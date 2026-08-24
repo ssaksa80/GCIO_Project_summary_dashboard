@@ -146,12 +146,13 @@ a.btn { text-decoration: none; }
 .kpi .lab { font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 .kpi .val { font-size: 24px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .kpi .sub { font-size: 11.5px; color: var(--ink-2); }
-.kpi .rag { display: inline-flex; align-items: center; gap: 5px; font-size: 15px; font-weight: 700; padding: 3px 0; }
-.kpi .rag i { width: 10px; height: 10px; border-radius: 3px; }
-.kpi .rag i.good { background: var(--good); box-shadow: 0 0 10px -1px var(--glow-accent); }
-.kpi .rag i.warn { background: var(--warn); }
-.kpi .rag i.critical { background: var(--critical); box-shadow: 0 0 10px -1px var(--glow-critical); }
-.kpi .rag b { font-size: 15px; margin-right: 5px; }
+.rag { display: inline-flex; align-items: center; gap: 5px; font-size: 15px; font-weight: 700; padding: 3px 0; }
+.rag i { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.rag i.good { background: var(--good); box-shadow: 0 0 10px -1px var(--glow-accent); }
+.rag i.warn { background: var(--warn); }
+.rag i.critical { background: var(--critical); box-shadow: 0 0 10px -1px var(--glow-critical); }
+.rag i.muted { background: var(--muted); }
+.rag b { font-size: 15px; margin-right: 5px; font-variant-numeric: tabular-nums; }
 
 /* ----------------------------------------------------------- section nav */
 .sec-nav {
@@ -294,6 +295,19 @@ a.btn { text-decoration: none; }
 
 .watch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 11px; }
 .watch { background: var(--surface-2); border: 1px solid var(--hairline-soft); border-radius: var(--radius-sm); padding: 10px 12px; }
+
+/* ------------------------------------------------------------- section 5 */
+.posture-row { padding: 13px 0; }
+.posture-bar { position: relative; margin-top: 8px; }
+.posture-bar .bar { height: 9px; margin-top: 0; }
+/* The target sits on the track as a mark, so "how far short" is visible
+   without reading the numbers underneath. */
+.posture-bar .target-mark {
+  position: absolute; top: -3px; bottom: -3px; width: 2px;
+  background: var(--highlight); box-shadow: 0 0 8px var(--glow-highlight);
+}
+.posture-scale { margin-top: 6px; }
+.posture-scale b { color: var(--ink); font-size: 12px; }
 
 /* ------------------------------------------------------------- section 4 */
 .gantt { position: relative; padding-bottom: 24px; }

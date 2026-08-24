@@ -342,6 +342,40 @@ function renderRoadmap(sec) {
 </section>`;
 }
 
+function renderPosture(sec) {
+  if (!sec || !sec.available) return "";
+  const domains = arr(sec.domains);
+  const counts = sec.counts || {};
+  const chip = (status) => {
+    const cls = status === "Compliant" ? "good" : status === "Partial" ? "warn"
+      : status === "Non-Compliant" ? "critical" : "muted";
+    return `<span class="chip ${cls}">${esc(status)}</span>`;
+  };
+  return `
+<section class="block">
+  ${sectionHead(5, "Security Posture", str(sec.headline, ""))}
+  <p><strong>${Math.round(num(sec.overallScore))}%</strong> overall maturity against a
+  ${Math.round(num(sec.targetScore))}% target ·
+  ${num(counts.nonCompliant)} non-compliant · ${num(counts.criticalFindings)} critical findings ·
+  ${num(counts.reviewsOverdue)} assessment${num(counts.reviewsOverdue) === 1 ? "" : "s"} overdue</p>
+  <table>
+    <thead><tr><th>Domain</th><th>Status</th><th>Score</th><th>Target</th><th>Findings</th><th>Owner</th><th>Next review</th></tr></thead>
+    <tbody>${domains.map((d) => `<tr>
+      <td><strong>${esc(str(d.domain, ""))}</strong>${d.control ? `<div class="muted">${esc(d.control)}</div>` : ""}</td>
+      <td>${chip(str(d.status, ""))}</td>
+      <td>${d.status === "Not Assessed" ? "&mdash;" : `${Math.round(num(d.score))}%`}</td>
+      <td>${Math.round(num(d.target))}%</td>
+      <td>${num(d.openFindings)}${num(d.criticalFindings) ? ` (${num(d.criticalFindings)} critical)` : ""}</td>
+      <td>${esc(str(d.owner, "—"))}</td>
+      <td>${esc(fmtDate(d.nextReview))}${d.reviewOverdue ? ` — ${num(d.reviewOverdueDays)} days overdue` : ""}</td>
+    </tr>`).join("")}</tbody>
+  </table>
+  ${arr(sec.remediation).length ? `<div class="section-label">Funded remediation</div>
+  <ul class="bullets">${arr(sec.remediation).map((r) =>
+    `<li><strong>${esc(str(r.domain, ""))}</strong> — ${esc(str(r.project?.name, ""))} (${esc(str(r.project?.health, ""))}, ${Math.round(num(r.project?.percentComplete))}% complete)</li>`).join("")}</ul>` : ""}
+</section>`;
+}
+
 function renderCharts(images) {
   const usable = images
     .filter((im) => im && im.dataUrl)
@@ -684,6 +718,7 @@ export function buildHtml(payload) {
   ${renderQRI(sections.qri)}
   ${renderPriorities(sections.priorities)}
   ${renderRoadmap(sections.roadmap)}
+  ${renderPosture(sections.posture)}
   ${renderCharts(images)}
   ${renderPortfolio(projects)}
   ${renderProjectSections(details)}

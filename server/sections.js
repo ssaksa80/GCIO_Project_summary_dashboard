@@ -469,7 +469,7 @@ export function buildRoadmap({ projects, end, todayISO, period }) {
  * @param {object[]} projects
  * @param {{period: string, start: import('dayjs').Dayjs, end: import('dayjs').Dayjs, todayISO: string}} ctx
  */
-export function buildSections(projects, { period, start, end, todayISO }) {
+export function buildSections(projects, { period, start, end, todayISO, postureRows = [] }) {
   const childCountById = new Map();
   for (const p of projects) {
     if (!p.parentId) continue;
@@ -480,8 +480,12 @@ export function buildSections(projects, { period, start, end, todayISO }) {
   const qri = buildQRI({ projects, todayISO });
   const priorities = buildPriorities({ projects, todayISO, qri, childCountById });
   const roadmap = buildRoadmap({ projects, end, todayISO, period });
+  const posture = buildPosture(postureRows, {
+    todayISO,
+    projectsById: new Map(projects.map((p) => [p.id, p])),
+  });
 
-  return { successes, qri, priorities, roadmap };
+  return { successes, qri, priorities, roadmap, posture };
 }
 
 export const SECTION_TITLES = [
@@ -489,4 +493,104 @@ export const SECTION_TITLES = [
   "Questions, Risks & Issues",
   "Priorities",
   "Roadmap / Planned Projects",
+  "Security Posture",
 ];
+
+/* ------------------------------------------------------------------ 5 */
+
+const POSTURE_RANK = { "Non-Compliant": 0, Partial: 1, "Not Assessed": 2, Compliant: 3 };
+
+/**
+ * Section 5 — Security Posture. Portfolio-level, sourced from the workbook's
+ * Posture sheet rather than from projects, and shown last because it is
+ * standing context rather than something the CIO decides in the room.
+ *
+ * @param {object[]} rows normalized posture rows from the store
+ * @param {{todayISO: string, projectsById: Map<string, object>}} ctx
+ */
+export function buildPosture(rows, { todayISO, projectsById }) {
+  if (!rows || rows.length === 0) {
+    return {
+      available: false,
+      headline: "No Security Posture sheet has been provided in any workbook.",
+      domains: [], counts: {}, weakest: [], overdueReviews: [], remediation: [],
+      overallScore: 0, targetScore: 0,
+    };
+  }
+
+  const domains = rows.map((row) => {
+    const gap = Math.max(0, (row.target || 0) - (row.score || 0));
+    const reviewOverdue = Boolean(row.nextReview && row.nextReview < todayISO);
+    const linked = row.projectId ? projectsById.get(row.projectId) || null : null;
+    return {
+      ...row,
+      gap: round1(gap),
+      reviewOverdue,
+      reviewOverdueDays: reviewOverdue ? daysBetween(todayISO, row.nextReview) : 0,
+      linkedProject: linked ? { id: linked.id, name: linked.name, health: linked.health, percentComplete: linked.percentComplete } : null,
+    };
+  });
+
+  const counts = {
+    total: domains.length,
+    compliant: domains.filter((d) => d.status === "Compliant").length,
+    partial: domains.filter((d) => d.status === "Partial").length,
+    nonCompliant: domains.filter((d) => d.status === "Non-Compliant").length,
+    notAssessed: domains.filter((d) => d.status === "Not Assessed").length,
+    openFindings: domains.reduce((acc, d) => acc + d.openFindings, 0),
+    criticalFindings: domains.reduce((acc, d) => acc + d.criticalFindings, 0),
+    reviewsOverdue: domains.filter((d) => d.reviewOverdue).length,
+  };
+
+  const assessed = domains.filter((d) => d.status !== "Not Assessed");
+  const overallScore = assessed.length
+    ? round1(assessed.reduce((acc, d) => acc + d.score, 0) / assessed.length)
+    : 0;
+  const targetScore = assessed.length
+    ? round1(assessed.reduce((acc, d) => acc + (d.target || 100), 0) / assessed.length)
+    : 0;
+
+  /* Worst first: status, then the shortfall against target, then how many
+     critical findings sit behind it. The headline names weakest[0], so the
+     order has to agree with what "worst" means in that sentence. */
+  const weakest = [...domains]
+    .sort((a, b) =>
+      POSTURE_RANK[a.status] - POSTURE_RANK[b.status] ||
+      b.gap - a.gap ||
+      b.criticalFindings - a.criticalFindings)
+    .slice(0, 6);
+
+  const overdueReviews = domains
+    .filter((d) => d.reviewOverdue)
+    .sort((a, b) => b.reviewOverdueDays - a.reviewOverdueDays);
+
+  /* Domains whose remediation is already funded as a project — the link
+     between this section and the rest of the portfolio. */
+  const remediation = domains
+    .filter((d) => d.linkedProject)
+    .map((d) => ({
+      domain: d.domain,
+      control: d.control,
+      status: d.status,
+      project: d.linkedProject,
+    }));
+
+  const worst = weakest[0];
+  const headline = counts.nonCompliant > 0
+    ? `${counts.nonCompliant} of ${counts.total} domains are non-compliant${worst ? `, worst is ${worst.domain} at ${Math.round(worst.score)}% against a ${Math.round(worst.target)}% target` : ""}.`
+    : counts.partial > 0
+      ? `No domain is non-compliant; ${counts.partial} of ${counts.total} remain partial, overall maturity ${Math.round(overallScore)}%.`
+      : `All ${counts.total} assessed domains are compliant, overall maturity ${Math.round(overallScore)}%.`;
+
+  return {
+    available: true,
+    headline,
+    overallScore,
+    targetScore,
+    counts,
+    domains,
+    weakest,
+    overdueReviews,
+    remediation,
+  };
+}

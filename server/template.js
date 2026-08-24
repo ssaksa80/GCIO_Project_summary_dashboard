@@ -24,6 +24,7 @@ export const MILESTONE_STATUSES = ["Pending", "In Progress", "Completed", "Overd
 export const RISK_SEVERITIES = ["Low", "Medium", "High", "Critical"];
 export const RISK_STATUSES = ["Open", "Mitigating", "Closed"];
 export const QUESTION_STATUSES = ["Open", "Answered", "Closed"];
+export const POSTURE_STATUSES = ["Compliant", "Partial", "Non-Compliant", "Not Assessed"];
 
 /**
  * Sheet definitions: column header, width, optional dropdown list, and the
@@ -92,6 +93,24 @@ const SHEETS = [
     ],
   },
   {
+    name: "Posture",
+    note: "Optional. Portfolio-level security posture, one row per domain or control. Shown as section 5 of the dashboard. Link a remediation project by putting its Project ID in the last column.",
+    columns: [
+      { header: "Domain", width: 26, example: "Identity & Access Management", required: true },
+      { header: "Control", width: 30, example: "Privileged access review" },
+      { header: "Status", width: 15, example: "Partial", list: POSTURE_STATUSES },
+      { header: "Score", width: 10, example: 0.68, percent: true },
+      { header: "Target", width: 10, example: 0.95, percent: true },
+      { header: "Owner", width: 20, example: "CISO" },
+      { header: "Last Assessed", width: 15, example: new Date("2026-07-31"), date: true },
+      { header: "Next Review", width: 14, example: new Date("2026-10-31"), date: true },
+      { header: "Open Findings", width: 14, example: 12 },
+      { header: "Critical Findings", width: 16, example: 2 },
+      { header: "Notes", width: 52, example: "Quarterly recertification is running late in two directorates." },
+      { header: "Project ID", width: 14, example: "PRJ-1001" },
+    ],
+  },
+  {
     name: "Questions",
     note: "Optional but valuable: these appear first in section 2, ahead of anything the system derives. Joined by Project ID.",
     columns: [
@@ -122,6 +141,7 @@ const READ_ME = [
   ["Phase", PHASES.join(", ")],
   ["Programs and sub-projects", "Set Parent Project ID on a child project to build the program → project chain shown in the drill-down."],
   ["Questions", "Anything written on the Questions sheet (or in the Projects sheet's 'Open Question' column) appears first in section 2, marked 'from PM'. Where a project has none, the dashboard derives questions from its state and marks them 'derived'."],
+  ["Security Posture", "The optional Posture sheet drives section 5 of the dashboard, shown last. One row per security domain or control: status, score against target, owner, review dates, findings counts. Put a Project ID in the last column to link the remediation project, and the dashboard will show the two together."],
   ["Multiple files", "Split the portfolio across as many workbooks as you like — by department, by program, by owner. They are merged on Project ID. Deleting a file removes its projects."],
   ["Bad rows", "A malformed row is skipped and logged; it never stops the rest of the file from loading."],
 ];

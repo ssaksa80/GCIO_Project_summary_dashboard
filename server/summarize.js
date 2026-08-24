@@ -127,7 +127,7 @@ export function buildSummary(store, period, dateISO) {
     generatedAt: new Date().toISOString(),
     currency: "AED",
     kpis,
-    sections: buildSections(projects, { period, start, end, todayISO }),
+    sections: buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
     narrative: buildNarrative({ period, anchor, end, projects, active, kpis, completedIn, approvedIn, overdue, criticalRisks, allMilestones, todayISO }),
     charts: buildCharts({ period, anchor, projects, active }),
     attention: buildAttention(projects, criticalRisks, todayISO),

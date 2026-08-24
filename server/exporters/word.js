@@ -497,6 +497,57 @@ function roadmapSection(payload) {
   return out;
 }
 
+function postureSection(payload) {
+  const sec = SECTIONS_OF(payload).posture;
+  if (!sec || !sec.available) return [];
+
+  const out = [cioHeading(5, "Security Posture"), goldRule()];
+  out.push(body(str(sec.headline, ""), { bold: true, size: 24, after: 160 }));
+  const counts = sec.counts || {};
+  out.push(body(
+    `${Math.round(num(sec.overallScore))}% overall maturity against a ${Math.round(num(sec.targetScore))}% target · `
+    + `${num(counts.nonCompliant)} non-compliant · ${num(counts.criticalFindings)} critical findings · `
+    + `${num(counts.reviewsOverdue)} assessments overdue.`,
+    { after: 180 }
+  ));
+
+  const domains = arr(sec.domains);
+  if (domains.length) {
+    out.push(fullTable([
+      new TableRow({ children: [
+        headCell("Domain", 30), headCell("Status", 14), headCell("Score", 10),
+        headCell("Target", 10), headCell("Findings", 12), headCell("Owner", 14), headCell("Next review", 10),
+      ] }),
+      ...domains.map((d) => new TableRow({
+        children: [
+          cell(d.control ? `${str(d.domain, "")} — ${d.control}` : str(d.domain, ""), { bold: true }),
+          cell(str(d.status, ""), {
+            color: d.status === "Non-Compliant" ? "C0392B" : d.status === "Partial" ? "B07900"
+              : d.status === "Compliant" ? "0CA30C" : undefined,
+          }),
+          cell(d.status === "Not Assessed" ? "—" : `${Math.round(num(d.score))}%`),
+          cell(`${Math.round(num(d.target))}%`),
+          cell(`${num(d.openFindings)}${num(d.criticalFindings) ? ` (${num(d.criticalFindings)} crit)` : ""}`),
+          cell(str(d.owner, "—")),
+          cell(`${fmtDate(d.nextReview)}${d.reviewOverdue ? " — overdue" : ""}`),
+        ],
+      })),
+    ]));
+  }
+
+  const remediation = arr(sec.remediation);
+  if (remediation.length) {
+    out.push(sectionLabel("Funded remediation"));
+    for (const r of remediation) {
+      out.push(body(
+        `${str(r.domain, "")} — ${str(r.project?.name, "")} (${str(r.project?.health, "")}, ${Math.round(num(r.project?.percentComplete))}% complete)`,
+        { bullet: true, after: 60 }
+      ));
+    }
+  }
+  return out;
+}
+
 /** KPI 2-column table. */
 function kpiSection(payload) {
   const kpis = (payload.summary && payload.summary.kpis) || {};
@@ -733,6 +784,7 @@ export async function buildWord(payload) {
     ...qriSection(safe),
     ...prioritiesSection(safe),
     ...roadmapSection(safe),
+    ...postureSection(safe),
     ...chartsSection(safe),
     ...projectBriefPages(safe),
   ];

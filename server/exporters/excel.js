@@ -290,6 +290,32 @@ function sectionSheet(wb, name, title, headers, rows, widths) {
   return ws;
 }
 
+function buildPostureSheet(wb, payload) {
+  const sec = ((payload.summary || {}).sections || {}).posture || {};
+  if (!sec.available) return null;
+
+  const rows = arr(sec.domains).map((d) => [
+    str(d.domain, ""), str(d.control, ""), str(d.status, ""),
+    d.status === "Not Assessed" ? null : num(d.score) / 100,
+    num(d.target) / 100,
+    num(d.openFindings), num(d.criticalFindings),
+    str(d.owner, "—"), fmtDate(d.lastAssessed), fmtDate(d.nextReview),
+    d.reviewOverdue ? `overdue by ${num(d.reviewOverdueDays)} days` : "",
+    d.linkedProject ? str(d.linkedProject.name, "") : "",
+    str(d.notes, ""),
+  ]);
+
+  const ws = sectionSheet(wb, "5 Security Posture",
+    `5 · Security Posture — ${str(sec.headline, "")}`,
+    ["Domain", "Control", "Status", "Score", "Target", "Open findings", "Critical",
+     "Owner", "Last assessed", "Next review", "Review state", "Remediation project", "Notes"],
+    rows.length ? rows : [["—", "", "No posture data provided", null, null, 0, 0, "", "", "", "", "", ""]],
+    [28, 30, 15, 9, 9, 13, 10, 20, 15, 14, 20, 34, 50]);
+  ws.getColumn(4).numFmt = "0%";
+  ws.getColumn(5).numFmt = "0%";
+  return ws;
+}
+
 function buildSuccessesSheet(wb, payload) {
   const sec = ((payload.summary || {}).sections || {}).successes || {};
   const rows = [
@@ -641,6 +667,7 @@ export async function buildExcel(payload) {
   buildQRISheet(wb, safe);
   buildPrioritiesSheet(wb, safe);
   buildRoadmapSheet(wb, safe);
+  buildPostureSheet(wb, safe);
   buildPortfolioSheet(wb, safe);
   buildProjectsDetailSheet(wb, safe);
   buildChartsSheet(wb, safe);

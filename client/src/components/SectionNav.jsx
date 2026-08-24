@@ -6,6 +6,7 @@ export const SECTIONS = [
   { id: "questions", n: 2, label: "Questions, Risks & Issues" },
   { id: "priorities", n: 3, label: "Priorities" },
   { id: "roadmap", n: 4, label: "Roadmap / Planned" },
+  { id: "posture", n: 5, label: "Security Posture" },
 ];
 
 const IDS = SECTIONS.map((s) => s.id);

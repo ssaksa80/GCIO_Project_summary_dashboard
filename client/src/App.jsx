@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getJSON, useLiveEvents } from "./lib/api.js";
+import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
 import KpiStrip from "./components/KpiStrip.jsx";
@@ -8,6 +9,7 @@ import SectionSuccesses from "./components/SectionSuccesses.jsx";
 import SectionQRI from "./components/SectionQRI.jsx";
 import SectionPriorities from "./components/SectionPriorities.jsx";
 import SectionRoadmap from "./components/SectionRoadmap.jsx";
+import SectionPosture from "./components/SectionPosture.jsx";
 import ProjectTable from "./components/ProjectTable.jsx";
 import ProjectDrawer from "./components/ProjectDrawer.jsx";
 import UploadPanel from "./components/UploadPanel.jsx";
@@ -22,7 +24,8 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
      ?theme=sapphire    open in a specific identity
      ?font=aptos        open in a specific typeface
      ?project=P-1042    open straight into a project's record
-     ?table=1           expand the all-projects reference table              */
+     ?table=1           expand the all-projects reference table
+     ?scrollTo=posture  open scrolled to one section, for capture and print  */
 const params = () =>
   new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
 const snapshotMode = () => params().has("snapshot");
@@ -92,6 +95,14 @@ export default function App() {
 
   useLiveEvents(() => refresh(), !snapshotMode());
 
+  /* Land on a named section when asked — used for section-level captures. */
+  useEffect(() => {
+    const target = params().get("scrollTo");
+    if (!target || !summary) return undefined;
+    const timer = setTimeout(() => scrollToSection(target), 120);
+    return () => clearTimeout(timer);
+  }, [summary]);
+
   const hasData = (health?.projectCount ?? 0) > 0;
   const rangeLabel = useMemo(() => {
     if (!summary) return "";
@@ -147,6 +158,7 @@ export default function App() {
           <SectionQRI data={sections.qri} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
           <SectionPriorities data={sections.priorities} onOpen={setDrawerId} />
           <SectionRoadmap data={sections.roadmap} theme={theme} onOpen={setDrawerId} />
+          <SectionPosture data={sections.posture} onOpen={setDrawerId} />
 
           <details className="all-projects" open={params().has("table")}>
             <summary>All projects — reference table ({health.projectCount})</summary>

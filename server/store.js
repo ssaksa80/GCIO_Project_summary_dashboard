@@ -21,6 +21,8 @@ export class Store {
     this.projects = new Map();
     /** @type {Map<string, Set<string>>} sourceFile -> ids last seen in it */
     this.fileIndex = new Map();
+    /** @type {Map<string, object[]>} sourceFile -> posture domain rows */
+    this.postureIndex = new Map();
     /** @type {Array<object>} newest-first ring buffer, max 50 */
     this.ingestLog = [];
     this.lastIngestAt = null;
@@ -32,6 +34,29 @@ export class Store {
   /** All projects as an array. */
   all() {
     return [...this.projects.values()];
+  }
+
+  /**
+   * Every posture row across every workbook, newest assessment first.
+   * A domain assessed in two files keeps the more recently assessed row, so
+   * a departmental workbook cannot silently overwrite the central one.
+   */
+  posture() {
+    const byDomain = new Map();
+    for (const rows of this.postureIndex.values()) {
+      for (const row of rows) {
+        const key = `${row.domain}|${row.control || ""}`.toLowerCase();
+        const held = byDomain.get(key);
+        if (!held || (row.lastAssessed || "") >= (held.lastAssessed || "")) byDomain.set(key, row);
+      }
+    }
+    return [...byDomain.values()].sort((a, b) => a.domain.localeCompare(b.domain) || (a.control || "").localeCompare(b.control || ""));
+  }
+
+  /** Replace the posture rows a file owns. */
+  upsertPostureFromFile(sourceFile, rows) {
+    if (rows && rows.length) this.postureIndex.set(sourceFile, rows);
+    else this.postureIndex.delete(sourceFile);
   }
 
   get(id) {
@@ -88,6 +113,7 @@ export class Store {
       }
     }
     this.fileIndex.delete(sourceFile);
+    this.postureIndex.delete(sourceFile);
     return removed;
   }
 
@@ -118,6 +144,7 @@ export class Store {
         demoMode: this.demoMode,
         projects: this.all(),
         fileIndex: [...this.fileIndex.entries()].map(([f, ids]) => [f, [...ids]]),
+        postureIndex: [...this.postureIndex.entries()],
       };
       fs.writeFileSync(tmp, JSON.stringify(snapshot));
       fs.renameSync(tmp, file);
@@ -132,9 +159,12 @@ export class Store {
       const file = path.join(dataDir, ".cache.json");
       if (!fs.existsSync(file)) return false;
       const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (!Array.isArray(snapshot.projects) || snapshot.projects.length === 0) return false;
+      const hasProjects = Array.isArray(snapshot.projects) && snapshot.projects.length > 0;
+      const hasPosture = Array.isArray(snapshot.postureIndex) && snapshot.postureIndex.length > 0;
+      if (!hasProjects && !hasPosture) return false;
       for (const project of snapshot.projects) this.projects.set(project.id, project);
       for (const [f, ids] of snapshot.fileIndex || []) this.fileIndex.set(f, new Set(ids));
+      for (const [f, rows] of snapshot.postureIndex || []) this.postureIndex.set(f, rows);
       this.demoMode = Boolean(snapshot.demoMode);
       this.lastIngestAt = snapshot.savedAt;
       return true;

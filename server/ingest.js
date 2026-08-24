@@ -78,6 +78,31 @@ const CHILD_SHEET_FIELDS = {
   },
 };
 
+/** Posture rows describe security domains, not projects (SPEC: section 5). */
+const POSTURE_FIELDS = {
+  domain: ["domain", "securitydomain", "area", "capability", "pillar"],
+  control: ["control", "controlname", "subdomain", "detail", "measure"],
+  status: ["status", "compliance", "compliancestatus", "state", "rag"],
+  score: ["score", "currentscore", "maturity", "maturityscore", "rating", "percent"],
+  target: ["target", "targetscore", "goal", "requiredscore"],
+  owner: ["owner", "accountable", "responsible", "lead"],
+  lastAssessed: ["lastassessed", "assessed", "lastreview", "lastreviewed", "asof", "date"],
+  nextReview: ["nextreview", "nextassessment", "due", "duedate", "reviewdue"],
+  openFindings: ["openfindings", "findings", "openissues", "gaps"],
+  criticalFindings: ["criticalfindings", "criticalgaps", "critical", "highrisk"],
+  projectId: ["projectid", "remediationproject", "linkedproject", "project"],
+  notes: ["notes", "comment", "commentary", "remarks", "detailnotes"],
+};
+
+const POSTURE_STATUSES = ["Compliant", "Partial", "Non-Compliant", "Not Assessed"];
+const POSTURE_STATUS_ALIASES = {
+  compliant: "Compliant", met: "Compliant", green: "Compliant", pass: "Compliant", good: "Compliant",
+  partial: "Partial", partiallycompliant: "Partial", amber: "Partial", inprogress: "Partial", improving: "Partial",
+  noncompliant: "Non-Compliant", notcompliant: "Non-Compliant", fail: "Non-Compliant", red: "Non-Compliant",
+  gap: "Non-Compliant", atrisk: "Non-Compliant",
+  notassessed: "Not Assessed", unknown: "Not Assessed", na: "Not Assessed", pending: "Not Assessed",
+};
+
 const normKey = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /**
@@ -319,6 +344,46 @@ function readChildSheet(sheet, kind) {
 }
 
 /**
+ * Read a Posture sheet into normalized domain rows. Unlike the child sheets
+ * these are not keyed to a project, so they are returned as a flat array.
+ * @returns {object[]}
+ */
+function readPostureSheet(sheet) {
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+  if (rows.length < 2) return [];
+  const found = findHeaderRow(rows, POSTURE_FIELDS);
+  if (!("domain" in found.map)) return [];
+
+  const out = [];
+  for (const row of rows.slice(found.index + 1)) {
+    const cell = (f) => (f in found.map ? row[found.map[f]] : null);
+    const domain = cleanText(cell("domain"));
+    if (!domain) continue;
+
+    const score = toPercent(cell("score"));
+    const targetRaw = cell("target");
+    const projectId = cleanText(cell("projectId")).toUpperCase();
+
+    out.push({
+      domain,
+      control: cleanText(cell("control")),
+      status: pickVocab(cell("status"), POSTURE_STATUSES, POSTURE_STATUS_ALIASES, null)
+        || (score >= 90 ? "Compliant" : score >= 60 ? "Partial" : score > 0 ? "Non-Compliant" : "Not Assessed"),
+      score,
+      target: targetRaw === null || targetRaw === "" ? 100 : toPercent(targetRaw),
+      owner: cleanText(cell("owner")),
+      lastAssessed: toISO(cell("lastAssessed")),
+      nextReview: toISO(cell("nextReview")),
+      openFindings: Math.max(0, Math.round(Number(cell("openFindings")) || 0)),
+      criticalFindings: Math.max(0, Math.round(Number(cell("criticalFindings")) || 0)),
+      projectId: projectId || null,
+      notes: cleanText(cell("notes")),
+    });
+  }
+  return out;
+}
+
+/**
  * Parse a workbook buffer into normalized projects.
  * Never throws on malformed content — returns {ok:false, error} instead.
  * @returns {{ok: boolean, file: string, projects?: object[], error?: string}}
@@ -328,6 +393,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
   try {
     const workbook = XLSX.read(buffer, { cellDates: true });
     const childData = { milestones: new Map(), updates: new Map(), risks: new Map(), questions: new Map() };
+    let posture = [];
     let projects = [];
     let bestScore = 0;
     let bestSheetRows = null;
@@ -341,6 +407,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
       if (lowered.includes("update")) { childData.updates = readChildSheet(sheet, "updates"); continue; }
       if (lowered.includes("risk")) { childData.risks = readChildSheet(sheet, "risks"); continue; }
       if (lowered.includes("question") || lowered.includes("decision")) { childData.questions = readChildSheet(sheet, "questions"); continue; }
+      if (lowered.includes("posture") || lowered.includes("security")) { posture = readPostureSheet(sheet); continue; }
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
       if (rows.length < 2) continue;
       const found = findHeaderRow(rows, SYNONYMS);
@@ -359,7 +426,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
         .map((row) => normalizeProjectRow(row, bestHeaderMap, file))
         .filter(Boolean);
     }
-    if (projects.length === 0) {
+    if (projects.length === 0 && posture.length === 0) {
       return { ok: false, file, error: "no recognizable projects sheet (need Project ID/Name plus 2+ known columns)" };
     }
 
@@ -386,7 +453,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
         project.lastUpdated = project.updates[0]?.date || fileMtimeISO || null;
       }
     }
-    return { ok: true, file, projects };
+    return { ok: true, file, projects, posture };
   } catch (err) {
     return { ok: false, file, error: err.message || "unreadable workbook" };
   }
@@ -407,8 +474,14 @@ export function ingestFile(filePath) {
 export function applyResult(store, result) {
   if (result.ok) {
     store.upsertFromFile(result.file, result.projects);
+    store.upsertPostureFromFile(result.file, result.posture);
     store.lastIngestAt = new Date().toISOString();
-    store.log({ file: result.file, ok: true, projects: result.projects.length });
+    store.log({
+      file: result.file,
+      ok: true,
+      projects: result.projects.length,
+      postureDomains: (result.posture || []).length,
+    });
     return result.projects.length;
   }
   store.log({ file: result.file, ok: false, error: result.error });
