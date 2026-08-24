@@ -26,6 +26,14 @@ With no data present, the dashboard boots in **demonstration mode** using the bu
 sample portfolio (59 projects across 4 workbooks — regenerate anytime with
 `npm run sample-data`).
 
+> **The demonstration data is entirely fictional.** Every project, person, budget,
+> date, risk and status in `sample-data/`, in the screenshots under `docs/`, and in
+> the bundled demo pages is invented for illustration. The names come from fixed
+> made-up pools in `scripts/generate-sample-data.js`; they are not real people, and
+> the figures are not any organisation's real portfolio. Vendor names are real
+> companies used only as plausible placeholders — their appearance implies no
+> relationship of any kind.
+
 ## Feeding it real data — two ways, both live
 
 1. **Drop-folder (24×7):** copy `.xlsx` / `.xls` / `.xlsm` / `.csv` files into `data/`.
@@ -151,6 +159,10 @@ skipped (never crash), all rejections are trapped, and the store snapshots to
 | `POST /api/ingest/upload` | multipart workbook upload (field `files`) |
 | `POST /api/export/pptx\|xlsx\|docx\|html` | briefing exports (`{period, date, projectIds?, images?}`) |
 | `GET /api/events` | server-sent events: `ingest`, `heartbeat` |
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
 
 ## Layout
 
