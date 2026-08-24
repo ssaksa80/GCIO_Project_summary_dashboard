@@ -14,7 +14,7 @@ export function roleMappingRepo(ex, { cacheMs = CACHE_MS, now = () => Date.now()
   let cached = null;
   let cachedAt = 0;
 
-  return {
+  const repo = {
     /** @returns {Promise<Record<string, string>>} lower-cased group name -> role */
     async getMap({ fresh = false } = {}) {
       if (!fresh && cached && now() - cachedAt < cacheMs) return cached;
@@ -64,5 +64,28 @@ export function roleMappingRepo(ex, { cacheMs = CACHE_MS, now = () => Date.now()
       const { recordset } = await ex.query("SELECT GroupName, Role FROM dbo.RoleMapping ORDER BY GroupName");
       return recordset.map((r) => ({ groupName: r.GroupName, role: r.Role }));
     },
+
+    /**
+     * Install one admin mapping when the table is empty, so a fresh database is
+     * reachable at all: with no mappings every sign-in folds to no role and is
+     * refused, and the mapping needed to let an administrator in can only be
+     * created by an administrator.
+     *
+     * Never overwrites an existing map. Once any mapping exists the seed group
+     * has no special power, so leaving SEED_ADMIN_GROUP set in the environment
+     * does not become a standing back door.
+     *
+     * @param {string} groupName from SEED_ADMIN_GROUP
+     * @returns {Promise<string|null>} the group seeded, or null if it was not needed
+     */
+    async seedIfEmpty(groupName) {
+      if (!groupName) return null;
+      const existing = await repo.list();
+      if (existing.length) return null;
+      await repo.set(groupName, "admin");
+      return groupName;
+    },
   };
+
+  return repo;
 }

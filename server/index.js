@@ -59,6 +59,17 @@ if (config.store === "mssql") {
   await store.refresh();
   log(`loaded ${store.projectCount} projects from SQL`);
 
+  /* A fresh database has no role mappings, and with none every sign-in folds
+     to no role and is refused — including the administrator who would create
+     the first mapping. Seed one, or say loudly that nobody can get in. */
+  const seeded = await repos.roleMapping.seedIfEmpty(config.seedAdminGroup);
+  if (seeded) {
+    log(`seeded role mapping: ${seeded} -> admin (first run)`);
+  } else if ((await repos.roleMapping.list()).length === 0) {
+    log("WARNING: dbo.RoleMapping is empty, so no sign-in can succeed. " +
+        "Set SEED_ADMIN_GROUP and restart, or insert a row into dbo.RoleMapping.");
+  }
+
   backends = { audit: repos.audit, sessions: repos.sessions, roleMapping: repos.roleMapping };
 } else {
   store = new Store();

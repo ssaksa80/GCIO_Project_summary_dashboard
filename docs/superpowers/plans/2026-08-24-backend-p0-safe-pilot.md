@@ -33,7 +33,11 @@ Committed and pushed, covered by 77 tests that need neither a database nor a dir
 
 ---
 
-### Task 1: First-run bootstrap — somebody has to be able to sign in
+### Task 1: First-run bootstrap — somebody has to be able to sign in ✅ DONE
+
+**Delivered.** `seedIfEmpty` plus the boot wiring and the warning; 6 tests.
+The upload tests were also moved off the real `data/` directory, which they had
+been writing into.
 
 On a fresh database `dbo.RoleMapping` is empty, so every sign-in resolves to no role and is refused with 403. `config.seedAdminGroup` is read from `SEED_ADMIN_GROUP` and then never used. As it stands the first production sign-in cannot succeed.
 
@@ -659,7 +663,7 @@ git push origin main --tags
 | Entra SSO, server side | delivered, `111f520` |
 | Entra SSO, browser side | Task 4 |
 | Roles from directory groups | delivered, `9ef09a9` |
-| A fresh database is reachable | **Task 1** — the gap that would have blocked the first production sign-in |
+| A fresh database is reachable | delivered, Task 1 |
 | Server-side sessions in SQL | delivered, `9ef09a9` |
 | Audit of sign-in, upload, export | delivered, `2c47b9a` |
 | Audit readable by an administrator | Task 3 |

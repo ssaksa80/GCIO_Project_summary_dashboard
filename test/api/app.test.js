@@ -6,6 +6,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { createApp } from "../../server/app.js";
 import { loadConfig } from "../../server/config.js";
@@ -14,6 +17,21 @@ import { ingestDirectory } from "../../server/ingest.js";
 import { memorySessions, memoryRoleMapping, devAuthenticate } from "../../server/devBackends.js";
 
 const config = loadConfig({ NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
+
+/* The upload route writes accepted workbooks into dataDir. Pointing that at
+   the real data/ folder made the suite drop a workbook into the running
+   dashboard's watched directory, which then left demo mode. Every app under
+   test gets its own throwaway directory instead. */
+const scratchDirs = [];
+function scratchDataDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-test-data-"));
+  scratchDirs.push(dir);
+  return dir;
+}
+
+test.after(() => {
+  for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function makeApp({ role = "admin", audited = [] } = {}) {
   const store = new Store();
@@ -25,7 +43,7 @@ function makeApp({ role = "admin", audited = [] } = {}) {
     roleMapping: memoryRoleMapping({ [`gcio-dashboard-${role}s`]: role }),
     audit: { append: async (e) => { audited.push(e); }, recent: async () => [] },
     ldapAuthenticate: devAuthenticate(role),
-    dataDir: "data",
+    dataDir: scratchDataDir(),
     clientDist: "client/dist",
   });
   return { app, store, audited };
