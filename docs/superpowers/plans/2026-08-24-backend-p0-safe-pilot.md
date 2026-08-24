@@ -274,7 +274,13 @@ git commit -m "test(db): end-to-end coverage against a real SQL Server instance"
 
 ---
 
-### Task 3: Let an administrator read the audit trail
+### Task 3: Let an administrator read the audit trail ✅ DONE
+
+**Delivered.** `GET /api/audit`, admin-only, bounded and filterable, and the
+read is itself audited. The file-backed sink's `recent()` was returning an empty
+array, so memory mode would have shown "no events" over a file full of them —
+now implemented, newest first, opening only as many daily files as the limit
+needs. 12 tests.
 
 `auditRepo.recent()` exists and nothing exposes it, so the trail can only be read with a SQL client.
 
@@ -666,7 +672,7 @@ git push origin main --tags
 | A fresh database is reachable | delivered, Task 1 |
 | Server-side sessions in SQL | delivered, `9ef09a9` |
 | Audit of sign-in, upload, export | delivered, `2c47b9a` |
-| Audit readable by an administrator | Task 3 |
+| Audit readable by an administrator | delivered, Task 3 |
 | Security headers, CSP, throttle | delivered, `610a2ca` |
 | CSRF | deliberately absent — `SameSite=Strict`, reasoning recorded in `server/middleware/securityHeaders.js` |
 | Upload content sniffing | delivered, `2c47b9a` |

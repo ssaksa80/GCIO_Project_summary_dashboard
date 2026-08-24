@@ -173,6 +173,67 @@ test("signing out ends the session", async () => {
   assert.equal((await agent.get("/api/summary?period=weekly")).status, 401);
 });
 
+/** Like makeApp, but with a caller-supplied audit backend. */
+function makeAppWith({ role, auditBackend }) {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  return createApp({
+    store,
+    config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ [`gcio-dashboard-${role}s`]: role }),
+    audit: auditBackend,
+    ldapAuthenticate: devAuthenticate(role),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+}
+
+test("only an admin may read the audit trail", async () => {
+  const events = [{ at: "2026-08-24T09:00:00.000Z", actor: "a@x", action: "export", subject: "pptx weekly" }];
+  const auditBackend = { append: async () => {}, recent: async () => events };
+
+  const pm = await signedIn(makeAppWith({ role: "pm", auditBackend }));
+  const refused = await pm.get("/api/audit");
+  assert.equal(refused.status, 403);
+  assert.equal(refused.body.error.code, "forbidden");
+
+  const admin = await signedIn(makeAppWith({ role: "admin", auditBackend }));
+  const res = await admin.get("/api/audit");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.count, 1);
+  assert.equal(res.body.events[0].action, "export");
+});
+
+test("an anonymous caller cannot read the audit trail", async () => {
+  const auditBackend = { append: async () => {}, recent: async () => [{ actor: "secret@x" }] };
+  const res = await request(makeAppWith({ role: "admin", auditBackend })).get("/api/audit");
+  assert.equal(res.status, 401);
+});
+
+test("the audit query is bounded and the filter is passed through", async () => {
+  let asked = null;
+  const auditBackend = { append: async () => {}, recent: async (opts) => { asked = opts; return []; } };
+  const admin = await signedIn(makeAppWith({ role: "admin", auditBackend }));
+
+  await admin.get("/api/audit?limit=999999&action=export");
+  assert.equal(asked.limit, 1000, "an unbounded limit was accepted");
+  assert.equal(asked.action, "export");
+
+  await admin.get("/api/audit?limit=-5");
+  assert.equal(asked.limit, 1, "a negative limit was accepted");
+  assert.equal(asked.action, null);
+});
+
+test("reading the audit trail is itself audited", async () => {
+  const written = [];
+  const auditBackend = { append: async (e) => { written.push(e); }, recent: async () => [] };
+  const admin = await signedIn(makeAppWith({ role: "admin", auditBackend }));
+
+  await admin.get("/api/audit");
+  assert.ok(written.some((e) => e.action === "audit.read"), "who read the audit log was not recorded");
+});
+
 test("security headers are set on every response", async () => {
   const { app } = makeApp();
   const res = await request(app).get("/healthz");

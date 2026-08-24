@@ -161,6 +161,24 @@ export function createApp(deps) {
     res.json({ project, chain: getChain(store, project.id), computed, timeline });
   });
   
+  // ---------- audit trail (administrators only) ----------
+  /**
+   * Who signed in, who uploaded what, and what left the building. Reading it
+   * is itself recorded: an audit trail that does not log its own readers
+   * answers "who saw this" with silence.
+   */
+  app.get("/api/audit", requireRole("admin"), wrap(async (req, res) => {
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+    const action = req.query.action ? String(req.query.action) : null;
+    const events = await audit.recent({ limit, action });
+    await auditFrom(req, {
+      actor: req.session.principal,
+      action: "audit.read",
+      subject: action ? `${events.length} events, filtered to ${action}` : `${events.length} events`,
+    });
+    res.json({ count: events.length, events });
+  }));
+
   // ---------- canonical template workbook ----------
   app.get("/api/template", wrap(async (req, res) => {
     const buffer = await buildTemplate();

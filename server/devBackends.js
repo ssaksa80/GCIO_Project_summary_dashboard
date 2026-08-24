@@ -32,8 +32,51 @@ export function createFileAudit(dir, { logger = console } = {}) {
         return false;
       }
     },
-    async recent() {
-      return [];
+    /**
+     * Read events back, newest first. Files are one per day, so the newest day
+     * is read first and only enough files are opened to satisfy the limit —
+     * a year of audit history is not loaded to answer a request for 200 rows.
+     *
+     * @param {{limit?: number, action?: string|null}} [options]
+     */
+    async recent({ limit = 200, action = null } = {}) {
+      const cap = Math.min(1000, Math.max(1, Number(limit) || 200));
+      let files;
+      try {
+        files = fs.readdirSync(dir)
+          .filter((f) => /^audit-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+          .sort()
+          .reverse();
+      } catch {
+        return []; // no audit directory yet is not an error
+      }
+
+      const events = [];
+      for (const file of files) {
+        let lines;
+        try {
+          lines = fs.readFileSync(path.join(dir, file), "utf8").split("\n");
+        } catch (err) {
+          logger.error?.(`[audit] could not read ${file}: ${err.message}`);
+          continue;
+        }
+
+        /* Within a file the newest entry is last, so walk it backwards. */
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue; // one corrupt line must not lose the rest of the file
+          }
+          if (action && parsed.action !== action) continue;
+          events.push(parsed);
+          if (events.length >= cap) return events;
+        }
+      }
+      return events;
     },
   };
 }
