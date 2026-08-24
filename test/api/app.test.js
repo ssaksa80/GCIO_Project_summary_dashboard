@@ -1,0 +1,156 @@
+/**
+ * The real application, driven in-process with a fake directory and fake
+ * session storage. This is the test that would have caught shipping the
+ * dashboard with every route open.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import request from "supertest";
+
+import { createApp } from "../../server/app.js";
+import { loadConfig } from "../../server/config.js";
+import { Store } from "../../server/store.js";
+import { ingestDirectory } from "../../server/ingest.js";
+import { memorySessions, memoryRoleMapping, devAuthenticate } from "../../server/devBackends.js";
+
+const config = loadConfig({ NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
+
+function makeApp({ role = "admin", audited = [] } = {}) {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  const app = createApp({
+    store,
+    config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ [`gcio-dashboard-${role}s`]: role }),
+    audit: { append: async (e) => { audited.push(e); }, recent: async () => [] },
+    ldapAuthenticate: devAuthenticate(role),
+    dataDir: "data",
+    clientDist: "client/dist",
+  });
+  return { app, store, audited };
+}
+
+/** Sign in and return an agent carrying the session cookie. */
+async function signedIn(app, username = "tester") {
+  const agent = request.agent(app);
+  const res = await agent.post("/api/auth/login").send({ username, password: "anything" });
+  assert.equal(res.status, 200, `sign-in failed: ${JSON.stringify(res.body)}`);
+  return agent;
+}
+
+test("health and readiness need no session, so monitoring keeps working", async () => {
+  const { app } = makeApp();
+  const anon = request(app);
+  assert.equal((await anon.get("/healthz")).status, 200);
+  assert.equal((await anon.get("/readyz")).status, 200);
+});
+
+test("every portfolio route refuses an anonymous caller", async () => {
+  const { app } = makeApp();
+  const anon = request(app);
+  for (const url of [
+    "/api/summary?period=weekly",
+    "/api/projects",
+    "/api/meta",
+    "/api/health",
+    "/api/template",
+  ]) {
+    const res = await anon.get(url);
+    assert.equal(res.status, 401, `${url} answered ${res.status} without a session`);
+    assert.equal(res.body.error.code, "no_session");
+  }
+});
+
+test("an anonymous caller cannot export or upload", async () => {
+  const { app } = makeApp();
+  const anon = request(app);
+  assert.equal((await anon.post("/api/export/pptx").send({ period: "weekly" })).status, 401);
+  assert.equal((await anon.post("/api/ingest/upload")).status, 401);
+});
+
+test("me reports signed out, then signed in with the resolved role", async () => {
+  const { app } = makeApp({ role: "pm" });
+  const agent = request.agent(app);
+
+  assert.equal((await agent.get("/api/me")).body.authenticated, false);
+
+  await agent.post("/api/auth/login").send({ username: "pat", password: "x" });
+  const me = await agent.get("/api/me");
+  assert.equal(me.body.authenticated, true);
+  assert.equal(me.body.role, "pm");
+});
+
+test("a signed-in viewer reads the portfolio and the four sections", async () => {
+  const { app } = makeApp({ role: "viewer" });
+  const agent = await signedIn(app);
+
+  const summary = await agent.get("/api/summary?period=weekly&date=2026-08-24");
+  assert.equal(summary.status, 200);
+  assert.deepEqual(
+    Object.keys(summary.body.sections),
+    ["successes", "qri", "priorities", "roadmap", "posture"]
+  );
+
+  const projects = await agent.get("/api/projects");
+  assert.equal(projects.status, 200);
+  assert.ok(projects.body.count > 0);
+});
+
+test("a viewer may export but may not upload", async () => {
+  const { app } = makeApp({ role: "viewer" });
+  const agent = await signedIn(app);
+
+  const exported = await agent.post("/api/export/pptx").send({ period: "weekly", date: "2026-08-24" });
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers["content-type"], /presentationml/);
+
+  const upload = await agent.post("/api/ingest/upload");
+  assert.equal(upload.status, 403);
+  assert.equal(upload.body.error.code, "forbidden");
+});
+
+test("a pm may upload a real workbook", async () => {
+  const { app } = makeApp({ role: "pm" });
+  const agent = await signedIn(app);
+  const res = await agent.post("/api/ingest/upload")
+    .attach("files", "sample-data/GCIO_Portfolio_Master.xlsx");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, true);
+});
+
+test("an upload that is not a workbook is refused with a readable reason", async () => {
+  const { app } = makeApp({ role: "pm" });
+  const agent = await signedIn(app);
+  const res = await agent.post("/api/ingest/upload")
+    .attach("files", Buffer.from("PK-not-really"), "evil.xlsx");
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, false);
+  assert.match(res.body.errors[0].error, /not a real \.xlsx/i);
+});
+
+test("exports and uploads are audited with the actor and what left the building", async () => {
+  const audited = [];
+  const { app } = makeApp({ role: "pm", audited });
+  const agent = await signedIn(app, "pat");
+
+  await agent.post("/api/export/xlsx").send({ period: "weekly", date: "2026-08-24" });
+
+  const actions = audited.map((a) => a.action);
+  assert.ok(actions.includes("signin"), `expected a signin event, got ${actions.join(", ")}`);
+
+  const exported = audited.find((a) => a.action === "export");
+  assert.ok(exported, "the export was not audited");
+  assert.match(exported.actor, /pat/);
+  assert.match(exported.subject, /xlsx weekly/);
+});
+
+test("signing out ends the session", async () => {
+  const { app } = makeApp();
+  const agent = await signedIn(app);
+  assert.equal((await agent.get("/api/summary?period=weekly")).status, 200);
+
+  await agent.post("/api/auth/logout").send({});
+  assert.equal((await agent.get("/api/summary?period=weekly")).status, 401);
+});

@@ -539,3 +539,37 @@ table.projects tbody tr:hover { background: var(--surface-2); }
 }
 .chip.neutral { color: var(--muted); }
 .chip.serious { color: var(--s1575); }
+
+/* ------------------------------------------------------------- sign in */
+.signin-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.signin { width: min(420px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 28px 30px; }
+.signin-title { font-size: 26px; margin: 4px 0 2px; }
+.signin .field { display: flex; flex-direction: column; gap: 5px; }
+.signin .field .lab { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); }
+.signin .field input {
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 9px 11px; font: inherit; font-size: 14px;
+}
+.signin .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 18px -6px var(--glow-accent); }
+.signin-submit { justify-content: center; margin-top: 4px; padding: 9px 14px; }
+.signin-error {
+  font-size: 12.5px; color: var(--critical); background: color-mix(in srgb, var(--critical) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--critical) 40%, transparent);
+  border-radius: var(--radius-sm); padding: 8px 11px; margin: 0;
+}
+.signin-dev { margin: 0; }
+
+/* identity chip in the top bar */
+.who {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-2);
+  padding: 4px 6px 4px 11px; border: 1px solid var(--hairline-soft); border-radius: 999px;
+}
+.who i {
+  font-style: normal; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700;
+  color: var(--accent-ink); background: var(--accent); border-radius: 999px; padding: 1px 7px;
+}
+.who-out {
+  background: none; border: none; cursor: pointer; color: var(--muted); font-size: 13px;
+  padding: 0 4px; line-height: 1;
+}
+.who-out:hover { color: var(--critical); }

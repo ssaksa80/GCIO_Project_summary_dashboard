@@ -87,6 +87,55 @@ export const MIGRATIONS = [
       );
     `,
   },
+  {
+    id: 5,
+    name: "portfolio",
+    sql: `
+      IF OBJECT_ID('dbo.Project', 'U') IS NULL
+      CREATE TABLE dbo.Project (
+        ProjectId       NVARCHAR(60)   NOT NULL PRIMARY KEY,
+        Name            NVARCHAR(400)  NOT NULL,
+        Description     NVARCHAR(MAX)  NULL,
+        Department      NVARCHAR(200)  NULL,
+        Pillar          NVARCHAR(200)  NULL,
+        Program         NVARCHAR(200)  NULL,
+        ParentId        NVARCHAR(60)   NULL,
+        Owner           NVARCHAR(200)  NULL,
+        Sponsor         NVARCHAR(200)  NULL,
+        Vendor          NVARCHAR(200)  NULL,
+        Status          NVARCHAR(40)   NOT NULL,
+        Health          NVARCHAR(20)   NOT NULL,
+        Priority        NVARCHAR(20)   NOT NULL,
+        Phase           NVARCHAR(40)   NULL,
+        ApprovalDate    DATE           NULL,
+        StartDate       DATE           NULL,
+        TargetEndDate   DATE           NULL,
+        ActualEndDate   DATE           NULL,
+        Budget          DECIMAL(19,2)  NOT NULL CONSTRAINT DF_Project_Budget DEFAULT (0),
+        Spent           DECIMAL(19,2)  NOT NULL CONSTRAINT DF_Project_Spent DEFAULT (0),
+        PercentComplete DECIMAL(5,2)   NOT NULL CONSTRAINT DF_Project_Pct DEFAULT (0),
+        Currency        NVARCHAR(10)   NOT NULL CONSTRAINT DF_Project_Ccy DEFAULT ('AED'),
+        LastUpdated     DATE           NULL,
+        SourceFile      NVARCHAR(260)  NOT NULL,
+        IngestedAt      DATETIME2(3)   NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Project_SourceFile')
+        CREATE INDEX IX_Project_SourceFile ON dbo.Project (SourceFile);
+
+      IF OBJECT_ID('dbo.ProjectChild', 'U') IS NULL
+      CREATE TABLE dbo.ProjectChild (
+        Id         BIGINT IDENTITY(1,1) PRIMARY KEY,
+        ProjectId  NVARCHAR(60)  NOT NULL,
+        Kind       VARCHAR(12)   NOT NULL,
+        Payload    NVARCHAR(MAX) NOT NULL,
+        SourceFile NVARCHAR(260) NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectChild_Project')
+        CREATE INDEX IX_ProjectChild_Project ON dbo.ProjectChild (ProjectId, Kind);
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectChild_SourceFile')
+        CREATE INDEX IX_ProjectChild_SourceFile ON dbo.ProjectChild (SourceFile);
+    `,
+  },
 ];
 
 const LEDGER = `

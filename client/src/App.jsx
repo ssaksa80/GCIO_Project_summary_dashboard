@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getJSON, useLiveEvents } from "./lib/api.js";
+import { getJSON, useLiveEvents, NotAuthenticated } from "./lib/api.js";
 import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
@@ -14,6 +14,7 @@ import ProjectTable from "./components/ProjectTable.jsx";
 import ProjectDrawer from "./components/ProjectDrawer.jsx";
 import UploadPanel from "./components/UploadPanel.jsx";
 import EmptyState from "./components/EmptyState.jsx";
+import SignIn from "./components/SignIn.jsx";
 
 const THEMES = ["obsidian", "platinum", "sapphire", "emerald"];
 const FONTS = ["arial", "aptos"];
@@ -59,6 +60,8 @@ export default function App() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [error, setError] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  /** null = still asking the server who we are. */
+  const [me, setMe] = useState(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -73,6 +76,13 @@ export default function App() {
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   useEffect(() => {
+    getJSON("/api/me")
+      .then(setMe)
+      .catch(() => setMe({ authenticated: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!me?.authenticated) return undefined;
     let cancelled = false;
     Promise.all([
       getJSON(`/api/summary?period=${period}&date=${date}`),
@@ -87,13 +97,18 @@ export default function App() {
         setError(null);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message);
+        if (cancelled) return;
+        if (err instanceof NotAuthenticated) {
+          setMe({ authenticated: false });
+          return;
+        }
+        setError(err.message);
         console.error("summary fetch failed:", err);
       });
     return () => { cancelled = true; };
-  }, [period, date, refreshTick]);
+  }, [period, date, refreshTick, me]);
 
-  useLiveEvents(() => refresh(), !snapshotMode());
+  useLiveEvents(() => refresh(), !snapshotMode() && Boolean(me?.authenticated));
 
   /* Land on a named section when asked — used for section-level captures. */
   useEffect(() => {
@@ -113,6 +128,14 @@ export default function App() {
 
   const sections = summary?.sections;
 
+  if (me === null) {
+    return <div className="shell"><div className="skeleton" style={{ height: 120, marginTop: 40 }} /></div>;
+  }
+
+  if (!me.authenticated) {
+    return <SignIn devMode={me.devMode} onSignedIn={(signedIn) => setMe({ authenticated: true, ...signedIn })} />;
+  }
+
   return (
     <div className="shell">
       <TopBar
@@ -125,7 +148,12 @@ export default function App() {
         font={font}
         onFont={setFont}
         health={health}
+        me={me}
         onUpload={() => setUploadOpen(true)}
+        onSignOut={async () => {
+          await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+          setMe({ authenticated: false });
+        }}
       />
 
       {error && (

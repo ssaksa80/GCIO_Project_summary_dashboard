@@ -28,7 +28,7 @@ const EXPORTS = [
   ["html", "HTML brief", "Self-contained page — email or print ready"],
 ];
 
-export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme, font, onFont, health, onUpload }) {
+export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme, font, onFont, health, me, onUpload, onSignOut }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(null);
   const menuRef = useRef(null);
@@ -144,10 +144,19 @@ export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme,
           Template
         </a>
 
+        {(me?.role === "pm" || me?.role === "admin") && (
         <button type="button" className="btn" onClick={onUpload}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
           Upload
         </button>
+        )}
+
+        {me?.authenticated && (
+          <span className="who" title={`${me.principal} · ${me.role}`}>
+            {me.displayName || me.principal} <i>{me.role}</i>
+            <button type="button" className="who-out" onClick={onSignOut} title="Sign out">⏻</button>
+          </span>
+        )}
 
         <div className="menu-wrap" ref={menuRef}>
           <button type="button" className="btn primary" onClick={() => setMenuOpen((o) => !o)} disabled={Boolean(busy)}>

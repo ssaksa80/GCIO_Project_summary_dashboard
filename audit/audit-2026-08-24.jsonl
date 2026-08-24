@@ -1,0 +1,8 @@
+{"at":"2026-08-24T06:34:42.455Z","actor":"pat","action":"signin.denied","subject":"no_access","ip":"127.0.0.1","userAgent":"curl/8.21.0","requestId":""}
+{"at":"2026-08-24T06:35:32.317Z","actor":"pat@localhost","action":"signin","subject":"pm","ip":"127.0.0.1","userAgent":"curl/8.21.0","requestId":""}
+{"at":"2026-08-24T06:35:34.574Z","actor":"pat@localhost","action":"export","subject":"pptx weekly 2026-08-24","ip":"127.0.0.1","userAgent":"curl/8.21.0","requestId":""}
+{"at":"2026-08-24T06:39:05.562Z","actor":"pat@localhost","action":"signin","subject":"pm","ip":"127.0.0.1","userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36","requestId":""}
+{"at":"2026-08-24T06:40:01.492Z","actor":"pat@localhost","action":"signin","subject":"pm","ip":"127.0.0.1","userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36","requestId":""}
+{"at":"2026-08-24T06:40:02.662Z","actor":"pat@localhost","action":"signout","subject":"","ip":"127.0.0.1","userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36","requestId":""}
+{"at":"2026-08-24T06:40:33.649Z","actor":"pat@localhost","action":"signin","subject":"pm","ip":"127.0.0.1","userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36","requestId":""}
+{"at":"2026-08-24T06:40:34.607Z","actor":"pat@localhost","action":"signout","subject":"","ip":"127.0.0.1","userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36","requestId":""}
