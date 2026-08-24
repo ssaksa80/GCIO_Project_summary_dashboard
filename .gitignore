@@ -17,6 +17,13 @@ GCIO_Theme_Selection_Briefing.html
 data/*
 !data/.gitkeep
 
+# Runtime audit output. In production this holds real user principals and
+# must never be committed; the SQL store writes to dbo.AuditEvent instead.
+audit/
+
+# Local environment
+.env
+
 # Logs and OS noise
 *.log
 npm-debug.log*
