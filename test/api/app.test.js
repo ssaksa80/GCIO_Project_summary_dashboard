@@ -154,3 +154,36 @@ test("signing out ends the session", async () => {
   await agent.post("/api/auth/logout").send({});
   assert.equal((await agent.get("/api/summary?period=weekly")).status, 401);
 });
+
+test("security headers are set on every response", async () => {
+  const { app } = makeApp();
+  const res = await request(app).get("/healthz");
+  assert.equal(res.headers["x-content-type-options"], "nosniff");
+  assert.equal(res.headers["x-frame-options"], "DENY");
+  assert.equal(res.headers["referrer-policy"], "no-referrer");
+  assert.match(res.headers["content-security-policy"], /default-src 'self'/);
+  assert.match(res.headers["content-security-policy"], /frame-ancestors 'none'/);
+});
+
+test("the session cookie is httpOnly and SameSite=Strict, which is the CSRF defence", async () => {
+  const { app } = makeApp();
+  const res = await request(app).post("/api/auth/login").send({ username: "pat", password: "x" });
+  const cookie = res.headers["set-cookie"].join(";");
+  assert.match(cookie, /HttpOnly/i);
+  assert.match(cookie, /SameSite=Strict/i);
+});
+
+test("repeated sign-in attempts are throttled", async () => {
+  const { app } = makeApp();
+  const agent = request(app);
+  let limited = false;
+  for (let i = 0; i < 14; i += 1) {
+    const res = await agent.post("/api/auth/login").send({ username: "pat", password: "x" });
+    if (res.status === 429) {
+      limited = true;
+      assert.equal(res.body.error.code, "rate_limited");
+      break;
+    }
+  }
+  assert.ok(limited, "sign-in was never throttled");
+});

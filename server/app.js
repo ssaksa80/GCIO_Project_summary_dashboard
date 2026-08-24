@@ -24,6 +24,7 @@ import { buildTemplate, TEMPLATE_FILENAME } from "./template.js";
 import { looksLikeWorkbook } from "./uploadGuard.js";
 import { attachSession, requireSession, requireRole } from "./auth/session.js";
 import { authRoutes } from "./auth/routes.js";
+import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
 
 const PERIODS = new Set(["daily", "weekly", "monthly", "yearly"]);
 const VERSION = "1.0.0";
@@ -52,7 +53,10 @@ export function createApp(deps) {
   const roleMapping = deps.roleMapping;
 
   const app = express();
+  /* TLS terminates at IIS on the same box, so forwarded headers are trusted
+     from loopback and nowhere else. */
   app.set("trust proxy", "loopback");
+  app.use(securityHeaders({ https: Boolean(config.isProd) }));
   app.use(cookieParser());
   app.use(express.json({ limit: "40mb" }));
 
@@ -73,6 +77,14 @@ export function createApp(deps) {
 
   /* Identity, then the gate. /api/me answers for signed-out callers too, so
      the client can tell "not signed in" from "server is broken". */
+  /* Credential endpoints are throttled per IP; the rest of the API is behind a
+     session, so it is not an anonymous attack surface. Exports are capped
+     separately because each one costs real work. */
+  app.use(["/api/auth/login", "/api/auth/sso"],
+    rateLimit({ max: 10, windowMs: 60_000, message: "too many sign-in attempts, try again shortly" }));
+  app.use("/api/export",
+    rateLimit({ max: 60, windowMs: 60_000, message: "export limit reached, try again shortly" }));
+
   app.use(attachSession({ sessions, idleMinutes: config.sessionIdleMinutes }));
   app.use(authRoutes({
     config, sessions, roleMapping, audit,
