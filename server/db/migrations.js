@@ -57,6 +57,36 @@ export const MIGRATIONS = [
         CREATE INDEX IX_PostureDomain_SourceFile ON dbo.PostureDomain (SourceFile);
     `,
   },
+  {
+    id: 3,
+    name: "sessions",
+    sql: `
+      IF OBJECT_ID('dbo.Sessions', 'U') IS NULL
+      CREATE TABLE dbo.Sessions (
+        SessionId    UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+        Principal    NVARCHAR(200)  NOT NULL,
+        DisplayName  NVARCHAR(200)  NULL,
+        Role         VARCHAR(10)    NOT NULL,
+        Groups       NVARCHAR(MAX)  NULL,
+        ExpiresAt    DATETIME2(0)   NOT NULL,
+        LastSeenAt   DATETIME2(0)   NOT NULL,
+        LastIp       VARCHAR(45)    NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Sessions_ExpiresAt')
+        CREATE INDEX IX_Sessions_ExpiresAt ON dbo.Sessions (ExpiresAt);
+    `,
+  },
+  {
+    id: 4,
+    name: "role_mapping",
+    sql: `
+      IF OBJECT_ID('dbo.RoleMapping', 'U') IS NULL
+      CREATE TABLE dbo.RoleMapping (
+        GroupName NVARCHAR(300) NOT NULL PRIMARY KEY,
+        Role      VARCHAR(10)   NOT NULL
+      );
+    `,
+  },
 ];
 
 const LEDGER = `

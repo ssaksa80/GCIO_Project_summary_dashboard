@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { postureRepo } from "../../server/repos/posture.js";
 import { auditRepo } from "../../server/repos/audit.js";
-import { migrate } from "../../server/db/migrations.js";
+import { migrate, MIGRATIONS } from "../../server/db/migrations.js";
 
 /** An executor that records statements and replays canned recordsets. */
 function scriptedExecutor({ recordsets = {}, failOn = null } = {}) {
@@ -101,12 +101,18 @@ test("audit reads are capped so a huge limit cannot be requested", async () => {
 test("migrations apply once and are a no-op on the next boot", async () => {
   const fresh = scriptedExecutor({ recordsets: { "SELECT Id FROM dbo.SchemaMigration": [] } });
   const first = await migrate(fresh, { logger: quiet });
-  assert.deepEqual(first.applied, [1, 2]);
+  assert.deepEqual(first.applied, MIGRATIONS.map((m) => m.id));
 
   const already = scriptedExecutor({
-    recordsets: { "SELECT Id FROM dbo.SchemaMigration": [{ Id: 1 }, { Id: 2 }] },
+    recordsets: { "SELECT Id FROM dbo.SchemaMigration": MIGRATIONS.map((m) => ({ Id: m.id })) },
   });
   const second = await migrate(already, { logger: quiet });
   assert.deepEqual(second.applied, []);
   assert.equal(second.alreadyCurrent, true);
+});
+
+test("migration ids are unique and in ascending order", () => {
+  const ids = MIGRATIONS.map((m) => m.id);
+  assert.deepEqual(ids, [...new Set(ids)], "duplicate migration id");
+  assert.deepEqual(ids, [...ids].sort((a, b) => a - b), "migrations are out of order");
 });
