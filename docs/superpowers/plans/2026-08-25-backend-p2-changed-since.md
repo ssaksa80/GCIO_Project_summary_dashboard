@@ -880,6 +880,24 @@ git add server/sections.js server/summarize.js test/domain/annotate.test.js
 git commit -m "feat(sections): annotate what moved without rewriting a single builder"
 ```
 
+**Amended after review — two things this step does that the plan did not say.**
+
+`annotateChanges` adds a `historyAvailable` key to the `sections` object, so
+`summary.sections` is no longer exactly the five sections. That broke a pinned
+`deepEqual` on `Object.keys(sections)` in `test/api/app.test.js`. Nothing in
+production iterates those keys — checked across `server/` and `client/src/` —
+so the key stays where it is, and the assertion was rewritten to check the five
+sections are present rather than pinning the whole shape, which would break
+again the next time anything is added. Task 6 inherits a green suite; do not be
+surprised to find `test/api/app.test.js` already touched.
+
+The plan's idempotency test could not fail. Its fixture built a fresh object
+literal for each mention of a project, so there was no structural sharing for
+the `seen` set to deduplicate, and removing the guard entirely left the test
+green. Replaced by two that exercise the real hazards: one project object
+genuinely referenced from two sections, and a parent/child cycle that recurses
+until the stack dies without the guard.
+
 ---
 
 ### Task 5: A portfolio-level digest the narrative can use
