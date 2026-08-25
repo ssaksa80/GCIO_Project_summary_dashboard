@@ -268,6 +268,28 @@ test("open risks and questions are counted out for later querying", async () => 
   assert.equal(insert.params.find((p) => p.name === "openQuestions").value, 1);
 });
 
+test("an Answered question is still open, matching the QRI panel in sections.js", async () => {
+  // server/sections.js:212 lists a question as outstanding whenever its status
+  // is not "Closed", so an Answered question still shows up there. History
+  // must count it the same way, or OpenQuestions disagrees with what the
+  // dashboard shows for the same project at the same moment.
+  const ex = scriptedExecutor();
+  await projectVersionsRepo(ex).appendChanged(
+    [{ project: versionProject({
+        questions: [
+          { text: "a", status: "Open" },
+          { text: "b", status: "Answered" },
+          { text: "c", status: "Closed" },
+        ],
+      }), hash: "h" }],
+    { ingestRunId: 1 }
+  );
+
+  const insert = ex.statements.find((s) => s.text.includes("INSERT INTO dbo.ProjectVersion"));
+  assert.equal(insert.params.find((p) => p.name === "openQuestions").value, 2,
+    "Answered is not Closed, so sections.js would still show it as outstanding");
+});
+
 test("the whole project is kept in the payload", async () => {
   const ex = scriptedExecutor();
   await projectVersionsRepo(ex).appendChanged(
@@ -295,6 +317,16 @@ test("a project's history reads back newest first", async () => {
   assert.equal(history[0].targetEndDate, "2026-06-30");
 });
 
+test("historyFor({ limit: 0 }) falls through to the 50 default, not clamped to 1", async () => {
+  // Mirrors the same Number(limit) || default idiom pinned for
+  // recent({ limit: 0 }) above -- Number(0) || 50 treats 0 as falsy, and only
+  // one of the two repositories sharing this idiom had that behaviour pinned.
+  const ex = scriptedExecutor({ "FROM dbo.ProjectVersion": [] });
+  await projectVersionsRepo(ex).historyFor("PRJ-1", { limit: 0 });
+  const select = ex.statements.find((s) => s.text.includes("FROM dbo.ProjectVersion"));
+  assert.equal(select.params.find((p) => p.name === "limit").value, 50);
+});
+
 test("nothing to write is not a database round trip", async () => {
   const ex = scriptedExecutor();
   assert.equal(await projectVersionsRepo(ex).appendChanged([], { ingestRunId: 1 }), 0);
@@ -312,6 +344,54 @@ test("appendChanged refuses a project id containing a comma", async () => {
       { ingestRunId: 1 }
     ),
     /PRJ,1/
+  );
+  assert.equal(ex.statements.length, 0, "a rejected batch must not have queried the database first");
+});
+
+test("a project id with surrounding whitespace and lowercase still matches the stored uppercase hash", async () => {
+  // The database collation is case-insensitive and STRING_SPLIT does not
+  // trim, but the newestByProject Map lookup is neither -- so this repo must
+  // normalise before comparing, not rely on every caller having already done
+  // so (server/ingest.js does, but a future replay/backfill caller might not).
+  const ex = scriptedExecutor({
+    "SELECT ProjectId, ContentHash": [{ ProjectId: "PRJ-1", ContentHash: "known-hash" }],
+  });
+
+  const written = await projectVersionsRepo(ex).appendChanged(
+    [{ project: versionProject({ id: " prj-1 " }), hash: "known-hash" }],
+    { ingestRunId: 1 }
+  );
+
+  assert.equal(written, 0, "an unchanged project (once normalised) was versioned again");
+  const inserts = ex.statements.filter((s) => s.text.includes("INSERT INTO dbo.ProjectVersion"));
+  assert.equal(inserts.length, 0);
+});
+
+test("appendChanged refuses a candidate with no usable id", async () => {
+  const ex = scriptedExecutor();
+  await assert.rejects(
+    () => projectVersionsRepo(ex).appendChanged(
+      [{ project: versionProject({ id: "   " }), hash: "h" }],
+      { ingestRunId: 1 }
+    ),
+    /every project needs an id/
+  );
+  assert.equal(ex.statements.length, 0, "a rejected batch must not have queried the database first");
+});
+
+test("appendChanged refuses two candidates sharing one id in the same batch", async () => {
+  // Both would be compared against the same pre-batch snapshot and both
+  // inserted, producing two versions of one project from a single ingest.
+  const ex = scriptedExecutor();
+  await assert.rejects(
+    () => projectVersionsRepo(ex).appendChanged(
+      [
+        { project: versionProject({ id: "PRJ-1" }), hash: "h1" },
+        { project: versionProject({ id: "prj-1 " }), hash: "h2" },
+      ],
+      { ingestRunId: 1 }
+    ),
+    /duplicate project ids.*PRJ-1/
   );
   assert.equal(ex.statements.length, 0, "a rejected batch must not have queried the database first");
 });
@@ -338,4 +418,33 @@ test("appendChanged does its work inside a transaction", async () => {
 
   assert.equal(written, 1);
   assert.equal(txCalls, 1, "appendChanged must run its read and its inserts inside one ex.tx call");
+});
+
+test("a failure partway through a batch propagates rather than returning a partial count", async () => {
+  /* The scripted executor's tx(fn) is just fn(ex), so it cannot prove a real
+     rollback happened -- that guarantee comes from the real sql.Transaction in
+     server/db/executor.js, and Task 8 exercises it against the live database.
+     What this test does pin: an error from a later insert in the batch must
+     propagate out of appendChanged, not be swallowed with an early return of
+     however many rows had been written so far. */
+  const ex = scriptedExecutor();
+  let inserts = 0;
+  const originalQuery = ex.query.bind(ex);
+  ex.query = async (text, params) => {
+    if (text.trim().startsWith("INSERT INTO dbo.ProjectVersion")) {
+      inserts += 1;
+      if (inserts === 3) throw new Error("boom");
+    }
+    return originalQuery(text, params);
+  };
+
+  const candidates = ["PRJ-1", "PRJ-2", "PRJ-3", "PRJ-4"].map((id) => ({
+    project: versionProject({ id }), hash: `h-${id}`,
+  }));
+
+  await assert.rejects(
+    () => projectVersionsRepo(ex).appendChanged(candidates, { ingestRunId: 1 }),
+    /boom/
+  );
+  assert.equal(inserts, 3, "the third insert should have thrown before a fourth was attempted");
 });

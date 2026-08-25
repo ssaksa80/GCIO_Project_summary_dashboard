@@ -8,11 +8,17 @@
  */
 import { sql } from "../db/executor.js";
 
-const openCount = (items, kind) =>
-  (items || []).filter((item) => {
-    const status = String(item.status || "Open").toLowerCase();
-    return kind === "risk" ? status !== "closed" : status !== "closed" && status !== "answered";
-  }).length;
+/**
+ * Risks and questions are both "open" until they are Closed — the same rule
+ * server/sections.js:212 uses for the QRI panel. History and the dashboard must
+ * not report different numbers for the same project at the same moment, and
+ * Phase 2 draws its trend lines off these columns.
+ *
+ * Note this counts an Answered-but-not-Closed question as still open. Payload
+ * keeps the raw items, so a later phase can recompute if that call changes.
+ */
+const openCount = (items) =>
+  (items || []).filter((item) => String(item.status || "Open").toLowerCase() !== "closed").length;
 
 const toDate = (v) => (v ? new Date(v) : null);
 const iso = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d || null);
@@ -31,14 +37,35 @@ export function projectVersionsRepo(ex) {
          and it must not touch the database at all. */
       if (!candidates || candidates.length === 0) return 0;
 
-      const ids = candidates.map((c) => c.project.id);
+      /* The database collation is case-insensitive and STRING_SPLIT does not
+         trim, but the Map lookup below is neither. Normalising here means a
+         caller that has not already done so cannot silently produce duplicate
+         history. server/ingest.js:243 already upper-cases; this is for the
+         next caller that does not. */
+      const normalised = candidates.map(({ project, hash }) => ({
+        project, hash, id: String(project.id ?? "").trim().toUpperCase(),
+      }));
+
+      const missing = normalised.filter((c) => !c.id);
+      if (missing.length) {
+        throw new Error(`every project needs an id: ${missing.length} without one`);
+      }
 
       /* The bulk lookup below joins ids with commas for STRING_SPLIT. A comma
          in an id would split it in two, match nothing, and silently append a
          version for a project that had not actually changed. */
-      const offending = ids.filter((id) => String(id).includes(","));
+      const ids = normalised.map((c) => c.id);
+      const offending = ids.filter((id) => id.includes(","));
       if (offending.length) {
         throw new Error(`project ids must not contain a comma: ${offending.join(" ")}`);
+      }
+
+      /* Both would be compared against the pre-batch snapshot and both
+         inserted, so one ingest would record two versions of one project. */
+      const seen = new Set();
+      const duplicated = normalised.filter((c) => (seen.has(c.id) ? true : (seen.add(c.id), false)));
+      if (duplicated.length) {
+        throw new Error(`duplicate project ids in one batch: ${[...new Set(duplicated.map((c) => c.id))].join(" ")}`);
       }
 
       /* Reading the newest hash and inserting the changed rows happen inside
@@ -69,8 +96,8 @@ export function projectVersionsRepo(ex) {
            simple. A table-valued parameter or bulk insert would be the right
            call at a much larger scale, but is not warranted here. */
         let written = 0;
-        for (const { project, hash } of candidates) {
-          if (newestByProject.get(project.id) === hash) continue;
+        for (const { project, hash, id } of normalised) {
+          if (newestByProject.get(id) === hash) continue;
 
           await tx.query(`
             INSERT INTO dbo.ProjectVersion
@@ -82,7 +109,7 @@ export function projectVersionsRepo(ex) {
                @priority, @phase, @owner, @targetEnd, @actualEnd, @budget, @spent, @pct,
                @openRisks, @openQuestions, @payload)
           `, [
-            { name: "projectId", type: sql.NVarChar(60), value: project.id },
+            { name: "projectId", type: sql.NVarChar(60), value: id },
             { name: "hash", type: sql.Char(64), value: hash },
             { name: "runId", type: sql.BigInt, value: ingestRunId },
             { name: "name", type: sql.NVarChar(400), value: project.name },
@@ -97,8 +124,8 @@ export function projectVersionsRepo(ex) {
             { name: "budget", type: sql.Decimal(19, 2), value: Number(project.budget) || 0 },
             { name: "spent", type: sql.Decimal(19, 2), value: Number(project.spent) || 0 },
             { name: "pct", type: sql.Decimal(5, 2), value: Number(project.percentComplete) || 0 },
-            { name: "openRisks", type: sql.Int, value: openCount(project.risks, "risk") },
-            { name: "openQuestions", type: sql.Int, value: openCount(project.questions, "question") },
+            { name: "openRisks", type: sql.Int, value: openCount(project.risks) },
+            { name: "openQuestions", type: sql.Int, value: openCount(project.questions) },
             { name: "payload", type: sql.NVarChar(sql.MAX), value: JSON.stringify(project) },
           ]);
           written += 1;
