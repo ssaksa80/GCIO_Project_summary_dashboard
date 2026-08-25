@@ -216,8 +216,16 @@ function slideXml(slide, index, deck) {
       para(slide.title, { size: 3600, bold: true, color: "FFFFFF" })));
     if (slide.subtitle) {
       const subH = textHeight(lineCount(slide.subtitle, 11, 1600), 1600);
+      /* Same contract as a bullet's .sub below: a line feed only becomes a
+         visible line break if it is its own paragraph. One para() call over
+         the whole string puts everything in a single <a:t> run, and OOXML
+         does not treat an embedded line feed there as a break -- it renders
+         the two lines run together with no separating space. */
+      const subtitleParas = String(slide.subtitle).split("\n")
+        .map((line) => para(line, { size: 1600, color: "B8C8E8" }))
+        .join("");
       shapes.push(textBox(next(), "subtitle", 0.9 * EMU, (2.5 + coverTitleH) * EMU, 11 * EMU, subH * EMU,
-        para(slide.subtitle, { size: 1600, color: "B8C8E8" })));
+        subtitleParas));
     }
     if (slide.kpis?.length) {
       const boxW = (11.5 * EMU) / slide.kpis.length - 0.18 * EMU;

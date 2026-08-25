@@ -7,6 +7,10 @@
  *
  *   OVERFLOW  the text needs more lines than its box has room for
  *   COLLISION two text boxes overlap on screen
+ *   LINEFEED  an <a:t> run holds a raw line feed, which OOXML does not treat
+ *             as a break -- PowerPoint renders the surrounding lines run
+ *             together with no separating space. Geometry cannot catch this:
+ *             the box is already sized for the extra line, so nothing overlaps.
  *
  *   node scripts/pptx-audit.mjs exports/deck.pptx
  *
@@ -135,6 +139,12 @@ for (const name of slideNames) {
     if (need > shape.h + SLACK_IN) {
       problems += 1;
       console.log(`slide ${n}  OVERFLOW   needs ${need.toFixed(2)}in in a ${shape.h.toFixed(2)}in box — "${label(shape)}"`);
+    }
+
+    for (const run of shape.runs) {
+      if (!run.text.includes("\n")) continue;
+      problems += 1;
+      console.log(`slide ${n}  LINEFEED   run holds a raw line feed and will render run together — "${label(shape)}"`);
     }
   }
 
