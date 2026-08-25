@@ -105,10 +105,14 @@ test("a signed-in viewer reads the portfolio and the four sections", async () =>
 
   const summary = await agent.get("/api/summary?period=weekly&date=2026-08-24");
   assert.equal(summary.status, 200);
-  assert.deepEqual(
-    Object.keys(summary.body.sections),
-    ["successes", "qri", "priorities", "roadmap", "posture"]
-  );
+  /* The five sections the CIO asked for, in order. Not an exact key list:
+     annotateChanges also records historyAvailable here, and pinning the whole
+     shape means every future addition breaks a test about section order. */
+  const sectionKeys = Object.keys(summary.body.sections);
+  assert.deepEqual(sectionKeys.filter((k) => k !== "historyAvailable"),
+    ["successes", "qri", "priorities", "roadmap", "posture"]);
+  assert.equal(typeof summary.body.sections.historyAvailable, "boolean",
+    "the summary must always say whether history was available");
 
   const projects = await agent.get("/api/projects");
   assert.equal(projects.status, 200);

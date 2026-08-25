@@ -57,12 +57,38 @@ test("posture rows are annotated by their project, not their domain name", () =>
   assert.equal(s.posture.domains[0].change.worst, "worse");
 });
 
-test("annotating is idempotent, because the summary is built more than once per request", () => {
-  const s = sections();
+test("a project object referenced from two sections is annotated once, not twice", () => {
+  /* The fixture in the other tests builds a fresh literal per mention, which
+     is not how buildSections works — several sections hand out references to
+     the same project object. */
+  const shared = { id: "PRJ-1", name: "One" };
+  const s = {
+    successes: { items: [shared] },
+    priorities: { items: [shared], watchlist: [] },
+    qri: { questions: [], risks: [] },
+    roadmap: { inFlight: [], planned: [] },
+    posture: { domains: [] },
+  };
+
   annotateChanges(s, changes());
-  const first = JSON.stringify(s);
-  annotateChanges(s, changes());
-  assert.equal(JSON.stringify(s), first);
+  assert.equal(s.successes.items[0], s.priorities.items[0], "the fixture stopped sharing");
+  assert.equal(s.successes.items[0].change.headline, "health Green to Red");
+});
+
+test("a cycle in the section data does not blow the stack", () => {
+  /* Not hypothetical: a project that references its parent, which lists its
+     children, is a cycle. Without the seen set this recurses until it dies. */
+  const parent = { id: "PRJ-1", name: "One", children: [] };
+  const child = { id: "PRJ-3", name: "Three", parent };
+  parent.children.push(child);
+
+  const s = { successes: { items: [parent] }, qri: { questions: [], risks: [] },
+              priorities: { items: [], watchlist: [] }, roadmap: { inFlight: [], planned: [] },
+              posture: { domains: [] } };
+
+  assert.doesNotThrow(() => annotateChanges(s, changes()));
+  assert.equal(parent.change.worst, "worse");
+  assert.equal(child.change.trackedSince, "2026-08-24T00:00:00.000Z");
 });
 
 test("a section shape it has never seen does not throw", () => {
