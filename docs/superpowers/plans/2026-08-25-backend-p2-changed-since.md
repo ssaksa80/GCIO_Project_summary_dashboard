@@ -33,6 +33,7 @@ If a task in this plan seems to require making a section builder async, stop and
 | File | Responsibility |
 | --- | --- |
 | `server/repos/projectVersions.js` | **modify** — add `changedSince(sinceISO)`: the baseline and current version of every project that moved |
+| `server/db/migrations.js` | **modify** — migration 9 widens `IX_ProjectVersion_Project` to cover what `changedSince` selects |
 | `server/store/sqlStore.js` | **modify** — `changesSince(sinceISO)` returning the annotation Map; `historyStartedAt()` |
 | `server/store.js` | **modify** — the in-memory store answers "no history" honestly rather than not answering |
 | `server/changes.js` | **create** — the comparison itself: which fields moved, and how to describe the move |
@@ -890,6 +891,19 @@ test("the digest counts what a CIO would ask about first", () => {
   assert.equal(digest.newlyTracked, 1);
 });
 
+test("a project that no longer exists is not counted", () => {
+  /* ProjectVersion has no foreign key to dbo.Project, so a removed workbook's
+     history survives. It must not keep inflating this week's numbers. */
+  const changes = new Map([
+    ["GONE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+    ["HERE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+  ]);
+
+  const digest = summariseChanges(changes, new Set(["HERE"]));
+  assert.equal(digest.changed, 1);
+  assert.equal(digest.wentRed, 1);
+});
+
 test("the digest is null when history is unavailable, not a row of zeroes", () => {
   /* Zeroes would read as "nothing changed this week", which is a claim we
      cannot make without history. */
@@ -914,16 +928,23 @@ Expected: FAIL — `summariseChanges is not exported`.
  * Portfolio-level counts, for the narrative and the KPI strip.
  *
  * @param {Map<string, object>|null} changes
+ * @param {Set<string>|null} liveProjectIds when given, only these are counted
  * @returns {null|{changed: number, wentRed: number, recovered: number,
  *                 slipped: number, overspent: number, newlyTracked: number}}
  *          null when there is no history to count
  */
-export function summariseChanges(changes) {
+export function summariseChanges(changes, liveProjectIds = null) {
   if (!changes) return null;
 
   const digest = { changed: 0, wentRed: 0, recovered: 0, slipped: 0, overspent: 0, newlyTracked: 0 };
 
-  for (const entry of changes.values()) {
+  for (const [projectId, entry] of changes) {
+    /* History outlives the portfolio on purpose: ProjectVersion has no foreign
+       key to dbo.Project, so a workbook removed last month still has rows here.
+       That is right for an audit view and wrong for a digest — "3 projects went
+       Red" must mean three projects that still exist. Nothing ever revisits a
+       removed project, so without this the number never self-corrects. */
+    if (liveProjectIds && !liveProjectIds.has(projectId)) continue;
     if (entry.trackedSince) { digest.newlyTracked += 1; continue; }
     digest.changed += 1;
 
@@ -945,7 +966,7 @@ In `server/summarize.js`, import `summariseChanges` and add to the returned
 object, beside `kpis`:
 
 ```js
-    changes: summariseChanges(changes),
+    changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
 ```
 
 - [ ] **Step 5: Run the tests**
