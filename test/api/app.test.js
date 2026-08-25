@@ -270,6 +270,22 @@ test("ingest runs report cleanly when the store keeps no history", async () => {
   assert.equal(res.body.historyEnabled, false);
 });
 
+test("a history-backed store with no runs yet is enabled, not disabled", async () => {
+  /* historyEnabled says whether there is a database behind this, not whether
+     it happens to be empty. Collapsing the two would make a fresh install look
+     like an in-memory one. */
+  const adminApp = makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns: { recent: async () => [] },
+  });
+  const admin = await signedIn(adminApp);
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.historyEnabled, true);
+  assert.deepEqual(res.body.runs, []);
+});
+
 test("an anonymous caller cannot read ingest runs", async () => {
   const ingestRuns = { recent: async () => [] };
   const adminApp = makeAppWith({
@@ -315,6 +331,10 @@ test("the ingest runs limit is passed through and clamped", async () => {
 
   await admin.get("/api/ingest/runs?limit=not-a-number");
   assert.equal(asked.limit, 50, "a non-numeric limit was not defaulted");
+
+  await admin.get("/api/ingest/runs?limit=5&limit=10");
+  assert.equal(asked.limit, 50,
+    "a duplicated limit parameter arrives as an array, and Number([...]) is NaN -- must fall back to the default, not crash or pick one");
 });
 
 test("an open run with no outcome or finish time still serialises", async () => {
@@ -354,6 +374,27 @@ test("a failed run's specific error reason reaches the client unaltered", async 
   const res = await admin.get("/api/ingest/runs");
   assert.equal(res.status, 200);
   assert.equal(res.body.runs[0].error, "snapshot applied but history not recorded");
+});
+
+test("an error needing JSON escaping reaches the client byte-identical", async () => {
+  const tricky = `could not parse C:\\data\\master.xlsx: unexpected token "}" at line 2\nsee log`;
+  const runs = [{
+    id: 9, fileName: "master.xlsx", trigger: "watcher",
+    startedAt: "2026-08-25T09:00:00.000Z", finishedAt: "2026-08-25T09:00:01.000Z",
+    outcome: "failed", projectsSeen: 0, projectsChanged: 0, postureRows: 0,
+    error: tricky,
+  }];
+  const ingestRuns = { recent: async () => runs };
+  const admin = await signedIn(makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  }));
+
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.runs[0].error, tricky,
+    "a quote, a backslash, a Windows path and a newline must all survive the JSON round trip");
 });
 
 test("reading ingest runs does not write to the audit trail", async () => {

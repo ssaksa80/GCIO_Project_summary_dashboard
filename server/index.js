@@ -121,7 +121,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 async function apply(result) {
   if (store instanceof SqlStore) {
     if (!result.ok) {
-      store.log({ file: result.file, ok: false, error: result.error });
+      await store.recordRejectedFile(result.file, result.error, { trigger: "boot" });
       return 0;
     }
     return store.applyFile(result, { trigger: "boot" });
@@ -137,7 +137,7 @@ if (config.store === "mssql") {
   for (const file of onDisk) {
     if (known.has(file)) continue;
     const parsed = ingestFile(path.join(DATA_DIR, file));
-    if (parsed.ok) await apply(parsed);
+    await apply(parsed);
   }
   if (store.projectCount === 0) log("no data yet — drop workbooks into data/ or upload them");
 } else {
@@ -168,8 +168,13 @@ watchDataDir(DATA_DIR, {
   onUpsert: async (filePath) => {
     const parsed = ingestFile(filePath);
     if (!parsed.ok) {
-      store.log({ file: path.basename(filePath), ok: false, error: parsed.error });
-      log(`rejected ${path.basename(filePath)}: ${parsed.error}`);
+      const fileName = path.basename(filePath);
+      if (store instanceof SqlStore) {
+        await store.recordRejectedFile(fileName, parsed.error, { trigger: "watcher" });
+      } else {
+        store.log({ file: fileName, ok: false, error: parsed.error });
+      }
+      log(`rejected ${fileName}: ${parsed.error}`);
       return;
     }
     if (store instanceof SqlStore) {

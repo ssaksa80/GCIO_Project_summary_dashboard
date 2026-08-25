@@ -213,6 +213,52 @@ test("a removal whose refresh() fails still leaves the run closed as removed, no
   assert.equal(finishes[0][2], "removed", "the true outcome must not be overwritten with failed");
 });
 
+test("a rejected file opens and closes a run with outcome failed and a specific reason", async () => {
+  const { calls, store } = harness();
+  await store.recordRejectedFile("bad.xlsx", "no recognisable Projects sheet", { trigger: "watcher" });
+
+  const start = calls.find((c) => c[0] === "runs.start");
+  assert.deepEqual(start, ["runs.start", "bad.xlsx", "watcher"]);
+
+  const finish = calls.find((c) => c[0] === "runs.finish");
+  assert.ok(finish, "the rejection left no run behind");
+  assert.equal(finish[2], "failed");
+  assert.match(finish[3] ?? "", /no recognisable Projects sheet/,
+    "the parse reason must reach the run, not just a generic failure marker");
+
+  assert.equal(store.ingestLog[0].file, "bad.xlsx");
+  assert.equal(store.ingestLog[0].ok, false);
+});
+
+test("a rejected file is still logged when the store keeps no history", async () => {
+  /* STORE=mssql on a database migrated only to Phase 0: no ingestRuns repo at
+     all, so recordRejectedFile must fall back to the plain ingest log rather
+     than throwing on a repo that does not exist. */
+  const repos = {
+    projects: { async all() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+    posture: { async list() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+  };
+  const store = new SqlStore(repos, { logger: quiet });
+
+  await store.recordRejectedFile("bad.xlsx", "corrupt zip", { trigger: "boot" });
+
+  assert.equal(store.ingestLog[0].file, "bad.xlsx");
+  assert.equal(store.ingestLog[0].ok, false);
+  assert.equal(store.ingestLog[0].error, "corrupt zip");
+});
+
+test("a rejection whose run cannot even be opened is swallowed, not thrown", async () => {
+  const { calls, store } = harness();
+  store.repos.ingestRuns.start = async () => { throw new Error("connection reset"); };
+
+  await assert.doesNotReject(
+    () => store.recordRejectedFile("bad.xlsx", "corrupt zip", { trigger: "watcher" }),
+    "recording a rejection must never be what breaks the watcher"
+  );
+  assert.ok(!calls.some((c) => c[0] === "runs.finish"), "finish() was called on a run that never opened");
+  assert.equal(store.ingestLog[0].file, "bad.xlsx", "the console-visible log must still happen");
+});
+
 test("history is optional, so the store still works without it", async () => {
   /* STORE=mssql on a database migrated only to Phase 0 must not crash. */
   const repos = {

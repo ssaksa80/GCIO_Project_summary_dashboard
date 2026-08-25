@@ -271,6 +271,31 @@ export class SqlStore {
     }
   }
 
+  /**
+   * Record a workbook that never got as far as being applied.
+   *
+   * A parse failure otherwise leaves no trace in dbo.IngestRun, which makes a
+   * corrupt file indistinguishable from a file nobody ever sent. Both look like
+   * silence to an administrator, and only one of them is their problem.
+   *
+   * @param {string} fileName
+   * @param {string} reason
+   * @param {{trigger?: "watcher"|"upload"|"boot"|"replay"}} [context]
+   */
+  async recordRejectedFile(fileName, reason, { trigger = "watcher" } = {}) {
+    this.log({ file: fileName, ok: false, error: reason });
+    if (!this.tracksHistory) return;
+
+    try {
+      const runId = await this.repos.ingestRuns.start({ fileName, trigger });
+      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: `could not parse: ${reason}` });
+    } catch (err) {
+      /* Recording the rejection must never be what stops the watcher; the
+         console line is still there either way. */
+      this.logger.error?.(`[ingest] could not record the rejection of ${fileName}: ${err.message}`);
+    }
+  }
+
   /* -------------------------------------------------- parity with Store */
 
   log(entry) {
