@@ -252,7 +252,7 @@ test("the extension is preserved so a replayed file is still openable", () => {
 });
 
 test("a vault that cannot be written reports it rather than pretending", () => {
-  const vault = createVault(path.join(" ", "impossible"), { logger: quiet });
+  const vault = createVault(path.join(" ", "impossible"), { logger: quiet });
   assert.throws(() => vault.store(Buffer.from("x"), "a.xlsx"), /vault/i);
 });
 
@@ -386,6 +386,28 @@ VAULT_DIR=vault
 git add server/vault.js server/config.js test/vault.test.js .gitignore .env.example
 git commit -m "feat(vault): keep every ingested workbook for replay"
 ```
+
+**Amended after review (commit `954af90` plus a follow-up).** Four changes to the
+code above, all of them defects in this plan rather than in the implementation:
+
+1. `store` returns `vaultPath` built with `path.posix.join`, and builds the
+   on-disk `absolute` path separately with `path.join`. The returned value is
+   persisted to `dbo.SourceFile.VaultPath` and read by humans and scripts, so it
+   must not carry Windows separators on one host and POSIX ones on another.
+2. The `.writing` temp path is unique per call
+   (`${absolute}.${process.pid}.${randomUUID()}.writing`), and a failed write
+   unlinks it. Sharing one temp path across processes let a half-written file be
+   renamed into place — silent, permanent corruption of the only copy.
+3. `read` no longer swallows every error. Only `ENOENT` on the root means "not
+   found"; anything else is logged and rethrown, because a recovery tool must
+   never report a permissions failure as "the data is gone".
+4. The plan's fifth test used `createVault(path.join(" ", "impossible"))`, a
+   POSIX assumption. It points the root at a real file instead, so `mkdir`
+   beneath it fails with `ENOTDIR` on any platform.
+
+The README paragraph that Task 9 originally carried was also brought forward to
+here: `vault/` is gitignored, so nothing tracked in the repo would otherwise tell
+an operator that real portfolio data now lives there.
 
 ---
 
@@ -1676,17 +1698,12 @@ npm run build
 
 Expected: all green.
 
-- [ ] **Step 2: Document the vault in `README.md`**
+- [ ] **Step 2: Confirm the vault is documented**
 
-Add to the "Running it for real" section, after the audit paragraph:
-
-```markdown
-Every ingested workbook is copied into `VAULT_DIR` before it is parsed, named by
-content hash and filed by month. That is the recovery story: a parser fix can be
-replayed over the vault to rebuild the portfolio, and "what did the file actually
-say" stays answerable. It holds real portfolio data — back it up with the
-database, and keep it off any share the whole organisation can read.
-```
+The README paragraph this step originally carried was brought forward to Task 2,
+so that `vault/` was documented from the moment it started holding real data
+rather than at the end of the phase. Confirm it is present and still accurate —
+`grep -n VAULT_DIR README.md` — and correct it if the implementation drifted.
 
 - [ ] **Step 3: Mark the phase in the spec**
 
