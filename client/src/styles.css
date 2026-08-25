@@ -243,6 +243,17 @@ a.btn { text-decoration: none; }
 .chip.solid.critical { box-shadow: 0 0 16px -6px var(--glow-critical); }
 .chip.solid.good { box-shadow: 0 0 16px -6px var(--glow-accent); }
 
+/* Change markers (ChangeBadge). Top-level and unscoped on purpose — an
+   earlier defect had RAG colour rules scoped under .kpi, which silently did
+   nothing anywhere else. Fixed brand hexes rather than the theme-tinted
+   --good/--critical: the plan pins these to the literal Pantone references
+   (192 C worse, 354 C better) so the marker reads the same across identities. */
+.change { display: inline-flex; align-items: baseline; gap: 4px; font-size: 11px; font-weight: 700; margin-left: 8px; white-space: nowrap; }
+.change-worse { color: var(--s192); }
+.change-better { color: var(--p354); }
+.change-neutral,
+.change-new { color: var(--sgrey); }
+
 /* progress + score bars */
 .bar { height: 7px; border-radius: 99px; background: var(--well); overflow: hidden; margin-top: 7px; }
 .bar.slim { height: 5px; }

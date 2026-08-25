@@ -6,6 +6,7 @@
  */
 import { fmtDate, fmtMoney } from "../lib/format.js";
 import { CountUp, useGrow, useReveal } from "../lib/motion.jsx";
+import ChangeBadge from "./ChangeBadge.jsx";
 
 const HEALTH_CHIP = { Green: "good", Amber: "warn", Red: "critical" };
 
@@ -39,6 +40,7 @@ export default function SectionPriorities({ data, onOpen }) {
             <div className="prio-body">
               <div className="row-top">
                 <button type="button" className="pname big" onClick={() => onOpen(p.id)}>{p.name}</button>
+                <ChangeBadge change={p.change} />
                 <span className={`chip solid ${HEALTH_CHIP[p.health]}`}>{p.health}</span>
                 <span className={`chip ${p.priority === "Critical" ? "critical" : p.priority === "High" ? "warn" : "muted"}`}>{p.priority}</span>
                 <span className="micro">{p.owner || "no owner"} · {p.department}</span>
@@ -72,6 +74,7 @@ export default function SectionPriorities({ data, onOpen }) {
               <div className="watch" key={w.id}>
                 <div className="row-top">
                   <button type="button" className="pname" onClick={() => onOpen(w.id)}>{w.name}</button>
+                  <ChangeBadge change={w.change} />
                   <span className="micro push">{w.score}</span>
                 </div>
                 <p className="micro">{w.why}</p>

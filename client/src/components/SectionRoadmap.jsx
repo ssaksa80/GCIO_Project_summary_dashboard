@@ -7,6 +7,7 @@ import { useMemo } from "react";
 import { fmtDate, fmtMoney } from "../lib/format.js";
 import { CountUp, useReveal } from "../lib/motion.jsx";
 import { PillarSpend, useTokens } from "./charts.jsx";
+import ChangeBadge from "./ChangeBadge.jsx";
 
 const HEALTH_CHIP = { Green: "good", Amber: "warn", Red: "critical" };
 const DAY = 86400000;
@@ -72,6 +73,7 @@ export default function SectionRoadmap({ data, theme, onOpen }) {
               <div className="lane" key={p.id}>
                 <div className="lane-label">
                   <button type="button" className="pname" onClick={() => onOpen(p.id)}>{p.name}</button>
+                  <ChangeBadge change={p.change} />
                   <span className="micro">{p.owner || "no owner"} · {Math.round(p.percentComplete)}%{p.onHold ? " · on hold" : ""}</span>
                 </div>
                 <div className="lane-track">
@@ -115,6 +117,7 @@ export default function SectionRoadmap({ data, theme, onOpen }) {
                   <tr key={p.id}>
                     <td>
                       <button type="button" className="linkish strong" onClick={() => onOpen(p.id)}>{p.name}</button>
+                      <ChangeBadge change={p.change} />
                       <div className="micro">{p.pillar}</div>
                     </td>
                     <td><span className={`chip ${p.status === "Approved" ? "good" : "muted"}`}>{p.status}</span></td>
@@ -139,6 +142,7 @@ export default function SectionRoadmap({ data, theme, onOpen }) {
                 <span className="micro push">{fmtDate(m.dueDate)}</span>
               </div>
               <button type="button" className="meta linkish" onClick={() => onOpen(m.id)}>{m.project}</button>
+              <ChangeBadge change={m.change} />
             </div>
           ))}
         </article>

@@ -7,6 +7,7 @@
  */
 import { fmtDate } from "../lib/format.js";
 import { CountUp, useGrow, useReveal } from "../lib/motion.jsx";
+import ChangeBadge from "./ChangeBadge.jsx";
 
 const STATUS_CHIP = {
   Compliant: "good",
@@ -90,6 +91,7 @@ export default function SectionPosture({ data, onOpen }) {
           <div className="row-item posture-row" key={`${d.domain}-${d.control}`}>
             <div className="row-top">
               <span className="strong">{d.domain}</span>
+              <ChangeBadge change={d.change} />
               <span className={`chip solid ${STATUS_CHIP[d.status]}`}>{d.status}</span>
               {d.criticalFindings > 0 && (
                 <span className="chip critical">{d.criticalFindings} critical</span>
@@ -133,6 +135,7 @@ export default function SectionPosture({ data, onOpen }) {
                   <tr key={`${d.domain}-${d.control}`}>
                     <td>
                       <span className="strong">{d.domain}</span>
+                      <ChangeBadge change={d.change} />
                       {d.control && <div className="micro">{d.control}</div>}
                     </td>
                     <td><span className={`chip ${STATUS_CHIP[d.status]}`}>{d.status}</span></td>
