@@ -1287,6 +1287,25 @@ Expected: 0 collisions. If the badge text pushes a row into a collision, shorten
 the exported form (the slide can say `▲ Red` where the web says
 `▲ health Green to Red`) rather than loosening the audit.
 
+- [ ] **Step 4b: The exports must say when history is thin, too**
+
+A deck that shows no change markers and does not explain why reads as a stable
+portfolio. That is the same inference the web version was changed to prevent,
+and a deck is the artefact that gets forwarded and read without anyone present
+to explain it — so it needs the line more, not less.
+
+Each of `pptx.js`, `word.js` and `excel.js` should carry one line when
+`summary.sections.historyAvailable` is false, in whatever the natural place is
+for that format — under the title on the first slide, in the header paragraph,
+on the summary sheet. Same two sentences the client uses, chosen the same way
+from `summary.historyStartedAt`:
+
+- nothing recorded at all → `No change history yet — it begins with the next upload.`
+- history begins after this period → `No change history before 25 Aug.`
+
+This is also what justifies the export route loading `historyStartedAt` at all;
+without it that query is plumbing nobody reads.
+
 - [ ] **Step 5: Verify by eye**
 
 ```bash
