@@ -273,6 +273,31 @@ git add server/changes.js test/domain/changes.test.js
 git commit -m "feat(changes): decide what a change is and how to say it"
 ```
 
+**Amended after review.** Six defects in the vocabulary above, all mine, all
+found by reading it rather than running it:
+
+1. `targetEndDate` null on ONE side fell through to `dayjs(null).diff(...)` and
+   printed `target date pulled in NaN days`. The column is `DATE NULL` and
+   ingest leaves it unset routinely, so this was guaranteed the first time a
+   Proposed project acquired a date. Acquiring or losing a commitment is now its
+   own neutral case with its own sentence.
+2. `worst` had two values, so a project whose only move was a neutral status
+   transition came back `better` and Task 7 would have painted a green
+   improvement arrow on it. `worst` is now `worse | better | neutral`.
+3. The headline's up/down word read the ROUNDED delta while `direction` read the
+   unrounded one, so a four-fils spend rise printed `spend down 0` beside a red
+   badge. Both now read the same number, and a sub-rounding move says "slightly".
+4. Money and percentages went out unformatted — `budget up 250000`, where every
+   other number in the product goes through `fmtMoney`/`fmtPct`. The local
+   `round1` duplicate is deleted in favour of the shared one, which has the
+   `Number.isFinite` guard the copy lacked.
+5. `budget` rising was "better" purely by omission from `RISING_IS_WORSE`. A
+   budget increase is either secured funding or an overrun being formalised, and
+   this module cannot tell which — the same position `status` is in. Now neutral.
+6. `crossedBudget` fired when the budget was CUT underneath flat spend, which
+   Task 5 would have counted as overspending. It now also requires the budget
+   not to have fallen.
+
 ---
 
 ### Task 2: Read the baseline and the current version in one query
@@ -906,6 +931,8 @@ export function summariseChanges(changes) {
     if (health?.to === "Red" && health.from !== "Red") digest.wentRed += 1;
     if (health?.from === "Red" && health.to !== "Red") digest.recovered += 1;
     if (entry.fields?.targetEndDate?.days > 0) digest.slipped += 1;
+    /* crossedBudget already refuses to fire when the budget was cut underneath
+       flat spend, so this counts overspending rather than re-baselining. */
     if (entry.crossedBudget) digest.overspent += 1;
   }
   return digest;
@@ -1073,9 +1100,15 @@ export default function ChangeBadge({ change }) {
     return <span className="change change-new" title={`First recorded ${since}`}>new since {since}</span>;
   }
 
+  /* Three states, not two. A neutral move — an ordinary status transition, a
+     budget that changed for reasons we cannot read — is neither an improvement
+     nor a regression, and painting it green would tell the CIO something the
+     data does not support. */
+  const mark = change.worst === "worse" ? "▲" : change.worst === "better" ? "▼" : "•";
+
   return (
     <span className={`change change-${change.worst}`} title={describe(change)}>
-      {change.worst === "worse" ? "▲" : "▼"} {change.headline}
+      {mark} {change.headline}
     </span>
   );
 }
@@ -1088,8 +1121,9 @@ function describe(change) {
 ```
 
 Colours come from the brand palette already in the stylesheet — `worse` uses
-Pantone 192 C (`#E40046`), `better` uses Pantone 354 C (`#00B140`), and
-`change-new` uses the grey (`#414141`). Read the existing `.rag` rules and match
+Pantone 192 C (`#E40046`), `better` uses Pantone 354 C (`#00B140`), and both
+`change-neutral` and `change-new` use the grey (`#414141`). Four states, not
+three: neutral must not borrow the green. Read the existing `.rag` rules and match
 how they are scoped; note the earlier defect where `.rag` styles scoped under
 `.kpi` silently failed elsewhere.
 
