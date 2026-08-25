@@ -1138,7 +1138,8 @@ git commit -m "feat(api): the summary carries what changed, or says it cannot kn
 
 ### Task 7: Show it — client and exports
 
-**Two rules for this task, both from the Task 4 review.**
+**Three rules for this task. The first two come from the Task 4 review, the
+third from Task 5's.**
 
 **Never write to `item.change`.** `annotateChanges` stores the SAME object
 reference on every item sharing a project id — the same change object is on the
@@ -1155,6 +1156,17 @@ section item always means the project's id. That is true of every builder today
 — checked against all five — but nothing enforces it, so a future builder that
 surfaced a milestone's or risk's own id under the same field name would be
 silently misannotated with its parent project's change.
+
+**Do not present the digest counters as if they add up, and never let `changed`
+stand alone as a risk number.** They are not additive: one project that went
+Red, slipped its date and crossed its budget in the same period increments four
+counters. And `changed` counts every project that moved at all, including ones
+whose only movement was neutral — a status advancing from Approved to In
+Progress, or a budget re-baselined. "5 changed" next to "1 went Red" invites a
+reader to do arithmetic that does not work, and reads as more alarming than it
+is. Show the movement counters beside the standing state the CIO already has —
+`kpis.health.red` — so the sentence is "3 Red, 1 of them new this week" rather
+than a row of chips that imply a total.
 
 
 **Files:**
@@ -1417,6 +1429,16 @@ node scripts/pptx-audit.mjs
 In `README.md`, under what the CIO sees, state plainly what the markers mean and
 that history begins when the database does — a project shows "new since" until
 it has been ingested twice.
+
+State one limitation too, because it is the kind a reader would otherwise
+discover by being misled. This compares two endpoints — where a project stood at
+the start of the period and where it stands now — not the path between them. A
+project that was Red at the start, recovered, and slid back to Red by the end
+shows as no change at all, because both endpoints are Red. The dashboard is not
+claiming it was stable; it is reporting that it ends the period where it began.
+The standing Red count in the KPI strip still shows it as Red throughout.
+Answering "how long has this been Red" properly needs the trend work deferred to
+a later phase.
 
 - [ ] **Step 3: Mark the spec**
 
