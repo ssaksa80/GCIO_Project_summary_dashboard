@@ -136,6 +136,30 @@ async function runsFor(ex, fileName) {
   return recordset;
 }
 
+/** How many dbo.Project rows currently belong to one filename. */
+async function projectCountFor(ex, fileName) {
+  const { recordset } = await ex.query(
+    "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+    [{ name: "f", type: sql.NVarChar(260), value: fileName }]
+  );
+  return recordset[0].n;
+}
+
+/**
+ * Make repo[method] throw once, with `message`, then delegate to the real
+ * implementation for every call after. Mutates repo in place -- callers use
+ * a fresh scenarioRepos(ex) each time, so this can never leak between
+ * scenarios.
+ */
+function failOnce(repo, method, message) {
+  const original = repo[method].bind(repo);
+  let failed = false;
+  repo[method] = async (...args) => {
+    if (!failed) { failed = true; throw new Error(message); }
+    return original(...args);
+  };
+}
+
 test("the SQL path works end to end against a real instance", { skip: !live }, async (t) => {
   const pool = await new sql.ConnectionPool(buildConfig(process.env)).connect();
   const ex = makeExecutor(pool, { logger: quiet });
@@ -143,6 +167,17 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await cleanup(ex);
     await pool.close();
   });
+
+  /* This suite migrates and deletes. Say where, so a stray DB_LIVE=1 in the
+     wrong shell is visible in the output rather than discovered afterwards.
+     A name allow-list would not help -- the development database is called
+     GCIO and so would production be -- so refuse outright on NODE_ENV first,
+     then announce the target regardless of what it turns out to be. */
+  assert.notEqual(process.env.NODE_ENV, "production",
+    "refusing to run the destructive live suite with NODE_ENV=production");
+  const target = await ex.query("SELECT @@SERVERNAME AS server, DB_NAME() AS db");
+  console.log(`[live] running against ${target.recordset[0].server} / ${target.recordset[0].db}`);
+
   await cleanup(ex);
 
   await t.test("migrations apply, and re-applying them is a no-op", async () => {
@@ -306,7 +341,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
     const runs = await repos.ingestRuns.recent({ limit: 5 });
     assert.equal(runs[0].outcome, "unchanged", "the second run should have been recognised as unchanged");
-    assert.equal(runs[1].outcome, "applied");
+    assert.equal(runs[1].outcome, "applied", "the first run should still read applied");
 
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -328,7 +363,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await versions.appendChanged([{ project: changed, hash: hashProject(changed) }], { ingestRunId: null });
 
     const afterChange = await versions.historyFor(subject.id);
-    assert.equal(afterChange.length, before.length + 2);
+    assert.equal(afterChange.length, before.length + 2,
+      "expected the earlier no-op version plus exactly one more for the actual change");
     assert.equal(afterChange[0].health, changed.health, "history is not newest-first");
 
     await ex.query("DELETE FROM dbo.ProjectVersion WHERE ProjectId = @id",
@@ -349,13 +385,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const { dir: vaultDir, vault } = scenarioVault();
     try {
       const parsed = scenarioParsed(scenarioFile, "S1");
-
-      const originalReplace = repos.projects.replaceForFile.bind(repos.projects);
-      let failNext = true;
-      repos.projects.replaceForFile = async (...args) => {
-        if (failNext) { failNext = false; throw new Error("simulated first-ingest failure"); }
-        return originalReplace(...args);
-      };
+      failOnce(repos.projects, "replaceForFile", "simulated first-ingest failure");
 
       const firstStore = new SqlStore(repos, { vault, logger: quiet });
       await assert.rejects(
@@ -363,11 +393,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
         /simulated first-ingest failure/
       );
 
-      const { recordset: afterFailure } = await ex.query(
-        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
-        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
-      );
-      assert.equal(afterFailure[0].n, 0, "the failed ingest left rows behind");
+      assert.equal(await projectCountFor(ex, scenarioFile), 0, "the failed ingest left rows behind");
 
       /* A restart is not an escape hatch: retry with a BRAND NEW store --
          but the SAME on-disk vault, since a real restart keeps that -- using
@@ -376,17 +402,13 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       const secondStore = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
       await secondStore.applyFile(parsed, { trigger: "replay" });
 
-      const { recordset: afterRetry } = await ex.query(
-        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
-        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
-      );
-      assert.equal(afterRetry[0].n, parsed.projects.length,
+      assert.equal(await projectCountFor(ex, scenarioFile), parsed.projects.length,
         "identical bytes after a failed first ingest were skipped as unchanged, hiding the file");
 
       const runs = await runsFor(ex, scenarioFile);
-      assert.equal(runs.length, 2);
+      assert.equal(runs.length, 2, "expected exactly one failed attempt and one successful retry");
       assert.equal(runs[0].Outcome, "applied", "the retry should have applied, not been skipped as unchanged");
-      assert.equal(runs[1].Outcome, "failed");
+      assert.equal(runs[1].Outcome, "failed", "the first attempt should be recorded as failed");
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }
@@ -405,26 +427,19 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       const store2 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
       await store2.removeFile(scenarioFile);
 
-      const { recordset: afterRemove } = await ex.query(
-        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
-        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
-      );
-      assert.equal(afterRemove[0].n, 0);
+      assert.equal(await projectCountFor(ex, scenarioFile), 0, "removeFile did not remove the rows");
 
       const store3 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
       await store3.applyFile(parsed, { trigger: "replay" });
 
-      const { recordset: afterRedrop } = await ex.query(
-        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
-        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
-      );
-      assert.equal(afterRedrop[0].n, parsed.projects.length, "re-dropping after removal did not apply");
+      assert.equal(await projectCountFor(ex, scenarioFile), parsed.projects.length,
+        "re-dropping after removal did not apply");
 
       const runs = await runsFor(ex, scenarioFile);
-      assert.equal(runs.length, 3);
+      assert.equal(runs.length, 3, "expected apply, remove, then re-apply -- three runs total");
       assert.equal(runs[0].Outcome, "applied", "re-dropping after a removal should apply, not read unchanged");
-      assert.equal(runs[1].Outcome, "removed");
-      assert.equal(runs[2].Outcome, "applied");
+      assert.equal(runs[1].Outcome, "removed", "the middle run should be the removal");
+      assert.equal(runs[2].Outcome, "applied", "the first drop should still read applied");
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }
@@ -456,12 +471,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       const v2 = { ok: true, file: scenarioFile, projects: v2Projects, posture: v1.posture,
                    bytes: Buffer.concat([v1.bytes, Buffer.from([0x00])]) };
 
-      const originalReplace = repos.projects.replaceForFile.bind(repos.projects);
-      let failNext = true;
-      repos.projects.replaceForFile = async (...args) => {
-        if (failNext) { failNext = false; throw new Error("simulated snapshot write failure"); }
-        return originalReplace(...args);
-      };
+      failOnce(repos.projects, "replaceForFile", "simulated snapshot write failure");
 
       await assert.rejects(
         () => store.applyFile(v2, { trigger: "replay" }),
@@ -488,10 +498,10 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       assert.equal(changedRow.Health, v2Projects[0].health, "v2 was not applied on retry");
 
       const runs = await runsFor(ex, scenarioFile);
-      assert.equal(runs.length, 3);
-      assert.equal(runs[0].Outcome, "applied");
-      assert.equal(runs[1].Outcome, "failed");
-      assert.equal(runs[2].Outcome, "applied");
+      assert.equal(runs.length, 3, "expected v1 applied, v2 failed, then v2 applied on retry -- three runs total");
+      assert.equal(runs[0].Outcome, "applied", "the retry should have applied");
+      assert.equal(runs[1].Outcome, "failed", "the first v2 attempt should be recorded as failed");
+      assert.equal(runs[2].Outcome, "applied", "v1's original apply should still read applied");
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }
@@ -512,10 +522,11 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       );
 
       const runs = await runsFor(ex, scenarioFile);
-      assert.equal(runs.length, 1);
+      assert.equal(runs.length, 1, "expected exactly one run despite the later refresh failure");
       assert.equal(runs[0].Outcome, "applied",
         "a refresh failure after a real success was recorded as anything but applied");
-      assert.equal(runs[0].ProjectsChanged, parsed.projects.length);
+      assert.equal(runs[0].ProjectsChanged, parsed.projects.length,
+        "every project in this apply is new, so all of them should count as changed");
 
       const { recordset: projectRows } = await ex.query(
         "SELECT ProjectId, Health FROM dbo.Project WHERE SourceFile = @f",
@@ -598,6 +609,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     }
   });
 
+  /* Two more live-only checks beyond the required six: the phase's central
+     claim about rejected workbooks, and the vault's own dedup guarantee. */
   await t.test("a rejected workbook records a failed run", async () => {
     const scenarioFile = "livetest-rejected.xlsx";
     const repos = scenarioRepos(ex);
@@ -689,5 +702,43 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     assert.equal(await roleMapping.seedIfEmpty("should-not-be-added"), null);
     const after = await roleMapping.getMap({ fresh: true });
     assert.equal(after["should-not-be-added"], undefined);
+  });
+
+  await t.test("the suite leaves nothing behind", async () => {
+    /* Every scenario writes under a livetest% filename and is responsible for
+       its own rows. A cold run was once seen to finish 21/21 green while
+       leaving 34 dbo.Project, 313 dbo.ProjectChild and 10 dbo.PostureDomain
+       rows behind -- traceable to the "history records a version once..."
+       subtest, which uses the shared FILE constant, never calls removeFile,
+       and relies entirely on t.after. Checking only the three history
+       tables, as every review before this one did, would have missed it.
+       Calling cleanup(ex) first and THEN asserting zero is deliberate: this
+       tests cleanup's completeness rather than racing it. */
+    await cleanup(ex);
+
+    for (const [table, column] of [
+      ["Project", "SourceFile"],
+      ["ProjectChild", "SourceFile"],
+      ["PostureDomain", "SourceFile"],
+      ["SourceFile", "FileName"],
+      ["IngestRun", "FileName"],
+    ]) {
+      const { recordset } = await ex.query(
+        `SELECT COUNT(*) AS n FROM dbo.${table} WHERE ${column} LIKE 'livetest%'`
+      );
+      assert.equal(recordset[0].n, 0, `dbo.${table} still holds rows this suite created`);
+    }
+
+    /* ProjectVersion has neither column: it is identified by the ProjectId
+       markers this suite's scenarios use (S1-.. through S6-.. and SV-.. tag
+       prefixes, plus the literal PRJ-HIST-TEST) or, for the given-block
+       history that goes through a real ingest, by the IngestRunId of
+       whichever livetest% run wrote it. */
+    const { recordset: versions } = await ex.query(`
+      SELECT COUNT(*) AS n FROM dbo.ProjectVersion
+      WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'S[1-6V]-%'
+         OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE 'livetest%')
+    `);
+    assert.equal(versions[0].n, 0, "dbo.ProjectVersion still holds rows this suite created");
   });
 });
