@@ -7,6 +7,7 @@ import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek.js";
 import { fmtMoney, fmtDate, round1 } from "./format.js";
 import { buildSections, annotateChanges } from "./sections.js";
+import { summariseChanges } from "./changes.js";
 
 dayjs.extend(isoWeek);
 
@@ -151,6 +152,7 @@ export function buildSummary(store, period, dateISO, { changes = null } = {}) {
     generatedAt: new Date().toISOString(),
     currency: "AED",
     kpis,
+    changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
     sections: annotateChanges(
       buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
       changes

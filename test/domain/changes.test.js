@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compareVersions, TRACKED_FIELDS } from "../../server/changes.js";
+import { compareVersions, TRACKED_FIELDS, summariseChanges } from "../../server/changes.js";
 
 const version = (over = {}) => ({
   recordedAt: "2026-08-18T09:00:00.000Z",
@@ -146,4 +146,46 @@ test("the headline formats amounts the way the rest of the product does", () => 
 
   const risks = compareVersions(version(), version({ openRisks: 4 }));
   assert.equal(risks.headline, "open risks up 3");
+});
+
+// --- summariseChanges: the portfolio-level digest ---
+
+test("the digest counts what a CIO would ask about first", () => {
+  const changes = new Map([
+    ["A", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+    ["B", { worst: "worse", fields: { targetEndDate: { days: 30, direction: "worse" } } }],
+    ["C", { worst: "better", fields: { health: { from: "Red", to: "Amber", direction: "better" } } }],
+    ["D", { trackedSince: "2026-08-24T00:00:00.000Z" }],
+  ]);
+
+  const digest = summariseChanges(changes);
+  assert.equal(digest.changed, 3, "newly tracked projects are not changes");
+  assert.equal(digest.wentRed, 1);
+  assert.equal(digest.recovered, 1);
+  assert.equal(digest.slipped, 1);
+  assert.equal(digest.newlyTracked, 1);
+});
+
+test("a project that no longer exists is not counted", () => {
+  /* ProjectVersion has no foreign key to dbo.Project, so a removed workbook's
+     history survives. It must not keep inflating this week's numbers. */
+  const changes = new Map([
+    ["GONE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+    ["HERE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+  ]);
+
+  const digest = summariseChanges(changes, new Set(["HERE"]));
+  assert.equal(digest.changed, 1);
+  assert.equal(digest.wentRed, 1);
+});
+
+test("the digest is null when history is unavailable, not a row of zeroes", () => {
+  /* Zeroes would read as "nothing changed this week", which is a claim we
+     cannot make without history. */
+  assert.equal(summariseChanges(null), null);
+});
+
+test("an empty map is a real answer: nothing moved", () => {
+  const digest = summariseChanges(new Map());
+  assert.deepEqual(digest, { changed: 0, wentRed: 0, recovered: 0, slipped: 0, overspent: 0, newlyTracked: 0 });
 });

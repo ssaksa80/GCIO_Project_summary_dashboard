@@ -157,3 +157,38 @@ export function compareVersions(baseline, current) {
       && Number(current.budget) >= Number(baseline.budget),
   };
 }
+
+/**
+ * Portfolio-level counts, for the narrative and the KPI strip.
+ *
+ * @param {Map<string, object>|null} changes
+ * @param {Set<string>|null} liveProjectIds when given, only these are counted
+ * @returns {null|{changed: number, wentRed: number, recovered: number,
+ *                 slipped: number, overspent: number, newlyTracked: number}}
+ *          null when there is no history to count
+ */
+export function summariseChanges(changes, liveProjectIds = null) {
+  if (!changes) return null;
+
+  const digest = { changed: 0, wentRed: 0, recovered: 0, slipped: 0, overspent: 0, newlyTracked: 0 };
+
+  for (const [projectId, entry] of changes) {
+    /* History outlives the portfolio on purpose: ProjectVersion has no foreign
+       key to dbo.Project, so a workbook removed last month still has rows here.
+       That is right for an audit view and wrong for a digest — "3 projects went
+       Red" must mean three projects that still exist. Nothing ever revisits a
+       removed project, so without this the number never self-corrects. */
+    if (liveProjectIds && !liveProjectIds.has(projectId)) continue;
+    if (entry.trackedSince) { digest.newlyTracked += 1; continue; }
+    digest.changed += 1;
+
+    const health = entry.fields?.health;
+    if (health?.to === "Red" && health.from !== "Red") digest.wentRed += 1;
+    if (health?.from === "Red" && health.to !== "Red") digest.recovered += 1;
+    if (entry.fields?.targetEndDate?.days > 0) digest.slipped += 1;
+    /* crossedBudget already refuses to fire when the budget was cut underneath
+       flat spend, so this counts overspending rather than re-baselining. */
+    if (entry.crossedBudget) digest.overspent += 1;
+  }
+  return digest;
+}
