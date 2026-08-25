@@ -170,7 +170,7 @@ Roles come from directory group membership, mapped in `dbo.RoleMapping`:
 | --- | --- |
 | Viewer | read every view, run exports, download the template |
 | PM | everything a viewer may, plus upload workbooks |
-| Admin | everything, plus read the audit trail |
+| Admin | everything, plus read the audit trail and recent ingest run history |
 
 An account in no mapped group has no access at all — there is no default role.
 On a **fresh database** set `SEED_ADMIN_GROUP` so the first administrator can
@@ -201,6 +201,26 @@ No SQL Server and no directory needed: the bundled sample portfolio loads, any
 password is accepted, and the role comes from `DEV_ROLE`. Both switches are
 refused when `NODE_ENV=production`.
 
+`npm test` runs the hermetic suite — no database, no network. The live SQL suite
+is separate:
+
+```bash
+DB_LIVE=1 npm run test:db
+```
+
+It migrates and deletes against whatever `.env` resolves to, so it prints the
+server and database it is about to touch and refuses to run with
+`NODE_ENV=production`. Everything it writes is named `livetest*` and swept
+afterwards, and a final subtest asserts the sweep was complete.
+
+Its subtests all nest inside one top-level test, which means
+`--test-name-pattern` cannot isolate one of them: Node only descends into a
+parent whose own name matches, so a scenario-specific pattern silently runs
+nothing at all. Chasing a single red scenario currently costs the whole file —
+about eight seconds warm, rather more on the first run in a session.
+Restructuring the scenarios as independent top-level tests sharing one pool
+would fix it, and is worth doing when Phase 2 extends this suite.
+
 ### Continuous operation
 
 The process is built to stay up: malformed workbooks are logged and skipped
@@ -209,6 +229,17 @@ connection surfaces as a clean 503 and is reconnected rather than wedging the
 pool, and with `STORE=memory` the store snapshots to `data/.cache.json` after
 every ingest for warm restarts. `/healthz` reports liveness and `/readyz`
 reports whether there is data to serve — point monitoring at `/readyz`.
+
+When the dashboard does not show a workbook you just dropped, `GET
+/api/ingest/runs` (admin only) lists the most recent ingest attempts and what
+each one did — `applied` with the number of projects that actually changed,
+`unchanged` because the content matched what is already live, `failed` with the
+specific reason, or `removed`. A run that opened and never closed
+(`finishedAt: null`) means the process died mid-ingest. A workbook that never
+appears here at all did not reach the ingest path — check the server log for a
+`rejected <file>: ...` line. Under `STORE=memory` the response reports
+`historyEnabled: false` and an empty list, because there is no database to hold
+the history.
 
 ## API surface (for integration)
 
@@ -225,6 +256,7 @@ Role requirements are noted where they apply.
 | `POST /api/auth/logout` | end the session |
 | `GET /api/me` | who is signed in, and which sign-in methods this server offers |
 | `GET /api/audit?limit=&action=` | audit trail — **admin only**, and the read is itself audited |
+| `GET /api/ingest/runs?limit=` | recent ingest attempts and their outcomes — **admin only**; `historyEnabled: false` under `STORE=memory` |
 | `GET /api/health` | project/file counts, last ingest |
 | `GET /api/summary?period=daily\|weekly\|monthly\|yearly&date=YYYY-MM-DD` | full executive summary payload |
 | `GET /api/projects?department=&status=&health=&q=&sort=` | filtered portfolio rows |
