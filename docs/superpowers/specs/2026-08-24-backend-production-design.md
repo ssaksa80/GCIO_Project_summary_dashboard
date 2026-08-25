@@ -1,7 +1,10 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** in build — Phase 0 largely delivered
+**Status:** Phase 0 complete except one item — the SQL Server path has never
+run against a live instance, because the database on the build machine cannot
+be created without administrative access that does not currently exist. Tagged
+`v1.1.0-p0-rc1` rather than a release: everything else is built and verified.
 **Amended 2026-08-24:** the stack changed after this was approved. DExDashBoard
 (DEDB) and FMD already run this organisation's dashboards in production on
 **SQL Server with LDAP and Entra SSO**, so GCIO mirrors that rather than
@@ -225,7 +228,7 @@ until GitHub Actions minutes are available.
 
 | Phase | Delivers | Done when |
 | --- | --- | --- |
-| **P0 — safe pilot** | Entra SSO, roles, audit, helmet/CSRF/limits, upload sniffing, IIS + TLS, Windows service, health endpoints, first domain tests | An unauthenticated request gets 401; a Viewer's upload gets 403; both are covered by tests |
+| **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 98 tests | **Met, except the live SQL run.** An unauthenticated request gets 401 and a Viewer's upload 403, both covered by tests and verified against the running server |
 | **P1 — persistence** | Postgres, migrations, repository split, file vault, `STORE=memory` retained | Restarting mid-ingest loses nothing; the same summary comes out of both adapters |
 | **P2 — history pays off** | Real trends, "changed since last week" in sections and exports, question ageing | The weekly brief states what changed, sourced from versions rather than file dates |
 | **P3 — scale and ops** | Role split, advisory-lock election, worker-thread parsing, metrics, backup/restore drill, runbook | Two instances started together: exactly one ingests; a restore drill passes |

@@ -640,7 +640,19 @@ git commit -m "docs(deploy): Windows service installer and IIS TLS runbook"
 
 ---
 
-### Task 6: Close out the phase
+### Task 6: Close out the phase ✅ DONE (with one item outstanding)
+
+**Ran 2026-08-25.** 98 tests pass, the client builds, all four export formats
+return valid files and the deck audits clean at 11 slides. Under a production
+configuration the process binds loopback only — verified unreachable on
+192.0.2.1 — every `/api` route refuses an anonymous caller with 401, health
+and readiness stay open, and all five security headers are present.
+`loadConfig` was confirmed to refuse `AUTH_MODE=dev` in production, LDAP without
+a URL, and SSO without a tenant.
+
+**Outstanding:** Task 2. Tagged `v1.1.0-p0-rc1`, not a release.
+
+### Original checklist
 
 - [ ] **Step 1: Run everything**
 
