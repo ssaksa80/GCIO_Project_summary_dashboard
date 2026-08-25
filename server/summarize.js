@@ -108,11 +108,14 @@ export async function loadHistoryStart(store) {
  * @param {import('./store.js').Store} store
  * @param {"daily"|"weekly"|"monthly"|"yearly"} period
  * @param {string} dateISO anchor date (yyyy-mm-dd)
- * @param {{changes?: Map<string, object>|null}} [opts] changes computed by loadChanges,
- *        already scoped to this period. Defaults to null so every existing
- *        three-argument caller keeps working unchanged and sees nothing annotated.
+ * @param {{changes?: Map<string, object>|null, historyStartedAt?: string|null}} [opts]
+ *        changes computed by loadChanges and historyStartedAt computed by
+ *        loadHistoryStart, both already resolved by the caller and passed
+ *        straight through onto the returned payload. Both default to null so
+ *        every existing three-argument caller keeps working unchanged and
+ *        sees nothing annotated and no history start date.
  */
-export function buildSummary(store, period, dateISO, { changes = null } = {}) {
+export function buildSummary(store, period, dateISO, { changes = null, historyStartedAt = null } = {}) {
   const anchor = dayjs(dateISO);
   const { start, end } = periodWindow(period, dateISO);
   const todayISO = dayjs().format("YYYY-MM-DD");
@@ -171,6 +174,7 @@ export function buildSummary(store, period, dateISO, { changes = null } = {}) {
     currency: "AED",
     kpis,
     changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
+    historyStartedAt,
     sections: annotateChanges(
       buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
       changes

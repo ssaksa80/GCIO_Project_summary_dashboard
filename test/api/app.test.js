@@ -462,7 +462,8 @@ test("a store that knows what changed puts it on the summary", async () => {
     ...res.body.sections.priorities.watchlist,
     ...res.body.sections.successes.delivered,
   ].find((item) => item.id === first.id);
-  if (annotated) assert.equal(annotated.change.worst, "worse");
+  assert.ok(annotated, "expected the changed project to appear in a section");
+  assert.equal(annotated.change.worst, "worse");
 });
 
 test("a history query that fails does not take down the briefing", async () => {
@@ -513,6 +514,33 @@ test("a failure reading when history begins does not blank the dashboard", async
   assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
   /* changesSince still worked, so history is available -- just not its start. */
   assert.equal(res.body.sections.historyAvailable, true);
+});
+
+test("the export route's history guards are exercised too, not just /api/summary", async () => {
+  /* /api/export/:format carries the identical loadChanges/loadHistoryStart
+     wiring as /api/summary. Every other test in this file hits /api/summary,
+     so without this one a future edit that broke only the export handler
+     would pass the whole suite while reintroducing the exact 500 the guard
+     fix was for. */
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => new Map();
+  store.historyStartedAt = async () => { throw new Error("history table is unreachable"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.post("/api/export/html").send({ period: "weekly", date: "2026-08-25" });
+
+  assert.equal(res.status, 200, "a history failure blanked the export");
+  assert.match(res.headers["content-type"], /text\/html/);
 });
 
 /* ------------------------------------------------------------- SSO config */

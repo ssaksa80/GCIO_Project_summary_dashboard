@@ -66,6 +66,23 @@ export function createApp(deps) {
   const auditFrom = (req, event) =>
     audit.append({ ...event, ip: req.ip, userAgent: req.get?.("user-agent"), requestId: req.id });
 
+  /**
+   * Both /api/summary and /api/export/:format need the same summary, built
+   * the same way: history and its start date loaded concurrently -- each
+   * already swallows its own failure, so there is nothing here for Promise.all
+   * to obscure -- then handed to buildSummary. Concurrency (not two sequential
+   * awaits) matters most exactly when the database is degraded: that is when
+   * both guards are doing their job, and sequential awaits would make the
+   * request sit out two connection timeouts back to back before answering.
+   */
+  const summarize = async (period, dateISO) => {
+    const [changes, historyStartedAt] = await Promise.all([
+      loadChanges(store, period, dateISO),
+      loadHistoryStart(store),
+    ]);
+    return buildSummary(store, period, dateISO, { changes, historyStartedAt });
+  };
+
   /* Monitoring must not need a session. */
   app.get("/healthz", (req, res) => {
     res.json({ status: "ok", uptimeSec: Math.round((Date.now() - startedAt) / 1000), version: VERSION });
@@ -130,11 +147,7 @@ export function createApp(deps) {
   app.get("/api/summary", wrap(async (req, res) => {
     const period = PERIODS.has(req.query.period) ? req.query.period : "monthly";
     const date = dayjs(req.query.date || undefined).isValid() ? dayjs(req.query.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    const changes = await loadChanges(store, period, date);
-    const historyStartedAt = await loadHistoryStart(store);
-    const summary = buildSummary(store, period, date, { changes });
-    summary.historyStartedAt = historyStartedAt;
-    res.json(summary);
+    res.json(await summarize(period, date));
   }));
   
   app.get("/api/projects", (req, res) => {
@@ -262,10 +275,7 @@ export function createApp(deps) {
     const body = req.body || {};
     const period = PERIODS.has(body.period) ? body.period : "monthly";
     const date = dayjs(body.date || undefined).isValid() ? dayjs(body.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    const changes = await loadChanges(store, period, date);
-    const historyStartedAt = await loadHistoryStart(store);
-    const summary = buildSummary(store, period, date, { changes });
-    summary.historyStartedAt = historyStartedAt;
+    const summary = await summarize(period, date);
 
     const scopeIds = Array.isArray(body.projectIds) && body.projectIds.length
       ? body.projectIds.map((id) => String(id).toUpperCase())
