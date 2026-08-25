@@ -88,7 +88,12 @@ if (config.store === "mssql") {
         "Set SEED_ADMIN_GROUP and restart, or insert a row into dbo.RoleMapping.");
   }
 
-  backends = { audit: repos.audit, sessions: repos.sessions, roleMapping: repos.roleMapping };
+  backends = {
+    audit: repos.audit,
+    sessions: repos.sessions,
+    roleMapping: repos.roleMapping,
+    ingestRuns: repos.ingestRuns,
+  };
 } else {
   store = new Store();
   backends = {
@@ -101,6 +106,9 @@ if (config.store === "mssql") {
       "gcio-dashboard-pms": "pm",
       "gcio-dashboard-admins": "admin",
     }),
+    /* No database, so no run history to show. The route says so rather than
+       pretending the list is empty. */
+    ingestRuns: null,
   };
   log("store: in-memory (set STORE=mssql for the database-backed store)");
 }
@@ -209,6 +217,7 @@ const app = createApp({
   sessions: backends.sessions,
   roleMapping: backends.roleMapping,
   audit: backends.audit,
+  ingestRuns: backends.ingestRuns,
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),

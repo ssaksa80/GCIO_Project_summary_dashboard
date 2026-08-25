@@ -174,7 +174,7 @@ test("signing out ends the session", async () => {
 });
 
 /** Like makeApp, but with a caller-supplied audit backend. */
-function makeAppWith({ role, auditBackend }) {
+function makeAppWith({ role, auditBackend, ingestRuns = null }) {
   const store = new Store();
   ingestDirectory(store, "sample-data");
   return createApp({
@@ -183,6 +183,7 @@ function makeAppWith({ role, auditBackend }) {
     sessions: memorySessions(),
     roleMapping: memoryRoleMapping({ [`gcio-dashboard-${role}s`]: role }),
     audit: auditBackend,
+    ingestRuns,
     ldapAuthenticate: devAuthenticate(role),
     dataDir: scratchDataDir(),
     clientDist: "client/dist",
@@ -232,6 +233,142 @@ test("reading the audit trail is itself audited", async () => {
 
   await admin.get("/api/audit");
   assert.ok(written.some((e) => e.action === "audit.read"), "who read the audit log was not recorded");
+});
+
+/* ------------------------------------------------------- ingest run history */
+
+test("an admin can see recent ingest runs, and a pm cannot", async () => {
+  const runs = [{
+    id: 1, fileName: "master.xlsx", trigger: "watcher",
+    startedAt: "2026-08-25T09:00:00.000Z", finishedAt: "2026-08-25T09:00:02.000Z",
+    outcome: "applied", projectsSeen: 34, projectsChanged: 3, postureRows: 10, error: null,
+  }];
+  const ingestRuns = { recent: async () => runs };
+
+  const pmApp = makeAppWith({ role: "pm", auditBackend: { append: async () => {}, recent: async () => [] } });
+  const pm = await signedIn(pmApp);
+  assert.equal((await pm.get("/api/ingest/runs")).status, 403);
+
+  const adminApp = makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  });
+  const admin = await signedIn(adminApp);
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.runs[0].outcome, "applied");
+  assert.equal(res.body.runs[0].projectsChanged, 3);
+});
+
+test("ingest runs report cleanly when the store keeps no history", async () => {
+  const adminApp = makeAppWith({ role: "admin", auditBackend: { append: async () => {}, recent: async () => [] } });
+  const admin = await signedIn(adminApp);
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.runs, []);
+  assert.equal(res.body.historyEnabled, false);
+});
+
+test("an anonymous caller cannot read ingest runs", async () => {
+  const ingestRuns = { recent: async () => [] };
+  const adminApp = makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  });
+  const res = await request(adminApp).get("/api/ingest/runs");
+  assert.equal(res.status, 401, "an unauthenticated caller must be refused before the role check runs");
+  assert.equal(res.body.error.code, "no_session");
+});
+
+test("a viewer may not read ingest runs", async () => {
+  const ingestRuns = { recent: async () => [] };
+  const viewerApp = makeAppWith({
+    role: "viewer",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  });
+  const viewer = await signedIn(viewerApp);
+  const res = await viewer.get("/api/ingest/runs");
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error.code, "forbidden");
+});
+
+test("the ingest runs limit is passed through and clamped", async () => {
+  let asked = null;
+  const ingestRuns = { recent: async (opts) => { asked = opts; return []; } };
+  const admin = await signedIn(makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  }));
+
+  await admin.get("/api/ingest/runs?limit=25");
+  assert.equal(asked.limit, 25);
+
+  await admin.get("/api/ingest/runs?limit=999999");
+  assert.equal(asked.limit, 500, "an unbounded limit was accepted");
+
+  await admin.get("/api/ingest/runs?limit=-5");
+  assert.equal(asked.limit, 1, "a negative limit was accepted");
+
+  await admin.get("/api/ingest/runs?limit=not-a-number");
+  assert.equal(asked.limit, 50, "a non-numeric limit was not defaulted");
+});
+
+test("an open run with no outcome or finish time still serialises", async () => {
+  const runs = [{
+    id: 7, fileName: "master.xlsx", trigger: "watcher",
+    startedAt: "2026-08-25T09:00:00.000Z", finishedAt: null,
+    outcome: null, projectsSeen: 0, projectsChanged: 0, postureRows: 0, error: null,
+  }];
+  const ingestRuns = { recent: async () => runs };
+  const admin = await signedIn(makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  }));
+
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.runs.length, 1, "the still-open run was dropped rather than reported");
+  assert.equal(res.body.runs[0].outcome, null);
+  assert.equal(res.body.runs[0].finishedAt, null);
+});
+
+test("a failed run's specific error reason reaches the client unaltered", async () => {
+  const runs = [{
+    id: 8, fileName: "master.xlsx", trigger: "watcher",
+    startedAt: "2026-08-25T09:00:00.000Z", finishedAt: "2026-08-25T09:00:01.000Z",
+    outcome: "failed", projectsSeen: 34, projectsChanged: 3, postureRows: 10,
+    error: "snapshot applied but history not recorded",
+  }];
+  const ingestRuns = { recent: async () => runs };
+  const admin = await signedIn(makeAppWith({
+    role: "admin",
+    auditBackend: { append: async () => {}, recent: async () => [] },
+    ingestRuns,
+  }));
+
+  const res = await admin.get("/api/ingest/runs");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.runs[0].error, "snapshot applied but history not recorded");
+});
+
+test("reading ingest runs does not write to the audit trail", async () => {
+  const written = [];
+  const ingestRuns = { recent: async () => [] };
+  const admin = await signedIn(makeAppWith({
+    role: "admin",
+    auditBackend: { append: async (e) => { written.push(e); }, recent: async () => [] },
+    ingestRuns,
+  }));
+  written.length = 0; // drop the sign-in event; only the read below is under test
+
+  await admin.get("/api/ingest/runs");
+  assert.equal(written.length, 0,
+    "reading ingest runs was audited, which reverses the deliberate decision not to");
 });
 
 /* ------------------------------------------------------------- SSO config */
