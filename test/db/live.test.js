@@ -280,10 +280,27 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await store.refresh();
 
     const summary = buildSummary(store, "weekly", "2026-08-25");
-    assert.deepEqual(Object.keys(summary.sections), ["successes", "qri", "priorities", "roadmap", "posture"]);
+    /* The five sections the CIO asked for, in order. Not an exact key list:
+       annotateChanges also records historyAvailable here, and pinning the whole
+       shape means every future addition breaks a test about section order. */
+    const sectionKeys = Object.keys(summary.sections);
+    assert.deepEqual(sectionKeys.filter((k) => k !== "historyAvailable"),
+      ["successes", "qri", "priorities", "roadmap", "posture"]);
+    assert.equal(typeof summary.sections.historyAvailable, "boolean",
+      "the summary must always say whether history was available");
     assert.ok(summary.sections.priorities.items.length > 0, "no priorities came back from SQL");
     assert.equal(summary.sections.posture.available, true, "the Posture sheet did not survive the round trip");
     assert.ok(summary.sections.posture.domains.length > 0);
+
+    /* historyStartedAt is produced by buildSummary itself now, not attached
+       at the route -- this is the one place the section engine meets real
+       SQL, so it is the one place that can catch the key going missing. Not
+       pinning a value: this call passes no history option, so today it reads
+       null, but asserting exactly that would break the moment this subtest
+       is wired up to real history without telling anyone anything useful. */
+    assert.ok("historyStartedAt" in summary, "buildSummary must always carry historyStartedAt");
+    assert.ok(summary.historyStartedAt === null || typeof summary.historyStartedAt === "string",
+      "historyStartedAt must be null or an ISO string");
   });
 
   await t.test("re-ingesting the same workbook does not duplicate anything", async () => {
