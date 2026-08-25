@@ -14,7 +14,7 @@ import multer from "multer";
 import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
-import { buildSummary, toRow, computeDetail } from "./summarize.js";
+import { buildSummary, loadChanges, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
 import { buildExcel } from "./exporters/excel.js";
 import { buildWord } from "./exporters/word.js";
@@ -127,11 +127,15 @@ export function createApp(deps) {
     });
   });
   
-  app.get("/api/summary", (req, res) => {
+  app.get("/api/summary", wrap(async (req, res) => {
     const period = PERIODS.has(req.query.period) ? req.query.period : "monthly";
     const date = dayjs(req.query.date || undefined).isValid() ? dayjs(req.query.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    res.json(buildSummary(store, period, date));
-  });
+    const changes = await loadChanges(store, period, date);
+    const historyStartedAt = typeof store.historyStartedAt === "function" ? await store.historyStartedAt() : null;
+    const summary = buildSummary(store, period, date, { changes });
+    summary.historyStartedAt = historyStartedAt;
+    res.json(summary);
+  }));
   
   app.get("/api/projects", (req, res) => {
     const { department, pillar, status, health, q, sort } = req.query;
@@ -258,8 +262,11 @@ export function createApp(deps) {
     const body = req.body || {};
     const period = PERIODS.has(body.period) ? body.period : "monthly";
     const date = dayjs(body.date || undefined).isValid() ? dayjs(body.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    const summary = buildSummary(store, period, date);
-  
+    const changes = await loadChanges(store, period, date);
+    const historyStartedAt = typeof store.historyStartedAt === "function" ? await store.historyStartedAt() : null;
+    const summary = buildSummary(store, period, date, { changes });
+    summary.historyStartedAt = historyStartedAt;
+
     const scopeIds = Array.isArray(body.projectIds) && body.projectIds.length
       ? body.projectIds.map((id) => String(id).toUpperCase())
       : null;

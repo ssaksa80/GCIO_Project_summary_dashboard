@@ -416,6 +416,77 @@ test("reading ingest runs does not write to the audit trail", async () => {
     "reading ingest runs was audited, which reverses the deliberate decision not to");
 });
 
+/* ------------------------------------------------------------ changed-since */
+
+test("the summary reports whether history is available", async () => {
+  const { app } = makeApp({ role: "viewer" });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200);
+  /* The in-memory store keeps no history, and must say so rather than
+     implying a stable week. */
+  assert.equal(res.body.sections.historyAvailable, false);
+  assert.equal(res.body.changes, null);
+});
+
+test("a store that knows what changed puts it on the summary", async () => {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  const first = store.all()[0];
+  store.changesSince = async () => new Map([
+    [first.id, { headline: "health Green to Red", worst: "worse",
+                 fields: { health: { from: "Green", to: "Red", direction: "worse" } },
+                 since: "2026-08-18T00:00:00.000Z" }],
+  ]);
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.body.sections.historyAvailable, true);
+  assert.equal(res.body.changes.wentRed, 1);
+
+  /* successes has no flat "items" list in this codebase's section shape --
+     "delivered" is its per-project array and carries `id` the same way. */
+  const annotated = [
+    ...res.body.sections.priorities.items,
+    ...res.body.sections.priorities.watchlist,
+    ...res.body.sections.successes.delivered,
+  ].find((item) => item.id === first.id);
+  if (annotated) assert.equal(annotated.change.worst, "worse");
+});
+
+test("a history query that fails does not take down the briefing", async () => {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => { throw new Error("database is down"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200, "a history failure blanked the dashboard");
+  assert.equal(res.body.sections.historyAvailable, false);
+  assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
+});
+
 /* ------------------------------------------------------------- SSO config */
 
 const ssoConfig = loadConfig({
