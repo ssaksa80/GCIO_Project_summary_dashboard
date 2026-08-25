@@ -1561,12 +1561,54 @@ git commit -m "feat(ingest): vault every workbook and record what each ingest ch
 
 **Amended after the Task 4 review.** The run is now opened FIRST, before the
 bytes are vaulted and before the source file is recorded, and the source file id
-is attached when the run closes. Originally `vault.store()` and
+is attached when the run closes. (Superseded in part by the amendment below —
+`newestHashFor` is no longer what decides "unchanged".) Originally `vault.store()` and
 `sourceFiles.record()` both ran before `ingestRuns.start()`, so a failure in
 either produced no run at all — and "either there is no run, or there is a run
 with a reason" stopped being true for the one failure mode that happens first.
 `newestHashFor` is still read before `record()`, or the file would be compared
 against itself and every ingest would look unchanged.
+
+**Amended again after the Task 6 review — two Critical defects in this plan.**
+
+Deciding "unchanged" from `sourceFiles.newestHashFor` was wrong, and wrong in a
+way that could hide a portfolio permanently. `record()` writes the `SourceFile`
+row before the snapshot write and outside its transaction, so the hash becomes
+durable whether or not the write that follows succeeds. Four reachable
+consequences, none of which a restart recovers, because the boot sweep runs
+through the same code:
+
+- A first ingest that fails between `record()` and `replaceForFile` leaves that
+  file's portfolio permanently invisible — every later drop of the identical
+  file is short-circuited as "unchanged".
+- A re-ingest that fails the same way rolls the snapshot back cleanly, so the
+  OLD rows survive and the dashboard is stuck on stale data — and resending the
+  corrected file is swallowed as "unchanged".
+- `dbo.Project` emptied by a restore or a manual DELETE cannot be repopulated by
+  re-dropping the same workbook.
+- `removeFile` deletes the project rows but leaves the `SourceFile` row, so an
+  operator who removes a workbook and puts it straight back gets nothing.
+
+The root cause is using "these bytes have been seen" as an oracle for "this
+content is what is currently live". The fix is to ask the second question
+directly: `ingestRuns.liveHashFor(fileName)` returns the hash of the file whose
+most recently CLOSED run for that name closed `applied` or `unchanged`, and null
+otherwise. A `failed` run proves nothing was applied; a `removed` run proves it
+was taken away; both must let the next ingest do the work even for identical
+bytes. `Outcome IS NOT NULL` excludes the run just opened, which is what makes
+this work at all. `sourceFiles.newestHashFor` is deleted — a method whose name
+invites exactly this bug is worse than no method. `record()` stays: it is the
+vault ledger, and recording bytes we vaulted is correct unconditionally.
+
+The `snapshotWritten` flag was also wrong in two of its three cases. It is set
+before `appendChanged` runs, so "snapshot applied but history not recorded" is
+only true for a failure inside `appendChanged`; a failure in `refresh()` or in
+the closing `finish()` happens after both are committed. Worse, if the closing
+`finish()` threw after its UPDATE committed, the catch overwrote a correct
+`applied` row with `failed`. Replaced by a `stage` marker — `opening`,
+`snapshot`, `history`, `closed` — with a distinct message for each, and a
+`closed` stage that refuses to touch the run at all, because at that point only
+the in-memory read model is stale.
 
 ---
 
@@ -1713,6 +1755,35 @@ git commit -m "feat(api): expose recent ingest runs to administrators"
 ---
 
 ### Task 8: Prove the whole thing against real SQL
+
+The hermetic suite fakes every repository and the vault. That proves ordering
+and branching; it cannot prove anything about SQL Server, about transaction
+boundaries between repositories, or about a SEQUENCE of ingests sharing state.
+The Task 6 review found two Critical defects that no amount of faking could
+catch, precisely because the fakes do not share a database the way `SourceFile`
+and `Project` do. So the live subtests below are not a formality — they are the
+only place several of these behaviours are ever exercised for real.
+
+**The scenarios this task must prove, beyond the happy path:**
+
+1. **A failed ingest does not hide the file forever.** Ingest a new workbook,
+   force `projects.replaceForFile` to fail, then drop the identical bytes again
+   and assert the portfolio DOES appear. Repeat with a fresh `SqlStore` between
+   the two attempts, since a restart was the obvious escape hatch and is not one.
+2. **Remove then re-drop.** Ingest, remove the file, drop the byte-identical
+   file back in, and assert it is applied rather than reported unchanged.
+3. **A failed update does not freeze stale data.** Ingest v1 successfully, then
+   attempt v2 of the same name with a failing snapshot write. Confirm v1's rows
+   survive the rollback, then confirm v2 CAN still be applied by re-dropping it.
+4. **A misleading outcome is not recorded.** Force `refresh()` to fail after a
+   genuinely successful apply and confirm the run still reads `applied`, with
+   `dbo.Project` and `dbo.ProjectVersion` holding correct data.
+5. **`liveHashFor` under two versions of one name.** Ingest v1, then v2, and
+   confirm the answer tracks the most recently settled run rather than whichever
+   `SourceFile` row was touched last.
+6. **A cold process.** Everything above with a freshly constructed store, not
+   the same in-memory instance — `store.sourceFiles` is only populated by
+   `refresh()`, and this is the first place that boundary is real.
 
 **Files:**
 - Modify: `test/db/live.test.js`
