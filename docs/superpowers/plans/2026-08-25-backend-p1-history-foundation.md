@@ -13,6 +13,16 @@
 **Decisions taken before writing this plan:**
 - **History is additive.** The spec originally replaced `Project` with a `valid_from`/`valid_to` temporal table. That was decided against: the read path, the store and the live tests all work today, and a defect in a brand-new history writer must not be able to break the dashboard everyone already uses. The cost — the newest `ProjectVersion` duplicates what `Project` holds — is accepted and documented.
 - **Foundation only.** No trends, no "changed since last week", no question ageing. Those are Phase 2, and they will be built against history that has actually accumulated rather than against a fixture.
+- **Growth is bounded by the edition, and that is a Phase 2/3 problem.** The
+  instance is SQL Server 2025 **Express**, which caps a database at 10 GB.
+  `ProjectVersion` grows forever: one row per changed project per ingest, each
+  carrying the whole project as JSON. Measured against the real sample data the
+  payload averages about 1.8 kB, so a 500-project portfolio ingested daily costs
+  roughly 80–250 MB a year at a modest change rate and closer to 1 GB a year if
+  most projects move together. That is years of headroom, not a reason to build
+  archival now — but it is a real ceiling on a fixed-size database, and the
+  choice between upgrading the edition and purging old versions should be made
+  deliberately in Phase 2 rather than by an outage.
 
 ---
 
@@ -20,7 +30,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `server/db/migrations.js` | **modify** — add migrations 6 (`SourceFile`, `IngestRun`) and 7 (`ProjectVersion`) |
+| `server/db/migrations.js` | **modify** — add migrations 6 (`SourceFile`, `IngestRun`), 7 (`ProjectVersion`) and 8 (their constraints) |
 | `server/ingest/hash.js` | **create** — content hashes: one for a file's bytes, one for a project's meaningful fields |
 | `server/vault.js` | **create** — copy a workbook's bytes into the vault; look one up again |
 | `server/repos/sourceFiles.js` | **create** — record a workbook and its hash; find the newest for a name |
@@ -523,6 +533,41 @@ git commit -m "feat(db): schema for source files, ingest runs and project versio
 
 ---
 
+### Task 3b: Constraints the history tables should have had — DONE (`cd0737c`)
+
+Added after a schema review of Task 3, while all three tables still held zero
+rows. Migrations are immutable once shipped, so 6 and 7 were left alone and
+everything went into migration 8, `history_constraints`:
+
+- `IX_ProjectVersion_Project` gains `INCLUDE (ContentHash)`. The bulk
+  newest-hash query in Task 5 runs for every changed project on every ingest and
+  selects exactly `(ProjectId, ContentHash)`; without the include, each row costs
+  a key lookup and the cost grows with the accumulated history.
+- `FK_IngestRun_SourceFile` and `FK_ProjectVersion_IngestRun`. Nothing in the
+  codebase ever deletes a `SourceFile` or an `IngestRun`, so both are safe. Both
+  columns stay nullable — a run with no vault bytes has no source file, and a
+  version appended outside a run has no run.
+  `ProjectVersion.ProjectId` deliberately gets NO key to `dbo.Project`:
+  `replaceForFile` deletes and reinserts every project row on each ingest, so a
+  constraint there would destroy the history it exists to protect.
+- `CK_IngestRun_TriggerSource` (`watcher|upload|boot|replay`) and
+  `CK_IngestRun_Outcome` (NULL, or `applied|unchanged|failed|removed`). Both are
+  written from a fixed vocabulary in JavaScript; a typo would quietly corrupt
+  every Phase 2 aggregate that counts runs by outcome.
+
+The index replacement uses `CREATE INDEX ... WITH (DROP_EXISTING = ON)` rather
+than a guarded `DROP` followed by a guarded `CREATE`. The implementer tested the
+guarded pair adversarially against the live instance and found a real race: one
+booting instance evaluates `IF EXISTS`, stalls, and then drops the index a second
+instance has just recreated, leaving the table with no index of that name and no
+error anywhere. `DROP_EXISTING` replaces it in one atomic statement.
+
+Both constraint kinds were proven to bite: `TriggerSource = 'nonsense'`,
+`Outcome = 'bogus'` and a dangling `SourceFileId` were each rejected with error
+547, while `Outcome = NULL` and `SourceFileId = NULL` were accepted.
+
+---
+
 ### Task 4: The source-file and ingest-run repositories
 
 **Files:**
@@ -1011,6 +1056,48 @@ Expected: PASS — 11 tests.
 git add server/repos/projectVersions.js test/db/history.test.js
 git commit -m "feat(db): append-only project version history"
 ```
+
+**Amended after the Task 3 schema review.** Two changes to `appendChanged`
+above, both found by reading its SQL rather than running it:
+
+1. **Wrap the read and the writes in one transaction.** The method reads each
+   project's newest hash and then conditionally inserts. Two ingests of the same
+   project interleaving between those two steps would append two consecutive
+   rows with an identical hash — precisely what the method exists to prevent.
+   The watcher handles events serially today, so this is not reachable yet, but
+   a manual replay running alongside it would reach it. Change the body to:
+
+   ```js
+     async appendChanged(candidates, { ingestRunId = null } = {}) {
+       if (!candidates || candidates.length === 0) return 0;
+
+       return ex.tx(async (tx) => {
+         /* ... the existing body, with every ex.query replaced by tx.query ... */
+         return written;
+       });
+     },
+   ```
+
+   The scripted executor in the test already implements `tx(fn)` as `fn(ex)`, so
+   the existing tests keep working unchanged.
+
+2. **Refuse a project id containing a comma.** The bulk query passes ids to
+   `STRING_SPLIT(@ids, ',')` as one comma-joined string. A project id with a
+   comma in it would split into two ids that match nothing, and the method would
+   silently append a version for a project it had just decided was unchanged.
+   Fail loudly instead, immediately after building `ids`:
+
+   ```js
+         const offending = ids.filter((id) => String(id).includes(","));
+         if (offending.length) {
+           /* The bulk lookup joins ids with commas for STRING_SPLIT. A comma in
+              an id would split it in two, match nothing, and silently append a
+              version for a project that had not changed. */
+           throw new Error(`project ids must not contain a comma: ${offending.join(" ")}`);
+         }
+   ```
+
+   Add a test asserting it throws rather than silently mis-splitting.
 
 ---
 
@@ -1628,6 +1715,47 @@ The "every table the application needs exists" subtest filters by an explicit
       "AuditEvent", "IngestRun", "PostureDomain", "Project", "ProjectChild", "ProjectVersion",
       "RoleMapping", "SchemaMigration", "Sessions", "SourceFile",
     ].sort();
+```
+
+Tables alone are not enough. An index silently dropped or renamed by a later
+migration turns a seek into a scan with nothing failing, and a constraint
+dropped by hand stops protecting anything. Add a second subtest beside it:
+
+```js
+  await t.test("the history tables keep the indexes and constraints they were given", async () => {
+    const { recordset: indexes } = await ex.query(`
+      SELECT name FROM sys.indexes
+      WHERE name IN ('UX_SourceFile_Name_Sha','IX_IngestRun_StartedAt',
+                     'IX_ProjectVersion_Project','IX_ProjectVersion_RecordedAt')
+    `);
+    assert.deepEqual(indexes.map((r) => r.name).sort(), [
+      "IX_IngestRun_StartedAt", "IX_ProjectVersion_Project",
+      "IX_ProjectVersion_RecordedAt", "UX_SourceFile_Name_Sha",
+    ]);
+
+    /* The hot path selects ContentHash for every changed project on every
+       ingest; without the include it pays a key lookup per row. */
+    const { recordset: included } = await ex.query(`
+      SELECT c.name FROM sys.index_columns ic
+      JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+      JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+      WHERE i.name = 'IX_ProjectVersion_Project' AND ic.is_included_column = 1
+    `);
+    assert.deepEqual(included.map((r) => r.name), ["ContentHash"]);
+
+    const { recordset: keys } = await ex.query(`
+      SELECT name FROM sys.foreign_keys
+      WHERE name IN ('FK_IngestRun_SourceFile','FK_ProjectVersion_IngestRun') AND is_disabled = 0
+    `);
+    assert.equal(keys.length, 2, "a foreign key on the history tables is missing or disabled");
+
+    const { recordset: checks } = await ex.query(`
+      SELECT name FROM sys.check_constraints
+      WHERE name IN ('CK_IngestRun_TriggerSource','CK_IngestRun_Outcome')
+        AND is_disabled = 0 AND is_not_trusted = 0
+    `);
+    assert.equal(checks.length, 2, "a check constraint on dbo.IngestRun is missing or untrusted");
+  });
 ```
 
 - [ ] **Step 3: Extend the cleanup so the suite leaves nothing behind**
