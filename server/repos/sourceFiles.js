@@ -1,8 +1,12 @@
 /**
  * Every workbook the dashboard has ever ingested, identified by content hash.
  *
- * A file re-saved with no changes has the same hash, which is what lets the
- * ingester skip work instead of rewriting the portfolio for nothing.
+ * This is the vault ledger, nothing more: recording that these bytes were
+ * seen and vaulted is correct unconditionally, whether or not the ingest that
+ * followed actually succeeded. Deciding whether a file's content is what the
+ * dashboard is currently showing is a different question — "seen" is not
+ * "live" — and that decision belongs to IngestRun.liveHashFor, which looks at
+ * whether the ingest actually landed, not just whether the bytes matched.
  */
 import { sql } from "../db/executor.js";
 
@@ -38,14 +42,6 @@ export function sourceFilesRepo(ex) {
 
       const row = recordset[0];
       return { sourceFileId: Number(row.SourceFileId), alreadySeen: row.Action === "UPDATE" };
-    },
-
-    /** The hash of the most recent version of a named file, or null. */
-    async newestHashFor(fileName) {
-      const { recordset } = await ex.query(`
-        SELECT TOP (1) Sha256 FROM dbo.SourceFile WHERE FileName = @name ORDER BY LastSeenAt DESC
-      `, [{ name: "name", type: sql.NVarChar(260), value: fileName }]);
-      return recordset.length ? recordset[0].Sha256 : null;
     },
   };
 }

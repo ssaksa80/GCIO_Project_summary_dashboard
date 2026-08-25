@@ -12,6 +12,11 @@ const ERROR_MAX = 1000;
    fail at runtime with error 547. There is no type checking in this project
    to catch a typo at a call site before then, so it is checked here too — a
    thrown message naming the bad value beats a bare 547 three layers down. */
+/* "upload" is a real vocabulary value, not a dead one, but nothing calls
+   start() with it today: the upload route writes into the watched folder and
+   lets the watcher pick the file up, so the run it produces is always
+   trigger "watcher". That is also why SourceFile.UploadedBy is always null in
+   practice — see the comment beside `uploadedBy: actor` in sqlStore.js. */
 export const INGEST_TRIGGERS = ["watcher", "upload", "boot", "replay"];
 export const INGEST_OUTCOMES = ["applied", "unchanged", "failed", "removed"];
 
@@ -84,6 +89,32 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
            what this table exists to make visible, so it cannot be silent. */
         logger.error?.(`[ingest] run ${runId} was not closed — no such row`);
       }
+    },
+
+    /**
+     * The hash of the content currently believed live for a filename, or null.
+     *
+     * "Live" means the most recently closed run for this file closed applied or
+     * unchanged. A failed run proves nothing was applied, and a removed run
+     * proves it was taken away — in both cases the next ingest must do the work
+     * even if the bytes are identical, or a transient failure would hide a
+     * portfolio permanently.
+     *
+     * @param {string} fileName
+     * @returns {Promise<string|null>}
+     */
+    async liveHashFor(fileName) {
+      const { recordset } = await ex.query(`
+        SELECT TOP (1) r.Outcome, f.Sha256
+        FROM dbo.IngestRun r
+        LEFT JOIN dbo.SourceFile f ON f.SourceFileId = r.SourceFileId
+        WHERE r.FileName = @name AND r.Outcome IS NOT NULL
+        ORDER BY r.StartedAt DESC, r.IngestRunId DESC
+      `, [{ name: "name", type: sql.NVarChar(260), value: fileName }]);
+
+      if (!recordset.length) return null;
+      const { Outcome, Sha256 } = recordset[0];
+      return (Outcome === "applied" || Outcome === "unchanged") && Sha256 ? Sha256 : null;
     },
 
     /** Newest first. */

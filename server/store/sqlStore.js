@@ -85,6 +85,20 @@ export class SqlStore {
     return this.projectCount;
   }
 
+  /** Phase 0 behaviour, unchanged: no history tables, so nothing to record. */
+  async #applyWithoutHistory(result) {
+    await this.repos.projects.replaceForFile(result.file, result.projects);
+    await this.repos.posture.replaceForFile(result.file, result.posture || []);
+    this.lastIngestAt = new Date().toISOString();
+    await this.refresh();
+    this.log({
+      file: result.file, ok: true,
+      projects: result.projects.length,
+      postureDomains: (result.posture || []).length,
+    });
+    return result.projects.length;
+  }
+
   /**
    * Persist one workbook's parse result and record what happened.
    *
@@ -95,18 +109,7 @@ export class SqlStore {
    * @param {{trigger?: "watcher"|"upload"|"boot"|"replay", actor?: string}} [context]
    */
   async applyFile(result, { trigger = "watcher", actor = null } = {}) {
-    if (!this.tracksHistory) {
-      await this.repos.projects.replaceForFile(result.file, result.projects);
-      await this.repos.posture.replaceForFile(result.file, result.posture || []);
-      this.lastIngestAt = new Date().toISOString();
-      await this.refresh();
-      this.log({
-        file: result.file, ok: true,
-        projects: result.projects.length,
-        postureDomains: (result.posture || []).length,
-      });
-      return result.projects.length;
-    }
+    if (!this.tracksHistory) return this.#applyWithoutHistory(result);
 
     /* The run is opened before anything else can fail. Vaulting the bytes and
        recording the source file can both throw, and if the run were opened
@@ -114,26 +117,40 @@ export class SqlStore {
        table cannot explain. The source file is attached when the run closes. */
     const runId = await this.repos.ingestRuns.start({ fileName: result.file, trigger });
 
-    /* "failed" would otherwise mean two different things: nothing happened, or
-       the dashboard moved and only the history is missing. An operator reading
-       the run needs to know which. */
-    let snapshotWritten = false;
+    /* Which of these is true changes what a failure means, and an operator
+       reading the run needs the difference: "opening" means nothing landed
+       anywhere, "snapshot" means dbo.Project moved but history did not,
+       "history" means both moved but the run itself could not be closed, and
+       "closed" means everything — including the run's own outcome — is
+       already correct and only the in-memory read model is in question. */
+    let stage = "opening";
 
     try {
       const vaulted = this.vault && result.bytes
         ? this.vault.store(result.bytes, result.file)
         : null;
 
-      /* Read the newest hash BEFORE recording this one, or it compares the file
-         against itself and every ingest looks unchanged. */
-      const unchanged = vaulted
-        ? (await this.repos.sourceFiles.newestHashFor(result.file)) === vaulted.hash
-        : false;
+      /* Not "have I seen these bytes" — "is this content what the dashboard is
+         actually showing". A hash recorded by an ingest that then failed must
+         not let the retry be skipped: SourceFile remembers bytes unconditionally
+         the moment they are vaulted, whether or not the ingest that vaulted them
+         ever reached dbo.Project, so it cannot be the oracle for "unchanged".
+         liveHashFor looks at the last CLOSED run instead, which is the only
+         place that ties a hash to content actually applied. */
+      const liveHash = await this.repos.ingestRuns.liveHashFor(result.file);
+      const unchanged = Boolean(vaulted) && liveHash === vaulted.hash;
 
       const recorded = vaulted
         ? await this.repos.sourceFiles.record({
             fileName: result.file, sha256: vaulted.hash, bytes: vaulted.bytes,
-            vaultPath: vaulted.vaultPath, uploadedBy: actor,
+            vaultPath: vaulted.vaultPath,
+            /* Always null today: applyFile is only ever called with trigger
+               "boot" or "watcher". The upload route writes into the watched
+               folder and lets the watcher pick the file up rather than calling
+               in with an actor, so "who uploaded this" is recoverable only by
+               cross-referencing the audit log by timestamp. Deliberate, not a
+               bug — see the comment beside INGEST_TRIGGERS in ingestRuns.js. */
+            uploadedBy: actor,
           })
         : { sourceFileId: null };
 
@@ -149,15 +166,13 @@ export class SqlStore {
 
       await this.repos.projects.replaceForFile(result.file, result.projects);
       await this.repos.posture.replaceForFile(result.file, result.posture || []);
-      snapshotWritten = true;
+      stage = "snapshot";
 
       const changed = await this.repos.projectVersions.appendChanged(
         result.projects.map((project) => ({ project, hash: hashProject(project) })),
         { ingestRunId: runId }
       );
-
-      this.lastIngestAt = new Date().toISOString();
-      await this.refresh();
+      stage = "history";
 
       await this.repos.ingestRuns.finish(runId, {
         outcome: "applied",
@@ -166,6 +181,10 @@ export class SqlStore {
         postureRows: (result.posture || []).length,
         sourceFileId: recorded.sourceFileId,
       });
+      stage = "closed";
+
+      this.lastIngestAt = new Date().toISOString();
+      await this.refresh();
 
       this.log({
         file: result.file, ok: true,
@@ -174,10 +193,28 @@ export class SqlStore {
       });
       return result.projects.length;
     } catch (err) {
-      const reason = snapshotWritten
-        ? `snapshot applied but history not recorded: ${err.message}`
-        : err.message;
-      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason });
+      if (stage === "closed") {
+        /* Every table is correct and the run itself says so. Only the
+           in-memory read model is stale, and overwriting a true "applied" with
+           "failed" would tell an operator the opposite of what happened. */
+        this.logger.error?.(`[ingest] ${result.file} was applied, but refreshing the read model failed: ${err.message}`);
+        this.log({ file: result.file, ok: true, staleReadModel: true, error: err.message });
+        throw err;
+      }
+
+      const reason = stage === "history"
+        ? `snapshot and history applied but the run could not be closed: ${err.message}`
+        : stage === "snapshot"
+          ? `snapshot applied but history not recorded: ${err.message}`
+          : err.message;
+
+      /* finish() may itself be what failed; if it fails again there is nothing
+         further we can do, and the open run left behind is itself the signal. */
+      try {
+        await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason });
+      } catch (closeErr) {
+        this.logger.error?.(`[ingest] could not close run ${runId}: ${closeErr.message}`);
+      }
       this.log({ file: result.file, ok: false, error: reason });
       throw err;
     }
@@ -189,16 +226,49 @@ export class SqlStore {
       ? await this.repos.ingestRuns.start({ fileName: sourceFile, trigger: "watcher" })
       : null;
 
-    const removed = await this.repos.projects.removeFile(sourceFile);
-    await this.repos.posture.removeFile(sourceFile);
-    this.lastIngestAt = new Date().toISOString();
-    await this.refresh();
+    /* Unlike applyFile there is no snapshot/history split to distinguish —
+       only whether the run already closed with its true outcome before
+       something later (the read-model refresh) failed. */
+    let closed = false;
 
-    if (runId !== null) {
-      await this.repos.ingestRuns.finish(runId, { outcome: "removed", projectsSeen: removed });
+    try {
+      const removed = await this.repos.projects.removeFile(sourceFile);
+      await this.repos.posture.removeFile(sourceFile);
+
+      if (runId !== null) {
+        await this.repos.ingestRuns.finish(runId, { outcome: "removed", projectsSeen: removed });
+        closed = true;
+      }
+
+      this.lastIngestAt = new Date().toISOString();
+      await this.refresh();
+      this.log({ file: sourceFile, ok: true, removed });
+      return removed;
+    } catch (err) {
+      if (closed) {
+        /* The removal and the run's own outcome are both already correct.
+           Only the in-memory read model is stale, and overwriting a true
+           "removed" with "failed" would tell an operator the opposite of
+           what happened. */
+        this.logger.error?.(`[ingest] ${sourceFile} was removed, but refreshing the read model failed: ${err.message}`);
+        this.log({ file: sourceFile, ok: true, staleReadModel: true, error: err.message });
+        throw err;
+      }
+
+      /* An open run is invisible to liveHashFor, which filters on a closed
+         outcome — so an abandoned removal would leave the old hash looking
+         live while the rows are already gone, and re-dropping the same
+         workbook would be skipped as unchanged. */
+      if (runId !== null) {
+        try {
+          await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: `removal failed: ${err.message}` });
+        } catch (closeErr) {
+          this.logger.error?.(`[ingest] could not close run ${runId}: ${closeErr.message}`);
+        }
+      }
+      this.log({ file: sourceFile, ok: false, error: err.message });
+      throw err;
     }
-    this.log({ file: sourceFile, ok: true, removed });
-    return removed;
   }
 
   /* -------------------------------------------------- parity with Store */

@@ -70,14 +70,6 @@ test("a file re-seen under a different uploader keeps its original vault path", 
     "WHEN MATCHED must set only LastSeenAt");
 });
 
-test("the newest hash for a name is what decides whether to re-parse", async () => {
-  const ex = scriptedExecutor({ "SELECT TOP (1) Sha256": [{ Sha256: "c".repeat(64) }] });
-  assert.equal(await sourceFilesRepo(ex).newestHashFor("master.xlsx"), "c".repeat(64));
-
-  const empty = scriptedExecutor();
-  assert.equal(await sourceFilesRepo(empty).newestHashFor("unknown.xlsx"), null);
-});
-
 test("a run is started, then finished with its counts", async () => {
   const ex = scriptedExecutor({
     "INSERT INTO dbo.IngestRun": [{ IngestRunId: 42 }],
@@ -190,6 +182,46 @@ test("a negative or non-numeric limit still lands inside 1..500", async () => {
   const nonNumericLimit = nonNumeric.statements
     .find((s) => s.text.includes("FROM dbo.IngestRun")).params.find((p) => p.name === "limit").value;
   assert.ok(nonNumericLimit >= 1 && nonNumericLimit <= 500, `expected 1..500, got ${nonNumericLimit}`);
+});
+
+test("liveHashFor: an applied run's hash is the live one", async () => {
+  const ex = scriptedExecutor({ "SELECT TOP (1) r.Outcome": [{ Outcome: "applied", Sha256: "a".repeat(64) }] });
+  assert.equal(await ingestRunsRepo(ex).liveHashFor("master.xlsx"), "a".repeat(64));
+});
+
+test("liveHashFor: an unchanged run's hash is the live one too", async () => {
+  const ex = scriptedExecutor({ "SELECT TOP (1) r.Outcome": [{ Outcome: "unchanged", Sha256: "b".repeat(64) }] });
+  assert.equal(await ingestRunsRepo(ex).liveHashFor("master.xlsx"), "b".repeat(64));
+});
+
+test("liveHashFor: a failed run proves nothing landed, even though a SourceFile row joins in", async () => {
+  // The failure defect this method exists to close: SourceFile remembers a
+  // hash the instant it is vaulted, whether or not the ingest that vaulted it
+  // ever reached dbo.Project. A failed run's outcome must win over a hash that
+  // happens to be joinable, or the whole point of this method is lost.
+  const ex = scriptedExecutor({ "SELECT TOP (1) r.Outcome": [{ Outcome: "failed", Sha256: "c".repeat(64) }] });
+  assert.equal(await ingestRunsRepo(ex).liveHashFor("master.xlsx"), null);
+});
+
+test("liveHashFor: a removed run means nothing is live", async () => {
+  const ex = scriptedExecutor({ "SELECT TOP (1) r.Outcome": [{ Outcome: "removed", Sha256: null }] });
+  assert.equal(await ingestRunsRepo(ex).liveHashFor("master.xlsx"), null);
+});
+
+test("liveHashFor: no runs at all for this file is null, not an error", async () => {
+  const ex = scriptedExecutor();
+  assert.equal(await ingestRunsRepo(ex).liveHashFor("never-seen.xlsx"), null);
+});
+
+test("liveHashFor only considers runs that have already closed", async () => {
+  // The scripted executor cannot itself filter by outcome, so what is pinned
+  // here is that the query text excludes the still-open run rather than
+  // relying on the caller never asking mid-ingest -- exactly the run this
+  // method is invoked from is one that is not yet closed.
+  const ex = scriptedExecutor({ "SELECT TOP (1) r.Outcome": [] });
+  await ingestRunsRepo(ex).liveHashFor("master.xlsx");
+  const select = ex.statements.find((s) => s.text.includes("SELECT TOP (1) r.Outcome"));
+  assert.match(select.text, /Outcome IS NOT NULL/);
 });
 
 test("finish() truncation does not leave a lone surrogate when the cut lands mid-pair", async () => {
