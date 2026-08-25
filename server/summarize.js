@@ -86,6 +86,24 @@ export async function loadChanges(store, period, dateISO) {
 }
 
 /**
+ * When history begins, or null if we cannot say.
+ *
+ * Guarded for the same reason loadChanges is: this runs a query against the
+ * history table, and the portfolio is still perfectly serveable when that
+ * table is unreachable. Blanking a working dashboard because we could not
+ * answer "since when" would be the wrong trade.
+ */
+export async function loadHistoryStart(store) {
+  if (typeof store.historyStartedAt !== "function") return null;
+  try {
+    return await store.historyStartedAt();
+  } catch (err) {
+    console.error(`[changes] could not read when history begins: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Build the full summary payload for a period (SPEC §5 shape).
  * @param {import('./store.js').Store} store
  * @param {"daily"|"weekly"|"monthly"|"yearly"} period

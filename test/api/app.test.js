@@ -487,6 +487,34 @@ test("a history query that fails does not take down the briefing", async () => {
   assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
 });
 
+test("a failure reading when history begins does not blank the dashboard", async () => {
+  /* The in-memory store's historyStartedAt can never throw, so nothing in the
+     rest of the suite covers this path -- and it is the same 500 that a
+     failing changesSince would have caused before it was guarded. */
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => new Map();
+  store.historyStartedAt = async () => { throw new Error("history table is unreachable"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200, "a history failure blanked the dashboard");
+  assert.equal(res.body.historyStartedAt, null);
+  assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
+  /* changesSince still worked, so history is available -- just not its start. */
+  assert.equal(res.body.sections.historyAvailable, true);
+});
+
 /* ------------------------------------------------------------- SSO config */
 
 const ssoConfig = loadConfig({
