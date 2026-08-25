@@ -90,6 +90,20 @@ function fmtDate(v) {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/**
+ * Change text for a section item, or "" when the item did not move (or the
+ * store keeps no history). Unlike pptx.js this exporter does not measure
+ * text, so the full headline the web page shows is fine here too. Never
+ * mutate `change` itself — the same object is shared across every section
+ * that names this project.
+ */
+function changeText(change) {
+  if (!change) return "";
+  if (change.trackedSince) return ` (new since ${fmtDate(change.trackedSince)})`;
+  const arrow = change.worst === "worse" ? "▲" : change.worst === "better" ? "▼" : "•";
+  return ` (${arrow} ${str(change.headline, "")})`;
+}
+
 /** Decode the base64 body of a data URL into a Buffer, or null on failure. */
 function bufferFromDataUrl(dataUrl) {
   try {
@@ -318,7 +332,7 @@ function successesSection(payload) {
       new TableRow({ children: [headCell("Project", 34), headCell("Closed", 14), headCell("Budget outcome", 38), headCell("Department", 14)] }),
       ...delivered.map((d) => new TableRow({
         children: [
-          cell(str(d.name, ""), { bold: true }),
+          cell(str(d.name, "") + changeText(d.change), { bold: true }),
           cell(fmtDate(d.completedOn)),
           cell(str(d.note, "")),
           cell(str(d.department, "")),
@@ -333,7 +347,7 @@ function successesSection(payload) {
   if (milestones.length) {
     out.push(sectionLabel("Milestones completed"));
     for (const m of milestones) {
-      out.push(body(`${str(m.name, "")} — ${str(m.project, "")} (${fmtDate(m.completedOn)})`, { bullet: true, after: 60 }));
+      out.push(body(`${str(m.name, "")} — ${str(m.project, "")}${changeText(m.change)} (${fmtDate(m.completedOn)})`, { bullet: true, after: 60 }));
     }
   }
 
@@ -341,7 +355,7 @@ function successesSection(payload) {
   if (near.length) {
     out.push(sectionLabel("On final approach (90% or more)"));
     for (const n of near) {
-      out.push(body(`${str(n.name, "")} — ${Math.round(num(n.percentComplete))}% complete, ${str(n.note, "")}`, { bullet: true, after: 60 }));
+      out.push(body(`${str(n.name, "")}${changeText(n.change)} — ${Math.round(num(n.percentComplete))}% complete, ${str(n.note, "")}`, { bullet: true, after: 60 }));
     }
   }
   return out;
@@ -373,7 +387,7 @@ function qriSection(payload) {
             color: q.severity === "critical" ? "C0392B" : "B07900",
           }),
           cell(`${str(q.text, "")}\n${str(q.because, "")}${q.source === "workbook" ? " (raised by the PM)" : " (derived)"}`),
-          cell(str(q.project, "")),
+          cell(str(q.project, "") + changeText(q.change)),
           cell(q.neededBy ? fmtDate(q.neededBy) : "—"),
         ],
       })),
@@ -391,7 +405,7 @@ function qriSection(payload) {
         children: [
           cell(str(r.severity, ""), { bold: true, color: r.severity === "Critical" ? "C0392B" : undefined }),
           cell(str(r.title, "")),
-          cell(str(r.project, "")),
+          cell(str(r.project, "") + changeText(r.change)),
           cell(str(r.owner, "—")),
           cell(str(r.status, "")),
         ],
@@ -431,7 +445,7 @@ function prioritiesSection(payload) {
   }
   out.push(body("Ranked by priority, health, schedule, risk, spend and dependency weight.", { italic: true, after: 180 }));
   items.forEach((p, i) => {
-    out.push(body(`${i + 1}.  ${str(p.name, "")}  —  urgency ${num(p.score)}`, { bold: true, size: 24, after: 60 }));
+    out.push(body(`${i + 1}.  ${str(p.name, "")}${changeText(p.change)}  —  urgency ${num(p.score)}`, { bold: true, size: 24, after: 60 }));
     out.push(body(`${str(p.health, "")} · ${str(p.priority, "")} priority · ${str(p.owner, "no owner")} · ${str(p.department, "")}`, { size: 18, after: 40 }));
     out.push(body(str(p.why, ""), { after: 40 }));
     out.push(body(`Needed: ${str(p.ask, "")}`, { bold: true, after: 160 }));
@@ -455,7 +469,7 @@ function roadmapSection(payload) {
       new TableRow({ children: [headCell("Project", 34), headCell("Owner", 16), headCell("Complete", 12), headCell("Target", 13), headCell("Forecast", 13), headCell("Slip", 12)] }),
       ...inFlight.map((p) => new TableRow({
         children: [
-          cell(str(p.name, ""), { bold: true }),
+          cell(str(p.name, "") + changeText(p.change), { bold: true }),
           cell(str(p.owner, "—")),
           cell(`${Math.round(num(p.percentComplete))}%`),
           cell(fmtDate(p.targetEndDate)),
@@ -475,7 +489,7 @@ function roadmapSection(payload) {
       new TableRow({ children: [headCell("Project", 36), headCell("Status", 14), headCell("Starts", 16), headCell("Budget", 18), headCell("Readiness", 16)] }),
       ...pipeline.map((p) => new TableRow({
         children: [
-          cell(str(p.name, ""), { bold: true }),
+          cell(str(p.name, "") + changeText(p.change), { bold: true }),
           cell(str(p.status, "")),
           cell(fmtDate(p.startDate)),
           cell(fmtMoney(p.budget)),
@@ -491,7 +505,7 @@ function roadmapSection(payload) {
   if (milestones.length) {
     out.push(sectionLabel("Milestones falling due"));
     for (const m of milestones) {
-      out.push(body(`${str(m.name, "")} — ${str(m.project, "")} (${fmtDate(m.dueDate)})`, { bullet: true, after: 60 }));
+      out.push(body(`${str(m.name, "")} — ${str(m.project, "")}${changeText(m.change)} (${fmtDate(m.dueDate)})`, { bullet: true, after: 60 }));
     }
   }
   return out;
@@ -520,7 +534,7 @@ function postureSection(payload) {
       ] }),
       ...domains.map((d) => new TableRow({
         children: [
-          cell(d.control ? `${str(d.domain, "")} — ${d.control}` : str(d.domain, ""), { bold: true }),
+          cell((d.control ? `${str(d.domain, "")} — ${d.control}` : str(d.domain, "")) + changeText(d.change), { bold: true }),
           cell(str(d.status, ""), {
             color: d.status === "Non-Compliant" ? "C0392B" : d.status === "Partial" ? "B07900"
               : d.status === "Compliant" ? "0CA30C" : undefined,

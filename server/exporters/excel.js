@@ -85,6 +85,18 @@ function base64FromDataUrl(dataUrl) {
   return idx >= 0 ? s.slice(idx + 7) : s;
 }
 
+/**
+ * Change text for a section item, or "" when it did not move (or there is no
+ * history to say). Never mutate `change` — the same object is shared across
+ * every section that names this project.
+ */
+function changeText(change) {
+  if (!change) return "";
+  if (change.trackedSince) return ` (new since ${fmtDate(change.trackedSince)})`;
+  const arrow = change.worst === "worse" ? "▲" : change.worst === "better" ? "▼" : "•";
+  return ` (${arrow} ${str(change.headline, "")})`;
+}
+
 /* ------------------------------------------------------------------ */
 /* Style helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -232,7 +244,7 @@ function buildExecutiveSummarySheet(wb, payload) {
   writeSectionLabel("1 · Successes");
   writeWrapped(str(successes.headline, "No completions recorded in this window."), { bold: true });
   for (const d of arr(successes.delivered).slice(0, 6)) {
-    writeWrapped(`${str(d.name, "")} — closed ${fmtDate(d.completedOn)}, ${str(d.note, "")}`, { bullet: true });
+    writeWrapped(`${str(d.name, "")}${changeText(d.change)} — closed ${fmtDate(d.completedOn)}, ${str(d.note, "")}`, { bullet: true });
   }
 
   rowIdx += 1;
@@ -243,13 +255,13 @@ function buildExecutiveSummarySheet(wb, payload) {
     { bold: true }
   );
   for (const q of arr(qri.questions).slice(0, 5)) {
-    writeWrapped(`${str(q.text, "")} — ${str(q.project, "")}`, { bullet: true });
+    writeWrapped(`${str(q.text, "")} — ${str(q.project, "")}${changeText(q.change)}`, { bullet: true });
   }
 
   rowIdx += 1;
   writeSectionLabel("3 · Priorities");
   arr(priorities.items).slice(0, 5).forEach((item, i) => {
-    writeWrapped(`${i + 1}. ${str(item.name, "")} (urgency ${num(item.score)}) — needed: ${str(item.ask, "")}`, { bullet: true });
+    writeWrapped(`${i + 1}. ${str(item.name, "")}${changeText(item.change)} (urgency ${num(item.score)}) — needed: ${str(item.ask, "")}`, { bullet: true });
   });
 
   rowIdx += 1;
@@ -260,7 +272,7 @@ function buildExecutiveSummarySheet(wb, payload) {
     { bold: true }
   );
   for (const item of arr(roadmap.pipeline).slice(0, 5)) {
-    writeWrapped(`${str(item.name, "")} — ${str(item.status, "")}, starts ${fmtDate(item.startDate)}, ${fmtMoney(num(item.budget))}`, { bullet: true });
+    writeWrapped(`${str(item.name, "")}${changeText(item.change)} — ${str(item.status, "")}, starts ${fmtDate(item.startDate)}, ${fmtMoney(num(item.budget))}`, { bullet: true });
   }
 }
 
@@ -295,7 +307,7 @@ function buildPostureSheet(wb, payload) {
   if (!sec.available) return null;
 
   const rows = arr(sec.domains).map((d) => [
-    str(d.domain, ""), str(d.control, ""), str(d.status, ""),
+    str(d.domain, "") + changeText(d.change), str(d.control, ""), str(d.status, ""),
     d.status === "Not Assessed" ? null : num(d.score) / 100,
     num(d.target) / 100,
     num(d.openFindings), num(d.criticalFindings),
@@ -319,9 +331,9 @@ function buildPostureSheet(wb, payload) {
 function buildSuccessesSheet(wb, payload) {
   const sec = ((payload.summary || {}).sections || {}).successes || {};
   const rows = [
-    ...arr(sec.delivered).map((d) => ["Delivered", str(d.name, ""), str(d.department, ""), fmtDate(d.completedOn), num(d.budget), num(d.spent), str(d.note, "")]),
-    ...arr(sec.milestones).map((m) => ["Milestone closed", str(m.name, ""), str(m.project, ""), fmtDate(m.completedOn), null, null, ""]),
-    ...arr(sec.nearComplete).map((n) => ["Near complete", str(n.name, ""), "", fmtDate(n.targetEndDate), null, null, `${Math.round(num(n.percentComplete))}% — ${str(n.note, "")}`]),
+    ...arr(sec.delivered).map((d) => ["Delivered", str(d.name, "") + changeText(d.change), str(d.department, ""), fmtDate(d.completedOn), num(d.budget), num(d.spent), str(d.note, "")]),
+    ...arr(sec.milestones).map((m) => ["Milestone closed", str(m.name, ""), str(m.project, "") + changeText(m.change), fmtDate(m.completedOn), null, null, ""]),
+    ...arr(sec.nearComplete).map((n) => ["Near complete", str(n.name, "") + changeText(n.change), "", fmtDate(n.targetEndDate), null, null, `${Math.round(num(n.percentComplete))}% — ${str(n.note, "")}`]),
   ];
   const ws = sectionSheet(wb, "1 Successes", `1 · Successes — ${str(sec.headline, "")}`,
     ["Type", "Name", "Project / Department", "Date", "Budget", "Spent", "Note"],
@@ -340,12 +352,12 @@ function buildQRISheet(wb, payload) {
       "Question",
       q.severity === "critical" ? "Decision now" : "Decision soon",
       str(q.text, ""),
-      str(q.project, ""),
+      str(q.project, "") + changeText(q.change),
       q.source === "workbook" ? "PM" : "derived",
       q.neededBy ? fmtDate(q.neededBy) : "—",
       str(q.because, ""),
     ]),
-    ...arr(sec.risks).map((r) => ["Risk", str(r.severity, ""), str(r.title, ""), str(r.project, ""), str(r.owner, "—"), str(r.status, ""), ""]),
+    ...arr(sec.risks).map((r) => ["Risk", str(r.severity, ""), str(r.title, ""), str(r.project, "") + changeText(r.change), str(r.owner, "—"), str(r.status, ""), ""]),
     ...arr(sec.issues).map((i) => ["Issue", str(i.health, ""), str(i.text, ""), str(i.project, ""), str(i.type, ""), "", ""]),
   ];
   return sectionSheet(wb, "2 Questions Risks Issues",
@@ -358,7 +370,7 @@ function buildQRISheet(wb, payload) {
 function buildPrioritiesSheet(wb, payload) {
   const sec = ((payload.summary || {}).sections || {}).priorities || {};
   const rows = arr(sec.items).map((p, i) => [
-    i + 1, str(p.name, ""), num(p.score), str(p.health, ""), str(p.priority, ""),
+    i + 1, str(p.name, "") + changeText(p.change), num(p.score), str(p.health, ""), str(p.priority, ""),
     str(p.owner, "—"), num(p.budget), Math.round(num(p.percentComplete)) / 100,
     str(p.why, ""), str(p.ask, ""),
   ]);
@@ -374,11 +386,11 @@ function buildPrioritiesSheet(wb, payload) {
 function buildRoadmapSheet(wb, payload) {
   const sec = ((payload.summary || {}).sections || {}).roadmap || {};
   const rows = [
-    ...arr(sec.inFlight).map((p) => ["In flight", str(p.name, ""), str(p.owner, "—"), Math.round(num(p.percentComplete)) / 100,
+    ...arr(sec.inFlight).map((p) => ["In flight", str(p.name, "") + changeText(p.change), str(p.owner, "—"), Math.round(num(p.percentComplete)) / 100,
       fmtDate(p.targetEndDate), fmtDate(p.forecastEnd), num(p.slipDays) > 0 ? `+${num(p.slipDays)} days` : "on plan", null, ""]),
-    ...arr(sec.pipeline).map((p) => ["Planned", str(p.name, ""), str(p.sponsor, "—"), 0,
+    ...arr(sec.pipeline).map((p) => ["Planned", str(p.name, "") + changeText(p.change), str(p.sponsor, "—"), 0,
       fmtDate(p.startDate), fmtDate(p.targetEndDate), str(p.status, ""), num(p.budget), str(p.readiness, "")]),
-    ...arr(sec.upcomingMilestones).map((m) => ["Milestone due", str(m.name, ""), str(m.project, ""), null,
+    ...arr(sec.upcomingMilestones).map((m) => ["Milestone due", str(m.name, ""), str(m.project, "") + changeText(m.change), null,
       fmtDate(m.dueDate), "", "", null, ""]),
   ];
   const ws = sectionSheet(wb, "4 Roadmap",

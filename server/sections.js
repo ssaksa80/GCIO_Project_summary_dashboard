@@ -504,6 +504,12 @@ export const SECTION_TITLES = [
  * the built sections annotates all of them and no builder has to be rewritten
  * or made aware that history exists. A section added later is covered for free.
  *
+ * This depends on a convention nothing enforces: an `id` or `projectId` on a
+ * section item always names the project, never the item's own identity — true
+ * of every builder above today, but a future one that surfaced a milestone's
+ * or risk's own id under the same field name would be silently misannotated
+ * with its parent project's change instead.
+ *
  * @param {object} sections the output of buildSections, MUTATED in place
  * @param {Map<string, object>|null} changes null when the store keeps no history
  */
