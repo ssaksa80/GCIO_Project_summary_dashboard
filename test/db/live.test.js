@@ -14,6 +14,9 @@ import "dotenv/config";
 import test from "node:test";
 import assert from "node:assert/strict";
 import sql from "mssql";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { buildConfig } from "../../server/db/pool.js";
 import { makeExecutor } from "../../server/db/executor.js";
@@ -23,20 +26,50 @@ import { postureRepo } from "../../server/repos/posture.js";
 import { auditRepo } from "../../server/repos/audit.js";
 import { sessionsRepo, computeExpiry } from "../../server/repos/sessions.js";
 import { roleMappingRepo } from "../../server/repos/roleMapping.js";
+import { sourceFilesRepo } from "../../server/repos/sourceFiles.js";
+import { ingestRunsRepo } from "../../server/repos/ingestRuns.js";
+import { projectVersionsRepo } from "../../server/repos/projectVersions.js";
+import { createVault } from "../../server/vault.js";
+import { hashBytes, hashProject } from "../../server/ingest/hash.js";
 import { SqlStore } from "../../server/store/sqlStore.js";
 import { buildSummary } from "../../server/summarize.js";
 import { ingestFile } from "../../server/ingest.js";
 
 const live = process.env.DB_LIVE === "1";
 const FILE = "livetest.xlsx";
+/* Every filename this suite ever ingests starts with this prefix, so cleanup
+   can sweep all of them -- including the per-scenario names Task 8 adds below
+   -- with one LIKE rather than an ever-growing list of exact values. */
+const FILE_PREFIX = "livetest";
 const quiet = { info() {}, error() {}, warn() {} };
 
-/** Everything this suite writes is tagged so cleanup cannot touch real rows. */
+/**
+ * Everything this suite writes is tagged so cleanup cannot touch real rows.
+ *
+ * Child-first, because migration 8 added real foreign keys: ProjectVersion
+ * references IngestRun, and IngestRun references SourceFile. Deleting a
+ * SourceFile (or an IngestRun) before the rows that point at it now fails
+ * with a foreign key violation instead of quietly doing nothing.
+ */
 async function cleanup(ex) {
+  const pattern = { name: "pattern", type: sql.NVarChar(260), value: `${FILE_PREFIX}%` };
+
+  await ex.query(`
+    IF OBJECT_ID('dbo.ProjectVersion','U') IS NOT NULL
+      DELETE FROM dbo.ProjectVersion WHERE ProjectId = 'PRJ-HIST-TEST'
+         OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE @pattern)`,
+    [pattern]);
+  await ex.query(
+    "IF OBJECT_ID('dbo.IngestRun','U') IS NOT NULL DELETE FROM dbo.IngestRun WHERE FileName LIKE @pattern",
+    [pattern]);
+  await ex.query(
+    "IF OBJECT_ID('dbo.SourceFile','U') IS NOT NULL DELETE FROM dbo.SourceFile WHERE FileName LIKE @pattern",
+    [pattern]);
+
   for (const table of ["ProjectChild", "Project", "PostureDomain"]) {
     await ex.query(
-      `IF OBJECT_ID('dbo.${table}','U') IS NOT NULL DELETE FROM dbo.${table} WHERE SourceFile = @f`,
-      [{ name: "f", type: sql.NVarChar(260), value: FILE }]
+      `IF OBJECT_ID('dbo.${table}','U') IS NOT NULL DELETE FROM dbo.${table} WHERE SourceFile LIKE @pattern`,
+      [pattern]
     );
   }
   await ex.query("IF OBJECT_ID('dbo.AuditEvent','U') IS NOT NULL DELETE FROM dbo.AuditEvent WHERE Actor = @a",
@@ -45,6 +78,62 @@ async function cleanup(ex) {
     [{ name: "p", type: sql.NVarChar(200), value: "livetest@example" }]);
   await ex.query("IF OBJECT_ID('dbo.RoleMapping','U') IS NOT NULL DELETE FROM dbo.RoleMapping WHERE GroupName = @g",
     [{ name: "g", type: sql.NVarChar(300), value: "livetest-group" }]);
+}
+
+/**
+ * A repos bundle wired for history, built fresh so one scenario's monkey-patch
+ * of e.g. replaceForFile can never leak into another scenario.
+ */
+function scenarioRepos(ex) {
+  return {
+    projects: projectsRepo(ex),
+    posture: postureRepo(ex),
+    sourceFiles: sourceFilesRepo(ex),
+    ingestRuns: ingestRunsRepo(ex),
+    projectVersions: projectVersionsRepo(ex),
+  };
+}
+
+/**
+ * A trimmed, real parse of the sample workbook, with every project id
+ * namespaced to one scenario tag. dbo.Project's primary key is ProjectId
+ * ALONE -- not (ProjectId, SourceFile) -- so two scenarios ingesting the same
+ * real workbook under different pretend filenames would otherwise collide on
+ * the same ids. A real ingest never does this (a workbook keeps its ids
+ * across drops); only this test's design of "one fixture, many pretend
+ * filenames" does. Trimmed to a handful of projects so a dozen scenarios like
+ * this do not spend the run on redundant row-by-row inserts.
+ */
+function scenarioParsed(fileName, tag, { count = 5 } = {}) {
+  const base = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
+  assert.equal(base.ok, true, base.error);
+  return {
+    ok: true,
+    file: fileName,
+    projects: base.projects.slice(0, count).map((p) => ({ ...p, id: `${tag}-${p.id}` })),
+    posture: base.posture,
+    bytes: base.bytes,
+  };
+}
+
+/** A vault directory scoped to one scenario, in the OS temp dir. */
+function scenarioVault() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-live-vault-"));
+  return { dir, vault: createVault(dir, { logger: quiet }) };
+}
+
+/**
+ * Every run recorded for one filename, newest first. A raw query rather than
+ * repos.ingestRuns.recent(), so a scenario running late in a long suite is
+ * not at the mercy of some earlier scenario's rows pushing it past a fixed
+ * limit.
+ */
+async function runsFor(ex, fileName) {
+  const { recordset } = await ex.query(`
+    SELECT Outcome, Error, ProjectsSeen, ProjectsChanged, FinishedAt
+    FROM dbo.IngestRun WHERE FileName = @f ORDER BY StartedAt DESC, IngestRunId DESC
+  `, [{ name: "f", type: sql.NVarChar(260), value: fileName }]);
+  return recordset;
 }
 
 test("the SQL path works end to end against a real instance", { skip: !live }, async (t) => {
@@ -71,14 +160,51 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
   await t.test("every table the application needs exists", async () => {
     const { recordset } = await ex.query(`
       SELECT name FROM sys.tables
-      WHERE name IN ('Project','ProjectChild','PostureDomain','Sessions','RoleMapping','AuditEvent','SchemaMigration')
+      WHERE name IN ('Project','ProjectChild','PostureDomain','Sessions','RoleMapping',
+                     'AuditEvent','SchemaMigration','SourceFile','IngestRun','ProjectVersion')
     `);
     /* Sort both sides: hand-ordering the expectation is how this failed the
        first time, on SchemaMigration vs Sessions rather than on anything real. */
     const expected = [
-      "AuditEvent", "PostureDomain", "Project", "ProjectChild", "RoleMapping", "SchemaMigration", "Sessions",
+      "AuditEvent", "IngestRun", "PostureDomain", "Project", "ProjectChild", "ProjectVersion",
+      "RoleMapping", "SchemaMigration", "Sessions", "SourceFile",
     ].sort();
     assert.deepEqual(recordset.map((r) => r.name).sort(), expected);
+  });
+
+  await t.test("the history tables keep the indexes and constraints they were given", async () => {
+    const { recordset: indexes } = await ex.query(`
+      SELECT name FROM sys.indexes
+      WHERE name IN ('UX_SourceFile_Name_Sha','IX_IngestRun_StartedAt',
+                     'IX_ProjectVersion_Project','IX_ProjectVersion_RecordedAt')
+    `);
+    assert.deepEqual(indexes.map((r) => r.name).sort(), [
+      "IX_IngestRun_StartedAt", "IX_ProjectVersion_Project",
+      "IX_ProjectVersion_RecordedAt", "UX_SourceFile_Name_Sha",
+    ]);
+
+    /* The hot path selects ContentHash for every changed project on every
+       ingest; without the include it pays a key lookup per row. */
+    const { recordset: included } = await ex.query(`
+      SELECT c.name FROM sys.index_columns ic
+      JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+      JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+      WHERE i.name = 'IX_ProjectVersion_Project' AND ic.is_included_column = 1
+    `);
+    assert.deepEqual(included.map((r) => r.name), ["ContentHash"]);
+
+    const { recordset: keys } = await ex.query(`
+      SELECT name FROM sys.foreign_keys
+      WHERE name IN ('FK_IngestRun_SourceFile','FK_ProjectVersion_IngestRun') AND is_disabled = 0
+    `);
+    assert.equal(keys.length, 2, "a foreign key on the history tables is missing or disabled");
+
+    const { recordset: checks } = await ex.query(`
+      SELECT name FROM sys.check_constraints
+      WHERE name IN ('CK_IngestRun_TriggerSource','CK_IngestRun_Outcome')
+        AND is_disabled = 0 AND is_not_trusted = 0
+    `);
+    assert.equal(checks.length, 2, "a check constraint on dbo.IngestRun is missing or untrusted");
   });
 
   await t.test("a real workbook persists and reads back through the store", async () => {
@@ -148,6 +274,374 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const store = new SqlStore(repos, { logger: quiet });
     await store.refresh();
     assert.equal(store.projectCount, 0);
+  });
+
+  await t.test("history records a version once, and not again for an unchanged file", async () => {
+    const repos = {
+      projects: projectsRepo(ex),
+      posture: postureRepo(ex),
+      sourceFiles: sourceFilesRepo(ex),
+      ingestRuns: ingestRunsRepo(ex),
+      projectVersions: projectVersionsRepo(ex),
+    };
+    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-live-vault-"));
+    const store = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+
+    const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
+    parsed.file = FILE;
+
+    await store.applyFile(parsed, { trigger: "replay" });
+    const firstVersions = await ex.query(
+      "SELECT COUNT(*) AS n FROM dbo.ProjectVersion WHERE ProjectId IN (SELECT ProjectId FROM dbo.Project WHERE SourceFile = @f)",
+      [{ name: "f", type: sql.NVarChar(260), value: FILE }]);
+    assert.ok(firstVersions.recordset[0].n > 0, "no history was recorded");
+
+    /* The identical file again: same bytes, so this must be a no-op. */
+    await store.applyFile(parsed, { trigger: "replay" });
+    const secondVersions = await ex.query(
+      "SELECT COUNT(*) AS n FROM dbo.ProjectVersion WHERE ProjectId IN (SELECT ProjectId FROM dbo.Project WHERE SourceFile = @f)",
+      [{ name: "f", type: sql.NVarChar(260), value: FILE }]);
+    assert.equal(secondVersions.recordset[0].n, firstVersions.recordset[0].n,
+      "re-ingesting an unchanged workbook manufactured history");
+
+    const runs = await repos.ingestRuns.recent({ limit: 5 });
+    assert.equal(runs[0].outcome, "unchanged", "the second run should have been recognised as unchanged");
+    assert.equal(runs[1].outcome, "applied");
+
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  });
+
+  await t.test("a changed project appends exactly one new version", async () => {
+    const versions = projectVersionsRepo(ex);
+
+    const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
+    const subject = { ...parsed.projects[0], id: "PRJ-HIST-TEST" };
+
+    const before = await versions.historyFor(subject.id);
+    await versions.appendChanged([{ project: subject, hash: hashProject(subject) }], { ingestRunId: null });
+    await versions.appendChanged([{ project: subject, hash: hashProject(subject) }], { ingestRunId: null });
+
+    const afterSame = await versions.historyFor(subject.id);
+    assert.equal(afterSame.length, before.length + 1, "an unchanged project was versioned twice");
+
+    const changed = { ...subject, health: subject.health === "Red" ? "Green" : "Red" };
+    await versions.appendChanged([{ project: changed, hash: hashProject(changed) }], { ingestRunId: null });
+
+    const afterChange = await versions.historyFor(subject.id);
+    assert.equal(afterChange.length, before.length + 2);
+    assert.equal(afterChange[0].health, changed.health, "history is not newest-first");
+
+    await ex.query("DELETE FROM dbo.ProjectVersion WHERE ProjectId = @id",
+      [{ name: "id", type: sql.NVarChar(60), value: "PRJ-HIST-TEST" }]);
+  });
+
+  /* --------------------------------------------------------------------
+   * The six scenarios the Task 6 review found the hermetic fakes could not
+   * catch, because the fakes do not share a real database the way SourceFile
+   * and Project do. Each scenario uses its own pretend filename (all under
+   * the FILE_PREFIX so cleanup sweeps them), and namespaces its project ids
+   * so it cannot collide with any other scenario's rows.
+   * -------------------------------------------------------------------- */
+
+  await t.test("scenario 1: a failed first ingest does not hide the file, even for identical bytes on retry", async () => {
+    const scenarioFile = "livetest-firstfail.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir, vault } = scenarioVault();
+    try {
+      const parsed = scenarioParsed(scenarioFile, "S1");
+
+      const originalReplace = repos.projects.replaceForFile.bind(repos.projects);
+      let failNext = true;
+      repos.projects.replaceForFile = async (...args) => {
+        if (failNext) { failNext = false; throw new Error("simulated first-ingest failure"); }
+        return originalReplace(...args);
+      };
+
+      const firstStore = new SqlStore(repos, { vault, logger: quiet });
+      await assert.rejects(
+        () => firstStore.applyFile(parsed, { trigger: "replay" }),
+        /simulated first-ingest failure/
+      );
+
+      const { recordset: afterFailure } = await ex.query(
+        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(afterFailure[0].n, 0, "the failed ingest left rows behind");
+
+      /* A restart is not an escape hatch: retry with a BRAND NEW store --
+         but the SAME on-disk vault, since a real restart keeps that -- using
+         the identical bytes, to prove liveHashFor (not sourceFiles.record)
+         is what decides "unchanged". */
+      const secondStore = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await secondStore.applyFile(parsed, { trigger: "replay" });
+
+      const { recordset: afterRetry } = await ex.query(
+        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(afterRetry[0].n, parsed.projects.length,
+        "identical bytes after a failed first ingest were skipped as unchanged, hiding the file");
+
+      const runs = await runsFor(ex, scenarioFile);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[0].Outcome, "applied", "the retry should have applied, not been skipped as unchanged");
+      assert.equal(runs[1].Outcome, "failed");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("scenario 2: removing a file and re-dropping identical bytes applies, not unchanged", async () => {
+    const scenarioFile = "livetest-removethendrop.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir } = scenarioVault();
+    try {
+      const parsed = scenarioParsed(scenarioFile, "S2");
+
+      const store1 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store1.applyFile(parsed, { trigger: "replay" });
+
+      const store2 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store2.removeFile(scenarioFile);
+
+      const { recordset: afterRemove } = await ex.query(
+        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(afterRemove[0].n, 0);
+
+      const store3 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store3.applyFile(parsed, { trigger: "replay" });
+
+      const { recordset: afterRedrop } = await ex.query(
+        "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(afterRedrop[0].n, parsed.projects.length, "re-dropping after removal did not apply");
+
+      const runs = await runsFor(ex, scenarioFile);
+      assert.equal(runs.length, 3);
+      assert.equal(runs[0].Outcome, "applied", "re-dropping after a removal should apply, not read unchanged");
+      assert.equal(runs[1].Outcome, "removed");
+      assert.equal(runs[2].Outcome, "applied");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("scenario 3: a failed update does not freeze stale data, and the update can still land on retry", async () => {
+    const scenarioFile = "livetest-update.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir } = scenarioVault();
+    try {
+      const v1 = scenarioParsed(scenarioFile, "S3");
+      const store = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store.applyFile(v1, { trigger: "replay" });
+
+      const { recordset: afterV1 } = await ex.query(
+        "SELECT ProjectId, Health FROM dbo.Project WHERE SourceFile = @f ORDER BY ProjectId",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.ok(afterV1.length > 0, "v1 did not persist");
+
+      /* v2: same filename, a meaningfully different project (health flips),
+         and different bytes -- an unmodified buffer would hash the same as
+         v1's and be recognised as unchanged before replaceForFile is ever
+         reached, which would prove nothing about a failed snapshot write. */
+      const v2Projects = v1.projects.map((p, i) => i === 0
+        ? { ...p, health: p.health === "Red" ? "Green" : "Red",
+            percentComplete: Math.min(100, (Number(p.percentComplete) || 0) + 1) }
+        : p);
+      const v2 = { ok: true, file: scenarioFile, projects: v2Projects, posture: v1.posture,
+                   bytes: Buffer.concat([v1.bytes, Buffer.from([0x00])]) };
+
+      const originalReplace = repos.projects.replaceForFile.bind(repos.projects);
+      let failNext = true;
+      repos.projects.replaceForFile = async (...args) => {
+        if (failNext) { failNext = false; throw new Error("simulated snapshot write failure"); }
+        return originalReplace(...args);
+      };
+
+      await assert.rejects(
+        () => store.applyFile(v2, { trigger: "replay" }),
+        /simulated snapshot write failure/
+      );
+
+      const { recordset: stillV1 } = await ex.query(
+        "SELECT ProjectId, Health FROM dbo.Project WHERE SourceFile = @f ORDER BY ProjectId",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.deepEqual(stillV1, afterV1, "v1's rows did not survive the failed v2 write");
+
+      /* Retry with a fresh store -- v2 must now be able to land, because the
+         failed attempt's run closed "failed", not "applied" or "unchanged". */
+      const retryStore = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await retryStore.applyFile(v2, { trigger: "replay" });
+
+      const { recordset: afterV2 } = await ex.query(
+        "SELECT ProjectId, Health FROM dbo.Project WHERE SourceFile = @f ORDER BY ProjectId",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      const changedRow = afterV2.find((r) => r.ProjectId === v2Projects[0].id);
+      assert.ok(changedRow, "the changed project was missing after the retry");
+      assert.equal(changedRow.Health, v2Projects[0].health, "v2 was not applied on retry");
+
+      const runs = await runsFor(ex, scenarioFile);
+      assert.equal(runs.length, 3);
+      assert.equal(runs[0].Outcome, "applied");
+      assert.equal(runs[1].Outcome, "failed");
+      assert.equal(runs[2].Outcome, "applied");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("scenario 4: a refresh failure after a successful apply still records applied, correctly", async () => {
+    const scenarioFile = "livetest-misleading.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir, vault } = scenarioVault();
+    try {
+      const parsed = scenarioParsed(scenarioFile, "S4");
+      const store = new SqlStore(repos, { vault, logger: quiet });
+      store.refresh = async () => { throw new Error("simulated read-model refresh failure"); };
+
+      await assert.rejects(
+        () => store.applyFile(parsed, { trigger: "replay" }),
+        /simulated read-model refresh failure/
+      );
+
+      const runs = await runsFor(ex, scenarioFile);
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].Outcome, "applied",
+        "a refresh failure after a real success was recorded as anything but applied");
+      assert.equal(runs[0].ProjectsChanged, parsed.projects.length);
+
+      const { recordset: projectRows } = await ex.query(
+        "SELECT ProjectId, Health FROM dbo.Project WHERE SourceFile = @f",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(projectRows.length, parsed.projects.length, "dbo.Project did not hold the applied data");
+
+      const { recordset: versionRows } = await ex.query(
+        "SELECT COUNT(*) AS n FROM dbo.ProjectVersion WHERE ProjectId IN (SELECT value FROM STRING_SPLIT(@ids, ','))",
+        [{ name: "ids", type: sql.NVarChar(sql.MAX), value: parsed.projects.map((p) => p.id).join(",") }]
+      );
+      assert.equal(versionRows[0].n, parsed.projects.length, "dbo.ProjectVersion did not hold the applied history");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("scenario 5: liveHashFor tracks the most recently settled run, not whichever SourceFile row was touched last", async () => {
+    const scenarioFile = "livetest-livehash.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir } = scenarioVault();
+    try {
+      const v1 = scenarioParsed(scenarioFile, "S5");
+      const v2 = { ...v1, bytes: Buffer.concat([v1.bytes, Buffer.from([0x02])]) };
+      const v1Hash = hashBytes(v1.bytes);
+      const v2Hash = hashBytes(v2.bytes);
+      assert.notEqual(v1Hash, v2Hash);
+
+      const store1 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store1.applyFile(v1, { trigger: "replay" });
+
+      const store2 = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      await store2.applyFile(v2, { trigger: "replay" });
+
+      assert.equal(await repos.ingestRuns.liveHashFor(scenarioFile), v2Hash,
+        "liveHashFor did not track the most recently settled (v2) run");
+
+      /* Touch v1's SourceFile row again -- bumping LastSeenAt to be the
+         newest in the table -- without a new, successfully-applied run
+         behind it. If liveHashFor were keyed off SourceFile.LastSeenAt
+         instead of IngestRun, this would flip the answer back to v1's hash. */
+      await repos.sourceFiles.record({
+        fileName: scenarioFile, sha256: v1Hash, bytes: v1.bytes.length,
+        vaultPath: "irrelevant-for-this-assertion", uploadedBy: null,
+      });
+
+      assert.equal(await repos.ingestRuns.liveHashFor(scenarioFile), v2Hash,
+        "liveHashFor followed the SourceFile row touched last instead of the run history");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("scenario 6: a freshly constructed store does not know what is already in SQL until it refreshes", async () => {
+    const scenarioFile = "livetest-coldstart.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir, vault } = scenarioVault();
+    try {
+      const parsed = scenarioParsed(scenarioFile, "S6");
+
+      const writer = new SqlStore(repos, { vault, logger: quiet });
+      await writer.applyFile(parsed, { trigger: "replay" });
+      assert.ok(writer.sourceFiles.has(scenarioFile));
+      const expectedTotal = writer.projectCount;
+
+      /* A brand new process, same database: nothing is known until refresh(). */
+      const cold = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
+      assert.equal(cold.projectCount, 0, "a freshly constructed store already knew about SQL rows");
+      assert.equal(cold.fileCount, 0);
+      assert.ok(!cold.sourceFiles.has(scenarioFile), "sourceFiles was populated before refresh() ever ran");
+
+      await cold.refresh();
+      assert.equal(cold.projectCount, expectedTotal,
+        "refresh() did not pick up rows written by a different store instance");
+      assert.ok(cold.sourceFiles.has(scenarioFile));
+      assert.ok(cold.all().some((p) => p.id === parsed.projects[0].id),
+        "a freshly refreshed store did not see this scenario's own projects");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("a rejected workbook records a failed run", async () => {
+    const scenarioFile = "livetest-rejected.xlsx";
+    const repos = scenarioRepos(ex);
+    const store = new SqlStore(repos, { logger: quiet });
+
+    await store.recordRejectedFile(scenarioFile, "some parse reason");
+
+    const runs = await runsFor(ex, scenarioFile);
+    assert.equal(runs.length, 1, "recordRejectedFile did not leave exactly one run");
+    assert.equal(runs[0].Outcome, "failed");
+    assert.ok(runs[0].FinishedAt, "the run was left open");
+    assert.match(runs[0].Error, /some parse reason/);
+  });
+
+  await t.test("the vault holds exactly one copy of a workbook ingested twice, byte-identical", async () => {
+    const scenarioFile = "livetest-vaultonce.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir, vault } = scenarioVault();
+    try {
+      const parsed = scenarioParsed(scenarioFile, "SV");
+
+      const store1 = new SqlStore(repos, { vault, logger: quiet });
+      await store1.applyFile(parsed, { trigger: "replay" });
+
+      const store2 = new SqlStore(repos, { vault, logger: quiet });
+      await store2.applyFile(parsed, { trigger: "replay" }); // identical bytes -> unchanged
+
+      const hash = hashBytes(parsed.bytes);
+      const ext = path.extname(scenarioFile).toLowerCase();
+      let found = 0;
+      for (const year of fs.readdirSync(vaultDir)) {
+        for (const month of fs.readdirSync(path.join(vaultDir, year))) {
+          found += fs.readdirSync(path.join(vaultDir, year, month))
+            .filter((f) => f === `${hash}${ext}`).length;
+        }
+      }
+      assert.equal(found, 1, "the vault stored more than one copy of identical bytes");
+
+      const onDisk = vault.read(hash, ext);
+      assert.ok(onDisk, "the vaulted file could not be read back");
+      assert.ok(onDisk.equals(parsed.bytes), "the vaulted bytes differ from what was ingested");
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
   });
 
   await t.test("sessions honour expiry and can be destroyed", async () => {
