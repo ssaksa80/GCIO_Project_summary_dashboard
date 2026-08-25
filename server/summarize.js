@@ -6,7 +6,7 @@
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek.js";
 import { fmtMoney, fmtDate, round1 } from "./format.js";
-import { buildSections } from "./sections.js";
+import { buildSections, annotateChanges } from "./sections.js";
 
 dayjs.extend(isoWeek);
 
@@ -64,12 +64,36 @@ function trendBuckets(period, anchor) {
 const sum = (arr, fn) => arr.reduce((acc, x) => acc + (fn(x) || 0), 0);
 
 /**
+ * Fetch what changed during a period. The one asynchronous step in an
+ * otherwise synchronous pipeline, kept at the edge on purpose: making the
+ * section engine async to reach a database would ripple through every builder
+ * and every test for no benefit.
+ *
+ * @returns {Promise<Map<string, object>|null>} null when the store keeps no history
+ */
+export async function loadChanges(store, period, dateISO) {
+  if (typeof store.changesSince !== "function") return null;
+  const { start } = periodWindow(period, dateISO);
+  try {
+    return await store.changesSince(start.format("YYYY-MM-DD"));
+  } catch (err) {
+    /* A history query failing must not take down the briefing. The dashboard
+       is still correct without it; it just cannot say what moved. */
+    console.error(`[changes] could not load history: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Build the full summary payload for a period (SPEC §5 shape).
  * @param {import('./store.js').Store} store
  * @param {"daily"|"weekly"|"monthly"|"yearly"} period
  * @param {string} dateISO anchor date (yyyy-mm-dd)
+ * @param {{changes?: Map<string, object>|null}} [opts] changes computed by loadChanges,
+ *        already scoped to this period. Defaults to null so every existing
+ *        three-argument caller keeps working unchanged and sees nothing annotated.
  */
-export function buildSummary(store, period, dateISO) {
+export function buildSummary(store, period, dateISO, { changes = null } = {}) {
   const anchor = dayjs(dateISO);
   const { start, end } = periodWindow(period, dateISO);
   const todayISO = dayjs().format("YYYY-MM-DD");
@@ -127,7 +151,10 @@ export function buildSummary(store, period, dateISO) {
     generatedAt: new Date().toISOString(),
     currency: "AED",
     kpis,
-    sections: buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
+    sections: annotateChanges(
+      buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
+      changes
+    ),
     narrative: buildNarrative({ period, anchor, end, projects, active, kpis, completedIn, approvedIn, overdue, criticalRisks, allMilestones, todayISO }),
     charts: buildCharts({ period, anchor, projects, active }),
     attention: buildAttention(projects, criticalRisks, todayISO),

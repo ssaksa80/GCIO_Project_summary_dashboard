@@ -496,6 +496,42 @@ export const SECTION_TITLES = [
   "Security Posture",
 ];
 
+/**
+ * Attach what changed to every item that names a project.
+ *
+ * Deliberately generic rather than per-section: every section item already
+ * carries the project's `id` (posture carries `projectId`), so one walk over
+ * the built sections annotates all of them and no builder has to be rewritten
+ * or made aware that history exists. A section added later is covered for free.
+ *
+ * @param {object} sections the output of buildSections, MUTATED in place
+ * @param {Map<string, object>|null} changes null when the store keeps no history
+ */
+export function annotateChanges(sections, changes) {
+  sections.historyAvailable = changes !== null;
+  if (!changes) return sections;
+
+  const seen = new Set();
+  const walk = (node) => {
+    if (!node || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const entry of node) walk(entry);
+      return;
+    }
+
+    const projectId = node.projectId || node.id;
+    if (typeof projectId === "string" && changes.has(projectId)) {
+      node.change = changes.get(projectId);
+    }
+    for (const value of Object.values(node)) walk(value);
+  };
+
+  walk(sections);
+  return sections;
+}
+
 /* ------------------------------------------------------------------ 5 */
 
 const POSTURE_RANK = { "Non-Compliant": 0, Partial: 1, "Not Assessed": 2, Compliant: 3 };
