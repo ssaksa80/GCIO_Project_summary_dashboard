@@ -14,24 +14,20 @@ export function sourceFilesRepo(ex) {
      * @returns {Promise<{sourceFileId: number, alreadySeen: boolean}>}
      */
     async record({ fileName, sha256, bytes, vaultPath = null, uploadedBy = null }) {
-      const existing = await ex.query(`
-        SELECT SourceFileId FROM dbo.SourceFile WHERE FileName = @name AND Sha256 = @sha
-      `, [
-        { name: "name", type: sql.NVarChar(260), value: fileName },
-        { name: "sha", type: sql.Char(64), value: sha256 },
-      ]);
-
-      if (existing.recordset.length) {
-        await ex.query("UPDATE dbo.SourceFile SET LastSeenAt = SYSUTCDATETIME() WHERE SourceFileId = @id", [
-          { name: "id", type: sql.BigInt, value: existing.recordset[0].SourceFileId },
-        ]);
-        return { sourceFileId: Number(existing.recordset[0].SourceFileId), alreadySeen: true };
-      }
-
-      const inserted = await ex.query(`
-        INSERT INTO dbo.SourceFile (FileName, Sha256, Bytes, VaultPath, UploadedBy, FirstSeenAt, LastSeenAt)
-        OUTPUT INSERTED.SourceFileId
-        VALUES (@name, @sha, @bytes, @vault, @by, SYSUTCDATETIME(), SYSUTCDATETIME())
+      /* One statement, not SELECT-then-branch. UX_SourceFile_Name_Sha makes the
+         racy version fail with a duplicate key when two watcher events for the
+         same file are in flight at once, which chokidar permits. HOLDLOCK takes
+         the range lock that makes the second caller wait and then see the row. */
+      const { recordset } = await ex.query(`
+        MERGE dbo.SourceFile WITH (HOLDLOCK) AS target
+        USING (VALUES (@name, @sha)) AS incoming (FileName, Sha256)
+           ON target.FileName = incoming.FileName AND target.Sha256 = incoming.Sha256
+        WHEN MATCHED THEN
+          UPDATE SET LastSeenAt = SYSUTCDATETIME()
+        WHEN NOT MATCHED THEN
+          INSERT (FileName, Sha256, Bytes, VaultPath, UploadedBy, FirstSeenAt, LastSeenAt)
+          VALUES (@name, @sha, @bytes, @vault, @by, SYSUTCDATETIME(), SYSUTCDATETIME())
+        OUTPUT $action AS Action, INSERTED.SourceFileId;
       `, [
         { name: "name", type: sql.NVarChar(260), value: fileName },
         { name: "sha", type: sql.Char(64), value: sha256 },
@@ -39,7 +35,9 @@ export function sourceFilesRepo(ex) {
         { name: "vault", type: sql.NVarChar(400), value: vaultPath },
         { name: "by", type: sql.NVarChar(320), value: uploadedBy },
       ]);
-      return { sourceFileId: Number(inserted.recordset[0].SourceFileId), alreadySeen: false };
+
+      const row = recordset[0];
+      return { sourceFileId: Number(row.SourceFileId), alreadySeen: row.Action === "UPDATE" };
     },
 
     /** The hash of the most recent version of a named file, or null. */
