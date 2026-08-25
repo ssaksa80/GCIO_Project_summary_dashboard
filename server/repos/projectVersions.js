@@ -23,6 +23,22 @@ const openCount = (items) =>
 const toDate = (v) => (v ? new Date(v) : null);
 const iso = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d || null);
 
+/** One version row, in the shape server/changes.js compares. */
+function toVersion(r) {
+  return {
+    recordedAt: r.RecordedAt instanceof Date ? r.RecordedAt.toISOString() : String(r.RecordedAt),
+    contentHash: r.ContentHash,
+    status: r.Status,
+    health: r.Health,
+    percentComplete: Number(r.PercentComplete),
+    budget: Number(r.Budget),
+    spent: Number(r.Spent),
+    openRisks: r.OpenRisks,
+    openQuestions: r.OpenQuestions,
+    targetEndDate: iso(r.TargetEndDate),
+  };
+}
+
 export function projectVersionsRepo(ex) {
   return {
     /**
@@ -164,6 +180,57 @@ export function projectVersionsRepo(ex) {
         openQuestions: r.OpenQuestions,
         targetEndDate: iso(r.TargetEndDate),
       }));
+    },
+
+    /**
+     * Every project whose recorded content moved since a date.
+     *
+     * One query, two buckets: the newest version at or before `sinceISO` is the
+     * baseline, the newest overall is current. A project first recorded inside
+     * the period has no baseline — it is returned with `baseline: null` and a
+     * `trackedSince`, because "we have only known about this since Tuesday" is
+     * a different statement from "nothing changed", and the briefing must not
+     * conflate them.
+     *
+     * @param {string} sinceISO YYYY-MM-DD, the start of the period
+     * @returns {Promise<Map<string, {baseline: object|null, current: object, trackedSince: string|null}>>}
+     */
+    async changedSince(sinceISO) {
+      const { recordset } = await ex.query(`
+        WITH ranked AS (
+          SELECT ProjectId, ContentHash, RecordedAt, Status, Health, PercentComplete,
+                 Budget, Spent, OpenRisks, OpenQuestions, TargetEndDate,
+                 CASE WHEN RecordedAt <= @since THEN 'baseline' ELSE 'current' END AS Bucket,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY ProjectId, CASE WHEN RecordedAt <= @since THEN 1 ELSE 0 END
+                   ORDER BY RecordedAt DESC, ProjectVersionId DESC) AS rn
+          FROM dbo.ProjectVersion
+        )
+        SELECT * FROM ranked WHERE rn = 1
+      `, [{ name: "since", type: sql.DateTime2, value: new Date(`${sinceISO}T00:00:00Z`) }]);
+
+      /* Group first, decide second: a project can appear once or twice. */
+      const byProject = new Map();
+      for (const r of recordset) {
+        const entry = byProject.get(r.ProjectId) || { baseline: null, current: null };
+        entry[r.Bucket === "baseline" ? "baseline" : "current"] = toVersion(r);
+        byProject.set(r.ProjectId, entry);
+      }
+
+      const changes = new Map();
+      for (const [projectId, { baseline, current }] of byProject) {
+        /* No row after the cutoff means the newest version IS the baseline, so
+           nothing moved during the period. */
+        if (!current) continue;
+        if (baseline && baseline.contentHash === current.contentHash) continue;
+
+        changes.set(projectId, {
+          baseline,
+          current,
+          trackedSince: baseline ? null : current.recordedAt,
+        });
+      }
+      return changes;
     },
   };
 }
