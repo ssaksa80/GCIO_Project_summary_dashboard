@@ -822,6 +822,43 @@ git add server/repos/sourceFiles.js server/repos/ingestRuns.js test/db/history.t
 git commit -m "feat(db): source-file and ingest-run repositories"
 ```
 
+**Amended after review.** Six changes to the code above, all defects in this
+plan rather than in the implementation:
+
+1. **`record()` is one `MERGE ... WITH (HOLDLOCK)`**, not SELECT-then-branch.
+   `UX_SourceFile_Name_Sha` is UNIQUE, and chokidar registers `add` and `change`
+   independently without awaiting one handler before firing the next — so a
+   save-then-touch from Excel can put two `record()` calls for identical bytes in
+   flight at once and one dies on a duplicate key. A plain transaction does not
+   help under READ COMMITTED; the range lock does. `OUTPUT $action` yields
+   `alreadySeen`. This matches the upsert idiom already in `roleMapping.set()`.
+2. **`finish()` logs when it closes nothing.** A zero-row UPDATE is not an
+   error, so a stale id would leave a run open forever — the exact failure this
+   table exists to make visible. Logged, not thrown: the caller is usually
+   already handling its own failure.
+3. **`recent()` guards the date conversion** with `instanceof Date`, matching
+   `audit.js`, `sessions.js` and `projects.js`. This was the only repository
+   breaking that convention.
+4. **`finish()` takes an optional `sourceFileId`**, applied with `COALESCE` so
+   omitting it does not blank an existing value. Task 6 needs this because the
+   run is now opened before the source file is recorded.
+5. **Surrogate-safe truncation** of the error text, and the trigger and outcome
+   vocabularies exported as `INGEST_TRIGGERS` / `INGEST_OUTCOMES` with `start()`
+   and `finish()` rejecting anything outside them. There is no type checking in
+   this project, so without that a typo surfaces as SQL error 547 at runtime.
+6. The plan's `scriptedExecutor` helper was declared
+   `function scriptedExecutor({ recordsets = {} } = {})` while every call site
+   passes the needle map directly, so no needle would ever have matched and every
+   test would have failed on undefined rows. Signature corrected to
+   `function scriptedExecutor(recordsets = {})`. The plan's last test also
+   asserted a clamp of `200` against an implementation clamping at `500`; the
+   implementation is right, because Task 7's route allows 500 and a lower
+   repository ceiling would silently return less than the caller asked for.
+
+Note that `test/db/repos.test.js` has a DIFFERENT helper of the same name, with
+a `{ recordsets }` signature, transaction markers and `failOn` support. They are
+deliberately not merged; the header comment in each says so.
+
 ---
 
 ### Task 5: The project-version repository
@@ -1167,6 +1204,7 @@ test("an ingest vaults the bytes, records the file, and closes the run", async (
   await store.applyFile(parsed(), { trigger: "watcher" });
 
   const order = calls.map((c) => c[0]);
+  assert.equal(order[0], "runs.start", "the run must be open before anything that can fail");
   assert.ok(order.indexOf("vault.store") < order.indexOf("projects.replace"),
     "the bytes must be vaulted before they are parsed into the database");
   assert.ok(order.includes("sourceFiles.record"));
@@ -1194,6 +1232,21 @@ test("a failure still closes the run, with the reason", async () => {
   const finish = calls.find((c) => c[0] === "runs.finish");
   assert.ok(finish, "the run was left open");
   assert.equal(finish[2], "failed");
+});
+
+test("a vault failure is recorded as a failed run, not as no run at all", async () => {
+  /* The vault write happens before any database write. If it throws and the
+     run were opened later, there would be nothing anywhere saying why the
+     workbook never appeared. */
+  const { calls, store } = harness();
+  store.vault = { store() { throw new Error("vault write failed for master.xlsx: EACCES"); } };
+
+  await assert.rejects(() => store.applyFile(parsed(), { trigger: "watcher" }), /vault write failed/);
+
+  const finish = calls.find((c) => c[0] === "runs.finish");
+  assert.ok(finish, "a vault failure left no run behind");
+  assert.equal(finish[2], "failed");
+  assert.ok(!calls.some((c) => c[0] === "projects.replace"), "the database was written despite the vault failing");
 });
 
 test("removing a file records a run too", async () => {
@@ -1288,35 +1341,40 @@ exactly as they are:
       return result.projects.length;
     }
 
-    let vaulted = null;
-    if (this.vault && result.bytes) {
-      vaulted = this.vault.store(result.bytes, result.file);
-    }
-
-    const unchanged = vaulted
-      ? (await this.repos.sourceFiles.newestHashFor(result.file)) === vaulted.hash
-      : false;
-
-    const recorded = vaulted
-      ? await this.repos.sourceFiles.record({
-          fileName: result.file, sha256: vaulted.hash, bytes: vaulted.bytes,
-          vaultPath: vaulted.vaultPath, uploadedBy: actor,
-        })
-      : { sourceFileId: null };
-
-    const runId = await this.repos.ingestRuns.start({
-      fileName: result.file, trigger, sourceFileId: recorded.sourceFileId,
-    });
-
-    if (unchanged) {
-      await this.repos.ingestRuns.finish(runId, {
-        outcome: "unchanged", projectsSeen: result.projects.length,
-      });
-      this.log({ file: result.file, ok: true, unchanged: true });
-      return 0;
-    }
+    /* The run is opened before anything else can fail. Vaulting the bytes and
+       recording the source file can both throw, and if the run were opened
+       after them the one failure mode that happens first would be the one this
+       table cannot explain. The source file is attached when the run closes. */
+    const runId = await this.repos.ingestRuns.start({ fileName: result.file, trigger });
 
     try {
+      const vaulted = this.vault && result.bytes
+        ? this.vault.store(result.bytes, result.file)
+        : null;
+
+      /* Read the newest hash BEFORE recording this one, or it compares the file
+         against itself and every ingest looks unchanged. */
+      const unchanged = vaulted
+        ? (await this.repos.sourceFiles.newestHashFor(result.file)) === vaulted.hash
+        : false;
+
+      const recorded = vaulted
+        ? await this.repos.sourceFiles.record({
+            fileName: result.file, sha256: vaulted.hash, bytes: vaulted.bytes,
+            vaultPath: vaulted.vaultPath, uploadedBy: actor,
+          })
+        : { sourceFileId: null };
+
+      if (unchanged) {
+        await this.repos.ingestRuns.finish(runId, {
+          outcome: "unchanged",
+          projectsSeen: result.projects.length,
+          sourceFileId: recorded.sourceFileId,
+        });
+        this.log({ file: result.file, ok: true, unchanged: true });
+        return 0;
+      }
+
       await this.repos.projects.replaceForFile(result.file, result.projects);
       await this.repos.posture.replaceForFile(result.file, result.posture || []);
 
@@ -1333,6 +1391,7 @@ exactly as they are:
         projectsSeen: result.projects.length,
         projectsChanged: changed,
         postureRows: (result.posture || []).length,
+        sourceFileId: recorded.sourceFileId,
       });
 
       this.log({
@@ -1472,6 +1531,15 @@ constructs `SqlStore` with only the two Phase 0 repositories and must still work
 git add server/store/sqlStore.js server/index.js server/ingest.js test/db/sqlStoreHistory.test.js
 git commit -m "feat(ingest): vault every workbook and record what each ingest changed"
 ```
+
+**Amended after the Task 4 review.** The run is now opened FIRST, before the
+bytes are vaulted and before the source file is recorded, and the source file id
+is attached when the run closes. Originally `vault.store()` and
+`sourceFiles.record()` both ran before `ingestRuns.start()`, so a failure in
+either produced no run at all — and "either there is no run, or there is a run
+with a reason" stopped being true for the one failure mode that happens first.
+`newestHashFor` is still read before `record()`, or the file would be compared
+against itself and every ingest would look unchanged.
 
 ---
 
