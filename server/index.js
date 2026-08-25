@@ -28,6 +28,10 @@ import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
+import { sourceFilesRepo } from "./repos/sourceFiles.js";
+import { ingestRunsRepo } from "./repos/ingestRuns.js";
+import { projectVersionsRepo } from "./repos/projectVersions.js";
+import { createVault } from "./vault.js";
 import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
 
@@ -58,9 +62,18 @@ if (config.store === "mssql") {
     audit: auditRepo(ex),
     sessions: sessionsRepo(ex),
     roleMapping: roleMappingRepo(ex),
+    sourceFiles: sourceFilesRepo(ex),
+    ingestRuns: ingestRunsRepo(ex),
+    projectVersions: projectVersionsRepo(ex),
   };
 
-  store = new SqlStore({ projects: repos.projects, posture: repos.posture });
+  store = new SqlStore({
+    projects: repos.projects,
+    posture: repos.posture,
+    sourceFiles: repos.sourceFiles,
+    ingestRuns: repos.ingestRuns,
+    projectVersions: repos.projectVersions,
+  }, { vault: createVault(path.join(ROOT, config.vaultDir)) });
   await store.refresh();
   log(`loaded ${store.projectCount} projects from SQL`);
 
@@ -103,7 +116,7 @@ async function apply(result) {
       store.log({ file: result.file, ok: false, error: result.error });
       return 0;
     }
-    return store.applyFile(result);
+    return store.applyFile(result, { trigger: "boot" });
   }
   return applyResult(store, result);
 }
@@ -152,7 +165,7 @@ watchDataDir(DATA_DIR, {
       return;
     }
     if (store instanceof SqlStore) {
-      await store.applyFile(parsed);
+      await store.applyFile(parsed, { trigger: "watcher" });
     } else {
       applyResult(store, parsed);
       if (store.demoMode) store.demoMode = false;
