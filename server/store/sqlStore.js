@@ -15,6 +15,7 @@
  * domain code cannot tell which one they were given.
  */
 import { hashProject } from "../ingest/hash.js";
+import { compareVersions } from "../changes.js";
 
 export class SqlStore {
   /**
@@ -67,6 +68,50 @@ export class SqlStore {
 
   get fileCount() {
     return this.sourceFiles.size;
+  }
+
+  /**
+   * What moved since a date, ready for the section engine.
+   *
+   * Returns null — NOT an empty Map — when this store keeps no history. Empty
+   * means "nothing moved"; null means "we cannot know", and the briefing says
+   * something different for each. Conflating them would have the dashboard
+   * quietly assert that a portfolio was stable during a period it has no
+   * record of.
+   *
+   * @param {string} sinceISO YYYY-MM-DD
+   * @returns {Promise<Map<string, object>|null>}
+   */
+  async changesSince(sinceISO) {
+    if (!this.repos.projectVersions) return null;
+
+    const raw = await this.repos.projectVersions.changedSince(sinceISO);
+    const changes = new Map();
+
+    for (const [projectId, entry] of raw) {
+      if (!entry.baseline) {
+        /* Known only from inside the period. Say when, and say nothing else. */
+        changes.set(projectId, { trackedSince: entry.trackedSince, current: entry.current });
+        continue;
+      }
+      const compared = compareVersions(entry.baseline, entry.current);
+      if (compared) changes.set(projectId, { ...compared, since: entry.baseline.recordedAt });
+    }
+    return changes;
+  }
+
+  /**
+   * The oldest recorded version, so the briefing can say how far back it knows.
+   *
+   * The `?.` is deliberate, not the same guard style as changedSince above by
+   * accident: changedSince is an established contract every real
+   * projectVersions repository already implements, while oldestRecordedAt is
+   * brand new in this same change. A fixture built before it existed should
+   * not throw here.
+   */
+  async historyStartedAt() {
+    if (!this.repos.projectVersions?.oldestRecordedAt) return null;
+    return this.repos.projectVersions.oldestRecordedAt();
   }
 
   /* ---------------------------------------------------------- write side */

@@ -225,5 +225,12 @@ export function projectVersionsRepo(ex) {
       }
       return changes;
     },
+
+    /** When history begins, or null if nothing has been recorded. */
+    async oldestRecordedAt() {
+      const { recordset } = await ex.query("SELECT MIN(RecordedAt) AS oldest FROM dbo.ProjectVersion");
+      const oldest = recordset[0]?.oldest;
+      return oldest instanceof Date ? oldest.toISOString() : null;
+    },
   };
 }

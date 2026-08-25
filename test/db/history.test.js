@@ -480,3 +480,26 @@ test("a failure partway through a batch propagates rather than returning a parti
   );
   assert.equal(inserts, 3, "the third insert should have thrown before a fourth was attempted");
 });
+
+test("oldestRecordedAt returns null over a genuinely empty recordset", async () => {
+  /* Belt and braces: recordset[0] is undefined here, so the optional chain in
+     the implementation is what keeps this from throwing. A real MIN() never
+     actually returns zero rows (see the next test) but nothing enforces that
+     a fake or future driver behaves the same way. */
+  const ex = scriptedExecutor({ "MIN(RecordedAt)": [] });
+  assert.equal(await projectVersionsRepo(ex).oldestRecordedAt(), null);
+});
+
+test("oldestRecordedAt returns null when the table is empty, matching real MIN() semantics", async () => {
+  /* MIN() over zero rows is not "no rows back" -- SQL Server returns exactly
+     one row whose column holds NULL, which tedious surfaces as a JS null.
+     This is the shape the real database sends on day one, before any ingest
+     has ever run. */
+  const ex = scriptedExecutor({ "MIN(RecordedAt)": [{ oldest: null }] });
+  assert.equal(await projectVersionsRepo(ex).oldestRecordedAt(), null);
+});
+
+test("oldestRecordedAt renders a recorded Date as an ISO string", async () => {
+  const ex = scriptedExecutor({ "MIN(RecordedAt)": [{ oldest: new Date("2026-08-18T09:00:00Z") }] });
+  assert.equal(await projectVersionsRepo(ex).oldestRecordedAt(), "2026-08-18T09:00:00.000Z");
+});
