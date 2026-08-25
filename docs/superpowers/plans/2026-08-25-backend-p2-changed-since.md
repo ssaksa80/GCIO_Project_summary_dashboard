@@ -817,8 +817,10 @@ importing `annotateChanges` alongside `buildSections`.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `node --test test/domain/annotate.test.js test/domain/sections.test.js`
-Expected: PASS. Every existing section test must still pass untouched — they
+Run: `node --test test/domain/annotate.test.js test/domain/posture.test.js`
+Expected: PASS. Every existing test that exercises the section engine must still pass
+untouched — `test/domain/posture.test.js` and `test/db/history.test.js` both
+import it, and they
 call `buildSummary` with three arguments and get `changes: null`, so nothing is
 annotated and `historyAvailable` is false.
 
@@ -921,7 +923,7 @@ object, beside `kpis`:
 
 - [ ] **Step 5: Run the tests**
 
-Run: `node --test test/domain/changes.test.js test/domain/sections.test.js`
+Run: `node --test test/domain/changes.test.js test/domain/posture.test.js`
 Expected: PASS — 12 in the changes suite.
 
 - [ ] **Step 6: Commit**
