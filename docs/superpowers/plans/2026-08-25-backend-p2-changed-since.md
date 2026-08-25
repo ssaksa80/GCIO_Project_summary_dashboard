@@ -1256,19 +1256,21 @@ null if nothing has been recorded at all:
 - history exists but starts after the period being viewed →
   `No change history before 25 Aug.`
 
-That means `/api/summary` must also carry `historyStartedAt`. Add it beside
-`changes` in `server/summarize.js`'s returned object, loaded in the same place
-`loadChanges` is called in Task 6 — one await, not one per section:
+`/api/summary` carries `historyStartedAt`, loaded at the route in Task 6 — one
+await per request, not one per section.
 
-```js
-    historyStartedAt: await store.historyStartedAt(),
-```
+**It must be guarded, and the snippet this plan originally showed was not.**
+`await store.historyStartedAt()` runs a query against the history table through
+the same executor everything else uses, and a dead connection there is rethrown
+as a 503. Unguarded, that blanks a dashboard whose portfolio is perfectly
+serveable — the exact failure `loadChanges` exists to prevent, reached through
+the other query. It is invisible to any test using the in-memory store, whose
+`historyStartedAt` returns null unconditionally and can never throw. Task 6 now
+provides `loadHistoryStart(store)` beside `loadChanges`, which catches and
+returns null; use that, never the bare call.
 
-Note this makes `buildSummary` itself unable to fetch it, since it is
-synchronous. Load it at the route alongside the changes and pass it in the same
-options object — `buildSummary(store, period, date, { changes, historyStartedAt })`
-— rather than making the summary builder async. The rule from the plan header
-still holds: the engine stays synchronous and history arrives as data.
+`buildSummary` cannot fetch it itself, being synchronous. The rule from the plan
+header still holds: the engine stays synchronous and history arrives as data.
 
 - [ ] **Step 4: The exporters**
 
