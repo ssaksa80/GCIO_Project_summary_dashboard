@@ -136,6 +136,75 @@ export const MIGRATIONS = [
         CREATE INDEX IX_ProjectChild_SourceFile ON dbo.ProjectChild (SourceFile);
     `,
   },
+  {
+    id: 6,
+    name: "source_files_and_runs",
+    sql: `
+      IF OBJECT_ID('dbo.SourceFile', 'U') IS NULL
+      CREATE TABLE dbo.SourceFile (
+        SourceFileId  BIGINT IDENTITY(1,1) PRIMARY KEY,
+        FileName      NVARCHAR(260)  NOT NULL,
+        Sha256        CHAR(64)       NOT NULL,
+        Bytes         BIGINT         NOT NULL,
+        VaultPath     NVARCHAR(400)  NULL,
+        UploadedBy    NVARCHAR(320)  NULL,
+        FirstSeenAt   DATETIME2(3)   NOT NULL,
+        LastSeenAt    DATETIME2(3)   NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_SourceFile_Name_Sha')
+        CREATE UNIQUE INDEX UX_SourceFile_Name_Sha ON dbo.SourceFile (FileName, Sha256);
+
+      IF OBJECT_ID('dbo.IngestRun', 'U') IS NULL
+      CREATE TABLE dbo.IngestRun (
+        IngestRunId     BIGINT IDENTITY(1,1) PRIMARY KEY,
+        SourceFileId    BIGINT         NULL,
+        FileName        NVARCHAR(260)  NOT NULL,
+        TriggerSource   VARCHAR(16)    NOT NULL,   -- TRIGGER is a reserved word
+        StartedAt       DATETIME2(3)   NOT NULL,
+        FinishedAt      DATETIME2(3)   NULL,
+        Outcome         VARCHAR(16)    NULL,
+        ProjectsSeen    INT            NOT NULL CONSTRAINT DF_IngestRun_Seen DEFAULT (0),
+        ProjectsChanged INT            NOT NULL CONSTRAINT DF_IngestRun_Changed DEFAULT (0),
+        PostureRows     INT            NOT NULL CONSTRAINT DF_IngestRun_Posture DEFAULT (0),
+        Error           NVARCHAR(1000) NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_IngestRun_StartedAt')
+        CREATE INDEX IX_IngestRun_StartedAt ON dbo.IngestRun (StartedAt DESC);
+    `,
+  },
+  {
+    id: 7,
+    name: "project_version",
+    sql: `
+      IF OBJECT_ID('dbo.ProjectVersion', 'U') IS NULL
+      CREATE TABLE dbo.ProjectVersion (
+        ProjectVersionId BIGINT IDENTITY(1,1) PRIMARY KEY,
+        ProjectId        NVARCHAR(60)   NOT NULL,
+        ContentHash      CHAR(64)       NOT NULL,
+        IngestRunId      BIGINT         NULL,
+        RecordedAt       DATETIME2(3)   NOT NULL,
+        Name             NVARCHAR(400)  NOT NULL,
+        Department       NVARCHAR(200)  NULL,
+        Status           NVARCHAR(40)   NOT NULL,
+        Health           NVARCHAR(20)   NOT NULL,
+        Priority         NVARCHAR(20)   NOT NULL,
+        Phase            NVARCHAR(40)   NULL,
+        Owner            NVARCHAR(200)  NULL,
+        TargetEndDate    DATE           NULL,
+        ActualEndDate    DATE           NULL,
+        Budget           DECIMAL(19,2)  NOT NULL CONSTRAINT DF_ProjectVersion_Budget DEFAULT (0),
+        Spent            DECIMAL(19,2)  NOT NULL CONSTRAINT DF_ProjectVersion_Spent DEFAULT (0),
+        PercentComplete  DECIMAL(5,2)   NOT NULL CONSTRAINT DF_ProjectVersion_Pct DEFAULT (0),
+        OpenRisks        INT            NOT NULL CONSTRAINT DF_ProjectVersion_Risks DEFAULT (0),
+        OpenQuestions    INT            NOT NULL CONSTRAINT DF_ProjectVersion_Questions DEFAULT (0),
+        Payload          NVARCHAR(MAX)  NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_Project')
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC);
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_RecordedAt')
+        CREATE INDEX IX_ProjectVersion_RecordedAt ON dbo.ProjectVersion (RecordedAt DESC);
+    `,
+  },
 ];
 
 const LEDGER = `
