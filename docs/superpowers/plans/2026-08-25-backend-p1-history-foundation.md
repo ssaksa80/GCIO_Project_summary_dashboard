@@ -2044,6 +2044,26 @@ and extend the Admin row of the "Who can do what" table:
 | Admin | everything, plus read the audit trail and recent ingest run history |
 ```
 
+- [ ] **Step 2c: Record what the live suite can and cannot do**
+
+Add to `README.md` beside wherever the test commands are described:
+
+```markdown
+The live SQL suite (`DB_LIVE=1 npm run test:db`) migrates and deletes against
+whatever `.env` resolves to, so it prints the server and database it is about to
+touch and refuses to run with `NODE_ENV=production`. Everything it writes is
+named `livetest*` and swept afterwards, and a final subtest asserts the sweep
+was complete.
+
+Its subtests all nest inside one top-level test, which means
+`--test-name-pattern` cannot isolate one of them — Node only descends into a
+parent whose own name matches, so a scenario-specific pattern silently runs
+nothing at all. Chasing a single red scenario currently costs the whole file,
+about eight seconds warm and rather more on the first run in a session.
+Restructuring the scenarios as independent top-level tests sharing one pool
+would fix it and is worth doing when Phase 2 extends this suite.
+```
+
 - [ ] **Step 2b: Confirm the vault is documented**
 
 The README paragraph this step originally carried was brought forward to Task 2,
