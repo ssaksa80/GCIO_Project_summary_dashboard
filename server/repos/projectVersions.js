@@ -168,18 +168,7 @@ export function projectVersionsRepo(ex) {
         { name: "limit", type: sql.Int, value: Math.min(500, Math.max(1, Number(limit) || 50)) },
       ]);
 
-      return recordset.map((r) => ({
-        recordedAt: r.RecordedAt instanceof Date ? r.RecordedAt.toISOString() : String(r.RecordedAt),
-        contentHash: r.ContentHash,
-        status: r.Status,
-        health: r.Health,
-        percentComplete: Number(r.PercentComplete),
-        budget: Number(r.Budget),
-        spent: Number(r.Spent),
-        openRisks: r.OpenRisks,
-        openQuestions: r.OpenQuestions,
-        targetEndDate: iso(r.TargetEndDate),
-      }));
+      return recordset.map(toVersion);
     },
 
     /**
@@ -206,14 +195,18 @@ export function projectVersionsRepo(ex) {
                    ORDER BY RecordedAt DESC, ProjectVersionId DESC) AS rn
           FROM dbo.ProjectVersion
         )
-        SELECT * FROM ranked WHERE rn = 1
+        SELECT ProjectId, ContentHash, RecordedAt, Status, Health, PercentComplete,
+               Budget, Spent, OpenRisks, OpenQuestions, TargetEndDate, Bucket
+        FROM ranked WHERE rn = 1
       `, [{ name: "since", type: sql.DateTime2, value: new Date(`${sinceISO}T00:00:00Z`) }]);
 
-      /* Group first, decide second: a project can appear once or twice. */
+      /* Group first, decide second: a project can appear once or twice. Bucket
+         is always exactly "baseline" or "current" -- the CASE above emits no
+         other literal -- so it doubles as the property key. */
       const byProject = new Map();
       for (const r of recordset) {
         const entry = byProject.get(r.ProjectId) || { baseline: null, current: null };
-        entry[r.Bucket === "baseline" ? "baseline" : "current"] = toVersion(r);
+        entry[r.Bucket] = toVersion(r);
         byProject.set(r.ProjectId, entry);
       }
 

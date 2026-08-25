@@ -100,3 +100,34 @@ test("nothing recorded yet is an empty map, not a failure", async () => {
   const changes = await projectVersionsRepo(ex).changedSince("2026-08-18");
   assert.equal(changes.size, 0);
 });
+
+test("two projects in one call: only the one that moved comes back", async () => {
+  // The whole point of returning a Map keyed by project id is answering for
+  // every project in a single round trip -- a test with only one project id
+  // cannot tell a bulk method from a single-row one.
+  const ex = scriptedExecutor({
+    "FROM dbo.ProjectVersion": [
+      row({ ProjectId: "PRJ-1", Bucket: "baseline", ContentHash: "h1" }),
+      row({ ProjectId: "PRJ-1", Bucket: "current", ContentHash: "h2" }),
+      row({ ProjectId: "PRJ-2", Bucket: "baseline", ContentHash: "same" }),
+      row({ ProjectId: "PRJ-2", Bucket: "current", ContentHash: "same" }),
+    ],
+  });
+
+  const changes = await projectVersionsRepo(ex).changedSince("2026-08-18");
+  assert.deepEqual([...changes.keys()], ["PRJ-1"], "the unchanged project leaked into the result");
+});
+
+test("a future sinceISO puts every version in the baseline bucket, so nothing has a current row", async () => {
+  // By inspection: RecordedAt <= @since is true for every row that exists
+  // when @since is in the future, so Bucket is always "baseline" and no
+  // project ever gets a "current" entry -- the loop's `if (!current) continue`
+  // then drops every one of them, honestly reporting nothing changed rather
+  // than crashing or inventing a pair.
+  const ex = scriptedExecutor({
+    "FROM dbo.ProjectVersion": [row({ Bucket: "baseline" })],
+  });
+
+  const changes = await projectVersionsRepo(ex).changedSince("2099-01-01");
+  assert.equal(changes.size, 0);
+});

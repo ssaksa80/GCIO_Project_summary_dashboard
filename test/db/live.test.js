@@ -218,15 +218,22 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       "IX_ProjectVersion_RecordedAt", "UX_SourceFile_Name_Sha",
     ]);
 
-    /* The hot path selects ContentHash for every changed project on every
-       ingest; without the include it pays a key lookup per row. */
+    /* appendChanged's hot path selects ContentHash for every changed project on
+       every ingest, and changedSince (migration 9) selects the other eight
+       columns for every project on every request; without the includes each
+       pays a key lookup per row. Ordered by index_column_id so this pins the
+       declared INCLUDE order in migration 9, not just set membership. */
     const { recordset: included } = await ex.query(`
       SELECT c.name FROM sys.index_columns ic
       JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
       JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
       WHERE i.name = 'IX_ProjectVersion_Project' AND ic.is_included_column = 1
+      ORDER BY ic.index_column_id
     `);
-    assert.deepEqual(included.map((r) => r.name), ["ContentHash"]);
+    assert.deepEqual(included.map((r) => r.name), [
+      "ContentHash", "Status", "Health", "PercentComplete", "Budget", "Spent",
+      "OpenRisks", "OpenQuestions", "TargetEndDate",
+    ]);
 
     const { recordset: keys } = await ex.query(`
       SELECT name FROM sys.foreign_keys
