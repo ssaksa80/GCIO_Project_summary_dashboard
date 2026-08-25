@@ -1178,7 +1178,11 @@ function harness({ newestHash = null, changed = 2 } = {}) {
     },
     ingestRuns: {
       async start(run) { calls.push(["runs.start", run.fileName, run.trigger]); return 99; },
-      async finish(id, result) { calls.push(["runs.finish", id, result.outcome, result.projectsChanged]); },
+      async finish(id, result) {
+        /* The error text carries whether the snapshot had already moved, so the
+           harness has to keep it rather than only the counts. */
+        calls.push(["runs.finish", id, result.outcome, result.error ?? result.projectsChanged]);
+      },
     },
     projectVersions: {
       async appendChanged() { calls.push(["versions.append"]); return changed; },
@@ -1211,7 +1215,7 @@ test("an ingest vaults the bytes, records the file, and closes the run", async (
   assert.ok(order.includes("versions.append"));
 
   const finish = calls.find((c) => c[0] === "runs.finish");
-  assert.deepEqual(finish, ["runs.finish", 99, "applied", 2]);
+  assert.deepEqual(finish, ["runs.finish", 99, "applied", 2]);   // no error, so the count
 });
 
 test("a file whose hash has not changed is recorded as unchanged and not rewritten", async () => {
@@ -1232,6 +1236,20 @@ test("a failure still closes the run, with the reason", async () => {
   const finish = calls.find((c) => c[0] === "runs.finish");
   assert.ok(finish, "the run was left open");
   assert.equal(finish[2], "failed");
+});
+
+test("a history failure after the snapshot moved says so", async () => {
+  /* appendChanged rolls itself back, but dbo.Project has already been updated.
+     A bare "failed" would read as "nothing happened", which is the opposite of
+     what an operator needs to know. */
+  const { calls, store } = harness();
+  store.repos.projectVersions.appendChanged = async () => { throw new Error("lock timeout"); };
+
+  await assert.rejects(() => store.applyFile(parsed(), { trigger: "watcher" }), /lock timeout/);
+
+  const finish = calls.find((c) => c[0] === "runs.finish");
+  assert.equal(finish[2], "failed");
+  assert.match(finish[3] ?? "", /snapshot applied but history not recorded/);
 });
 
 test("a vault failure is recorded as a failed run, not as no run at all", async () => {
@@ -1347,6 +1365,11 @@ exactly as they are:
        table cannot explain. The source file is attached when the run closes. */
     const runId = await this.repos.ingestRuns.start({ fileName: result.file, trigger });
 
+    /* "failed" would otherwise mean two different things: nothing happened, or
+       the dashboard moved and only the history is missing. An operator reading
+       the run needs to know which. */
+    let snapshotWritten = false;
+
     try {
       const vaulted = this.vault && result.bytes
         ? this.vault.store(result.bytes, result.file)
@@ -1377,6 +1400,7 @@ exactly as they are:
 
       await this.repos.projects.replaceForFile(result.file, result.projects);
       await this.repos.posture.replaceForFile(result.file, result.posture || []);
+      snapshotWritten = true;
 
       const changed = await this.repos.projectVersions.appendChanged(
         result.projects.map((project) => ({ project, hash: hashProject(project) })),
@@ -1401,8 +1425,11 @@ exactly as they are:
       });
       return result.projects.length;
     } catch (err) {
-      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: err.message });
-      this.log({ file: result.file, ok: false, error: err.message });
+      const reason = snapshotWritten
+        ? `snapshot applied but history not recorded: ${err.message}`
+        : err.message;
+      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason });
+      this.log({ file: result.file, ok: false, error: reason });
       throw err;
     }
   }
