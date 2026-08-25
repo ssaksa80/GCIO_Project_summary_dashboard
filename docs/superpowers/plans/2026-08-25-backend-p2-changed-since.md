@@ -511,6 +511,29 @@ git add server/repos/projectVersions.js test/db/changedSince.test.js
 git commit -m "feat(db): read the baseline and current version of everything that moved"
 ```
 
+**Amended after review — migration 9, and one cost we are choosing to live with.**
+
+A real execution plan showed this query doing a clustered-index scan, dragging
+the in-row `Payload` (~1.8 kB a row) across every page on every call, and then
+sorting. Migration 9 widens `IX_ProjectVersion_Project` to include the eight
+columns the CTE selects beyond the key, which moves it to a narrow index scan —
+`EstimateIO` fell from 0.046 to 0.003 on the empty table.
+
+The explicit `Sort` remains, and reordering the index key does NOT remove it.
+That was tested rather than assumed: a probe index keyed
+`(ProjectId, RecordedAt DESC, ProjectVersionId DESC)` was built by hand and the
+plan pulled twice — once empty, once with 300 rows across ten projects and fresh
+statistics. Both kept the `Sort`, with `EstimateRows` rising to 300 so the
+optimiser was demonstrably seeing real cardinality rather than taking a
+trivial-cost shortcut. The likely reason is that the window partitions on a
+computed `CASE WHEN RecordedAt <= @since` expression, and the optimiser does not
+match that against the physical leaf order.
+
+Removing it would mean redesigning the query — two separately ranked queries,
+one per bucket, unioned, each with a plain non-computed partition key. That is a
+larger change than the cost justifies today. Recorded here so the next person
+does not repeat the experiment.
+
 ---
 
 ### Task 3: The store answers, or says it cannot
