@@ -22,6 +22,12 @@ npm start            # serves http://localhost:8123
 
 Or double-click **start-dashboard.cmd**.
 
+Out of the box this runs in development mode: the in-memory store with the
+bundled sample portfolio, and a sign-in screen that accepts any password and
+grants the role in `DEV_ROLE` (admin by default). See
+[Running it for real](#running-it-for-real) for a real deployment — both
+shortcuts are refused when `NODE_ENV=production`.
+
 With no data present, the dashboard boots in **demonstration mode** using the bundled
 sample portfolio (59 projects across 4 workbooks — regenerate anytime with
 `npm run sample-data`).
@@ -131,32 +137,94 @@ Any view can be linked, printed or captured exactly:
 | `?project=PRJ-1003` | open straight into a project's record |
 | `?table=1` | expand the all-projects reference table |
 
-## Running 24×7 on Windows
+## Running it for real
 
-Any of the standard options work; the server is a single Node process with no
-external dependencies:
+The dashboard runs unauthenticated with an in-memory store for demonstrations,
+and behind directory sign-in with SQL Server for real use. The difference is
+configuration, not a different build.
 
-- **Task Scheduler:** create a task triggered *At startup*, action
-  `"C:\Program Files\nodejs\node.exe"` with arguments `server\index.js`, start-in
-  this folder, "Run whether user is logged on or not", and enable *Restart on failure*.
-- **NSSM / WinSW:** wrap `node server/index.js` as a Windows service.
-- **PM2:** `npm i -g pm2 && pm2 start server/index.js --name gcio && pm2 save`.
+### Deploying
 
-The process is hardened for continuous operation: malformed workbooks are logged and
-skipped (never crash), all rejections are trapped, and the store snapshots to
-`data/.cache.json` after every ingest for instant warm restarts.
+1. **Configure.** Copy `.env.example` to `.env` and fill it in. Keep it outside
+   the repository on a server, ACL'd to the service account: it holds the
+   database password. `NODE_ENV=production` refuses the two shortcuts that must
+   never reach a server — `AUTH_MODE=dev` (any password is accepted) and, by
+   default, an in-memory store.
+2. **Create the database.** `scripts/db-create.sql` creates `GCIO` and the
+   application login. It needs a SQL sysadmin; the application itself only ever
+   touches its own tables. Schema migrations are applied at boot.
+   Check the connection with `node scripts/db-check.mjs`.
+3. **Build.** `npm ci && npm run build`
+4. **Install the service.** From an elevated prompt:
+   `.\deploy\install-service.ps1 -EnvFile C:\gcio\.env`
+   It refuses to install a development configuration, waits for the service to
+   answer, and is safe to re-run as the upgrade path.
+5. **Put IIS in front for TLS.** Follow `deploy/iis-site.md`. Node binds
+   loopback only in production, so IIS is how anyone reaches it.
+
+### Who can do what
+
+Roles come from directory group membership, mapped in `dbo.RoleMapping`:
+
+| Role | May |
+| --- | --- |
+| Viewer | read every view, run exports, download the template |
+| PM | everything a viewer may, plus upload workbooks |
+| Admin | everything, plus read the audit trail |
+
+An account in no mapped group has no access at all — there is no default role.
+On a **fresh database** set `SEED_ADMIN_GROUP` so the first administrator can
+get in; it installs one mapping and is ignored once any mapping exists.
+
+Sign-in is by directory password (LDAP) and, when `SSO_ENABLED=true`, by Entra
+single sign-on. Both resolve the role server-side. Sessions live in SQL, so
+signing out is real and access can be withdrawn.
+
+Every sign-in, upload, export and audit read is recorded. Administrators can
+read the trail at `/api/audit`; with `STORE=mssql` it lives in `dbo.AuditEvent`,
+otherwise in dated JSONL files under `AUDIT_DIR`.
+
+### Local development
+
+```bash
+STORE=memory AUTH_MODE=dev DEV_ROLE=pm npm start
+```
+
+No SQL Server and no directory needed: the bundled sample portfolio loads, any
+password is accepted, and the role comes from `DEV_ROLE`. Both switches are
+refused when `NODE_ENV=production`.
+
+### Continuous operation
+
+The process is built to stay up: malformed workbooks are logged and skipped
+rather than crashing the server, all rejections are trapped, a dead database
+connection surfaces as a clean 503 and is reconnected rather than wedging the
+pool, and with `STORE=memory` the store snapshots to `data/.cache.json` after
+every ingest for warm restarts. `/healthz` reports liveness and `/readyz`
+reports whether there is data to serve — point monitoring at `/readyz`.
 
 ## API surface (for integration)
 
+All `/api` routes require a session except `/api/me` and `/api/auth/*`;
+`/healthz` and `/readyz` are open so monitoring does not need credentials.
+Role requirements are noted where they apply.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/health` | liveness, project/file counts, last ingest |
+| `GET /healthz` | liveness — open |
+| `GET /readyz` | readiness: is there data to serve — open, and what monitoring should watch |
+| `POST /api/auth/login` | directory sign-in (`{username, password}`), throttled per IP |
+| `POST /api/auth/sso` | Entra sign-in (`{idToken, nonce}`), when `SSO_ENABLED=true` |
+| `POST /api/auth/logout` | end the session |
+| `GET /api/me` | who is signed in, and which sign-in methods this server offers |
+| `GET /api/audit?limit=&action=` | audit trail — **admin only**, and the read is itself audited |
+| `GET /api/health` | project/file counts, last ingest |
 | `GET /api/summary?period=daily\|weekly\|monthly\|yearly&date=YYYY-MM-DD` | full executive summary payload |
 | `GET /api/projects?department=&status=&health=&q=&sort=` | filtered portfolio rows |
 | `GET /api/projects/:id` | full record + chain + computed schedule/budget analytics + timeline |
 | `GET /api/meta` | filter dimensions |
 | `GET /api/template` | canonical blank workbook |
-| `POST /api/ingest/upload` | multipart workbook upload (field `files`) |
+| `POST /api/ingest/upload` | multipart workbook upload (field `files`) — **pm or admin** |
 | `POST /api/export/pptx\|xlsx\|docx\|html` | briefing exports (`{period, date, projectIds?, images?}`) |
 | `GET /api/events` | server-sent events: `ingest`, `heartbeat` |
 
@@ -174,7 +242,8 @@ shared/          pptx-lite.mjs — dependency-free .pptx writer shared by server
 client/          React dashboard (Vite) — build output in client/dist
 data/            WATCHED drop-folder (your live portfolio lives here)
 sample-data/     Demonstration portfolio
-scripts/         Sample-data generator, PPTX layout audit, demo & briefing builders
+scripts/         Sample-data generator, PPTX layout audit, demo & briefing builders, DB setup
+deploy/          Windows service installer and the IIS TLS runbook
 SPEC.md          Full engineering specification
 ```
 

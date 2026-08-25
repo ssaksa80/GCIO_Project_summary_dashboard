@@ -492,7 +492,13 @@ git commit -m "feat(client): sign in with Entra single sign-on"
 
 ---
 
-### Task 5: Windows service and IIS
+### Task 5: Windows service and IIS ✅ DONE
+
+**Delivered.** `deploy/install-service.ps1` (parse-checked; refuses a
+development configuration, reinstalls cleanly, waits for readiness) and
+`deploy/iis-site.md` (XML validated, every claim checked against the code),
+plus a rewritten README operations section. Installing needs elevation and NSSM,
+neither available here, so the script itself has not been executed.
 
 **Files:**
 - Create: `deploy/install-service.ps1`
@@ -681,11 +687,11 @@ git push origin main --tags
 | Security headers, CSP, throttle | delivered, `610a2ca` |
 | CSRF | deliberately absent — `SameSite=Strict`, reasoning recorded in `server/middleware/securityHeaders.js` |
 | Upload content sniffing | delivered, `2c47b9a` |
-| Loopback binding, proxy trusted from localhost | delivered in `config.host`; the IIS half is Task 5 |
+| Loopback binding, proxy trusted from localhost | delivered in `config.host`; IIS runbook delivered, Task 5 |
 | Secrets from the environment, failing loudly | delivered, `2c47b9a` |
 | `/healthz`, `/readyz` | delivered, `2c47b9a` |
 | SQL proven against a live instance | **Task 2** — blocked on database permissions |
-| Windows service | Task 5 |
+| Windows service | script delivered, Task 5 — not yet executed anywhere |
 | Test suite | delivered — 77 hermetic tests, plus Task 2's live test |
 
 **Deferred to later phases by design:** the temporal history model (`project_version`, `source_file`, `ingest_run`, `question_asked`), the file vault, trends and "changed since last week", `/metrics`, the ingest/web role split using `sp_getapplock`, worker-thread parsing, and backup/restore drills. Nothing in this phase changes a ranking rule or an export layout.
