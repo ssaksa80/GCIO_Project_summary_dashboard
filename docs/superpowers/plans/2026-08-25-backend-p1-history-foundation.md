@@ -1752,6 +1752,28 @@ git add server/app.js server/index.js test/api/app.test.js
 git commit -m "feat(api): expose recent ingest runs to administrators"
 ```
 
+**Amended after review.** The route itself was right, but it exposed a hole
+older than this phase: `server/index.js` returns early on `!parsed.ok`, so a
+workbook that fails to parse never reaches `applyFile` and never opens a run.
+A corrupt file and a night when nobody dropped anything therefore looked
+IDENTICAL through this endpoint — no row either way — and the phase's promise
+that "either there is no run, or there is a run with an outcome and a reason"
+was false exactly where it mattered most. `SqlStore.recordRejectedFile` now
+opens and immediately closes a `failed` run for a rejected workbook, and both
+parse-failure call sites use it.
+
+Two judgement calls, both checked against the codebase and both kept: the route
+is NOT audited (`/api/audit` records itself because it exposes who-did-what
+about people; ingest runs carry no actor at all and sit closer to `/api/health`)
+and NOT rate-limited (the throttles cover anonymous-reachable and expensive
+routes; this is admin-gated with a bounded SELECT, exactly like the unthrottled
+`/api/audit`).
+
+`deps.ingestRuns || null` is deliberately NOT the codebase's usual no-op-default
+idiom. Defaulting to `{ recent: async () => [] }` would turn "no history store"
+into "a history store holding nothing", which is precisely the distinction this
+route exists to preserve.
+
 ---
 
 ### Task 8: Prove the whole thing against real SQL
@@ -1992,7 +2014,37 @@ npm run build
 
 Expected: all green.
 
-- [ ] **Step 2: Confirm the vault is documented**
+- [ ] **Step 2: Document how to diagnose a missing workbook**
+
+Add to the `### Continuous operation` section of `README.md`, after the
+paragraph ending "point monitoring at `/readyz`":
+
+```markdown
+When the dashboard does not show a workbook you just dropped, `GET
+/api/ingest/runs` (admin only) lists the most recent ingest attempts and what
+each one did — `applied` with the number of projects that actually changed,
+`unchanged` because the content matched what is already live, `failed` with the
+specific reason, or `removed`. A run that opened and never closed
+(`finishedAt: null`) means the process died mid-ingest. A workbook that never
+appears here at all did not reach the ingest path — check the server log for a
+`rejected <file>: ...` line. Under `STORE=memory` the response reports
+`historyEnabled: false` and an empty list, because there is no database to hold
+the history.
+```
+
+Add a row to the API surface table, directly below `/api/audit`:
+
+```markdown
+| `GET /api/ingest/runs?limit=` | recent ingest attempts and their outcomes — **admin only**; `historyEnabled: false` under `STORE=memory` |
+```
+
+and extend the Admin row of the "Who can do what" table:
+
+```markdown
+| Admin | everything, plus read the audit trail and recent ingest run history |
+```
+
+- [ ] **Step 2b: Confirm the vault is documented**
 
 The README paragraph this step originally carried was brought forward to Task 2,
 so that `vault/` was documented from the moment it started holding real data
