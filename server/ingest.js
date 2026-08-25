@@ -507,7 +507,25 @@ export function ingestDirectory(store, dir) {
  * Watch the data/ drop-folder 24x7. Batches rapid changes (300ms quiet window)
  * and calls onBatch({files, projectCount}) after the store is updated.
  */
-export function watchDataDir(store, dataDir, onBatch) {
+/**
+ * Watch the drop folder and report what changed. Detection only: the caller
+ * decides what persistence means, because the in-memory store writes
+ * synchronously and the SQL store returns promises. Wiring applyResult() in
+ * here hard-wired it to the former, and with STORE=mssql it threw inside the
+ * chokidar handler — so a dropped workbook silently never reached the database.
+ *
+ * @param {string} dataDir folder to watch
+ * @param {{
+ *   onUpsert: (filePath: string) => Promise<void>|void,
+ *   onRemove: (fileName: string) => Promise<void>|void,
+ *   onBatch?: (batch: {files: string[]}) => void,
+ *   logger?: {error: Function}
+ * }} handlers
+ * @returns {import('chokidar').FSWatcher}
+ */
+export function watchDataDir(dataDir, handlers) {
+  const { onUpsert, onRemove, onBatch = () => {}, logger = console } = handlers;
+
   const watcher = chokidar.watch(dataDir, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 120 },
@@ -523,7 +541,7 @@ export function watchDataDir(store, dataDir, onBatch) {
     const files = [...pending];
     pending = new Set();
     timer = null;
-    if (files.length) onBatch({ files, projectCount: store.projectCount });
+    if (files.length) onBatch({ files });
   };
   const queue = (file) => {
     pending.add(file);
@@ -531,23 +549,28 @@ export function watchDataDir(store, dataDir, onBatch) {
     timer = setTimeout(flush, 300);
   };
 
-  const handleAddOrChange = (filePath) => {
+  /* Handlers are async and must never reject into chokidar: one failed write
+     must not stop the watcher for every later file. */
+  const settle = (promise, what) =>
+    Promise.resolve(promise).catch((err) => {
+      logger.error?.(`[watch] ${what} failed: ${err.message}`);
+    });
+
+  const handleAddOrChange = async (filePath) => {
     if (!WORKBOOK_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return;
-    const result = ingestFile(filePath);
-    applyResult(store, result);
-    if (store.demoMode && result.ok) store.demoMode = false;
+    await settle(onUpsert(filePath), path.basename(filePath));
     queue(path.basename(filePath));
   };
+
   watcher.on("add", handleAddOrChange);
   watcher.on("change", handleAddOrChange);
-  watcher.on("unlink", (filePath) => {
-    const removed = store.removeFile(path.basename(filePath));
-    if (removed > 0) {
-      store.lastIngestAt = new Date().toISOString();
-      store.log({ file: path.basename(filePath), ok: true, removed });
-      queue(path.basename(filePath));
-    }
+  watcher.on("unlink", async (filePath) => {
+    if (!WORKBOOK_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return;
+    const name = path.basename(filePath);
+    await settle(onRemove(name), `removing ${name}`);
+    queue(name);
   });
-  watcher.on("error", (err) => console.error(`[watch] ${err.message}`));
+  watcher.on("error", (err) => logger.error?.(`[watch] ${err.message}`));
   return watcher;
 }
+

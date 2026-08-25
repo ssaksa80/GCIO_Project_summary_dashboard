@@ -156,9 +156,14 @@ git commit -m "fix(auth): seed one admin mapping so a fresh database is reachabl
 
 ---
 
-### Task 2: Prove the SQL path against a real instance
+### Task 2: Prove the SQL path against a real instance ✅ DONE
 
-Everything in the data layer is tested against a fake pool and has never touched SQL Server. **Blocked** until an account with `dbcreator` exists: the instance on the build machine has `sa` disabled and no other sysadmin.
+**Delivered.** Ten live tests against SQL Server 2025, plus the whole loop
+exercised by hand: drop a workbook into `data/` → 34 projects, 313 child rows
+and 10 posture domains in SQL → served through the API → delete the file → rows
+gone. Running it found two real defects, both fixed: nothing loaded `.env`, and
+the watcher was hard-wired to the in-memory store so `STORE=mssql` silently
+persisted nothing.
 
 **Files:**
 - Create: `test/db/live.test.js`
@@ -702,7 +707,7 @@ git push origin main --tags
 | Loopback binding, proxy trusted from localhost | delivered in `config.host`; IIS runbook delivered, Task 5 |
 | Secrets from the environment, failing loudly | delivered, `2c47b9a` |
 | `/healthz`, `/readyz` | delivered, `2c47b9a` |
-| SQL proven against a live instance | **Task 2** — blocked on database permissions |
+| SQL proven against a live instance | delivered, Task 2 |
 | Windows service | script delivered, Task 5 — not yet executed anywhere |
 | Test suite | delivered — 77 hermetic tests, plus Task 2's live test |
 

@@ -1,10 +1,11 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** Phase 0 complete except one item — the SQL Server path has never
-run against a live instance, because the database on the build machine cannot
-be created without administrative access that does not currently exist. Tagged
-`v1.1.0-p0-rc1` rather than a release: everything else is built and verified.
+**Status:** Phase 0 delivered, tagged `v1.1.0-p0`. The SQL Server path is now
+proven against a live instance (SQL Server 2025): migrations apply and re-apply
+cleanly, a real workbook persists and reads back, the section engine runs over
+SQL data unchanged, and dropping a workbook into the watched folder reaches the
+database.
 **Amended 2026-08-24:** the stack changed after this was approved. DExDashBoard
 (DEDB) and FMD already run this organisation's dashboards in production on
 **SQL Server with LDAP and Entra SSO**, so GCIO mirrors that rather than
@@ -228,7 +229,7 @@ until GitHub Actions minutes are available.
 
 | Phase | Delivers | Done when |
 | --- | --- | --- |
-| **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 98 tests | **Met, except the live SQL run.** An unauthenticated request gets 401 and a Viewer's upload 403, both covered by tests and verified against the running server |
+| **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 102 hermetic tests plus 10 live SQL tests | **Met.** An unauthenticated request gets 401 and a Viewer's upload 403; the SQL path is verified end to end against SQL Server 2025 |
 | **P1 — persistence** | Postgres, migrations, repository split, file vault, `STORE=memory` retained | Restarting mid-ingest loses nothing; the same summary comes out of both adapters |
 | **P2 — history pays off** | Real trends, "changed since last week" in sections and exports, question ageing | The weekly brief states what changed, sourced from versions rather than file dates |
 | **P3 — scale and ops** | Role split, advisory-lock election, worker-thread parsing, metrics, backup/restore drill, runbook | Two instances started together: exactly one ingests; a restore drill passes |

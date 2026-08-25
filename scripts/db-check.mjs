@@ -8,6 +8,7 @@
  * success here means the app's configuration is right — not just that some
  * connection string somewhere works.
  */
+import "dotenv/config";
 import sql from "mssql";
 import { buildConfig } from "../server/db/pool.js";
 

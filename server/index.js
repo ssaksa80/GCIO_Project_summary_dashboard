@@ -5,6 +5,11 @@
  * already on disk, starts the drop-folder watcher, and listens. All routing
  * lives in app.js so the tests can drive it without a socket.
  */
+/* Load .env before anything reads process.env. In production the service
+   wrapper injects the environment directly and there is no file, which is why
+   this is `config` rather than a hard require: a missing .env is normal. */
+import "dotenv/config";
+
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,23 +139,48 @@ if (config.store === "mssql") {
 
 /* ------------------------------------------------------------- watcher */
 
-watchDataDir(store, DATA_DIR, async (batch) => {
-  if (store instanceof SqlStore) {
-    for (const file of batch.files) {
-      const full = path.join(DATA_DIR, file);
-      if (fs.existsSync(full)) {
-        const parsed = ingestFile(full);
-        if (parsed.ok) await store.applyFile(parsed);
-        else store.log({ file, ok: false, error: parsed.error });
-      } else {
-        await store.removeFile(file);
-      }
+/**
+ * One place decides what an ingest means, for either store. The watcher only
+ * reports that a file appeared, changed or went away.
+ */
+watchDataDir(DATA_DIR, {
+  onUpsert: async (filePath) => {
+    const parsed = ingestFile(filePath);
+    if (!parsed.ok) {
+      store.log({ file: path.basename(filePath), ok: false, error: parsed.error });
+      log(`rejected ${path.basename(filePath)}: ${parsed.error}`);
+      return;
     }
-  } else {
-    store.saveCache(DATA_DIR);
-  }
-  store.emit("ingest", { files: batch.files, projectCount: store.projectCount, at: store.lastIngestAt });
-  log(`live ingest: ${batch.files.join(", ")} -> ${store.projectCount} projects`);
+    if (store instanceof SqlStore) {
+      await store.applyFile(parsed);
+    } else {
+      applyResult(store, parsed);
+      if (store.demoMode) store.demoMode = false;
+      store.saveCache(DATA_DIR);
+    }
+  },
+
+  onRemove: async (fileName) => {
+    /* SqlStore.removeFile already records the removal and refreshes the read
+       model; the in-memory one only deletes, so it is logged here. */
+    if (store instanceof SqlStore) {
+      await store.removeFile(fileName);
+      return;
+    }
+    const removed = store.removeFile(fileName);
+    if (removed > 0) {
+      store.lastIngestAt = new Date().toISOString();
+      store.log({ file: fileName, ok: true, removed });
+      store.saveCache(DATA_DIR);
+    }
+  },
+
+  onBatch: ({ files }) => {
+    store.emit("ingest", { files, projectCount: store.projectCount, at: store.lastIngestAt });
+    log(`live ingest: ${files.join(", ")} -> ${store.projectCount} projects`);
+  },
+
+  logger: { error: (msg) => log(msg) },
 });
 
 /* ---------------------------------------------------------------- serve */
