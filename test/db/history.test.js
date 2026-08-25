@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { sourceFilesRepo } from "../../server/repos/sourceFiles.js";
 import { ingestRunsRepo } from "../../server/repos/ingestRuns.js";
+import { projectVersionsRepo } from "../../server/repos/projectVersions.js";
 
 /* Note: every call site below passes the needle -> rows map directly
    (scriptedExecutor({ "SELECT ...": [...] })), not wrapped as
@@ -189,4 +190,152 @@ test("a negative or non-numeric limit still lands inside 1..500", async () => {
   const nonNumericLimit = nonNumeric.statements
     .find((s) => s.text.includes("FROM dbo.IngestRun")).params.find((p) => p.name === "limit").value;
   assert.ok(nonNumericLimit >= 1 && nonNumericLimit <= 500, `expected 1..500, got ${nonNumericLimit}`);
+});
+
+test("finish() truncation does not leave a lone surrogate when the cut lands mid-pair", async () => {
+  /* The existing truncation test uses "x".repeat(5000), which never lands
+     inside a surrogate pair. Here the emoji's surrogate pair straddles the
+     1000th UTF-16 code unit exactly: 999 "x"s occupy indices 0..998, so the
+     high surrogate sits at index 999 (the 1000th unit) and the low surrogate
+     at index 1000 -- a naive slice(0, 1000) keeps the high half only. */
+  const ex = scriptedExecutor({
+    "INSERT INTO dbo.IngestRun": [{ IngestRunId: 70 }],
+    "UPDATE dbo.IngestRun": [{}],
+  });
+  const runs = ingestRunsRepo(ex);
+  const runId = await runs.start({ fileName: "x.xlsx", trigger: "watcher" });
+
+  const error = "x".repeat(999) + "\u{1F600}" + "tail";
+  await runs.finish(runId, { outcome: "applied", error });
+
+  const update = ex.statements.find((s) => s.text.startsWith("UPDATE dbo.IngestRun"));
+  const stored = update.params.find((p) => p.name === "error").value;
+
+  assert.ok(stored.length <= 1000, `expected at most 1000 UTF-16 code units, got ${stored.length}`);
+  // Spreading a string iterates by code point, pairing valid surrogate
+  // pairs into one two-char entry but leaving a lone surrogate half as its
+  // own single-char entry -- exactly what must not survive truncation.
+  const hasLoneSurrogate = [...stored].some((ch) => /^[\uD800-\uDFFF]$/.test(ch));
+  assert.equal(hasLoneSurrogate, false, "stored error contains a lone (unpaired) surrogate");
+});
+
+const versionProject = (over = {}) => ({
+  id: "PRJ-1", name: "A Project", department: "IT", status: "In Progress",
+  health: "Amber", priority: "High", phase: "Execution", owner: "An Owner",
+  targetEndDate: "2026-06-30", actualEndDate: null,
+  budget: 1000, spent: 400, percentComplete: 45,
+  milestones: [], updates: [],
+  risks: [{ title: "r", severity: "High", status: "Open" }],
+  questions: [{ text: "q", status: "Open", source: "workbook" }],
+  ...over,
+});
+
+test("only projects whose hash changed are appended", async () => {
+  /* PRJ-1 is unchanged, PRJ-2 is new. */
+  const ex = scriptedExecutor({
+    "SELECT ProjectId, ContentHash": [{ ProjectId: "PRJ-1", ContentHash: "known-hash" }],
+  });
+
+  const written = await projectVersionsRepo(ex).appendChanged(
+    [
+      { project: versionProject({ id: "PRJ-1" }), hash: "known-hash" },
+      { project: versionProject({ id: "PRJ-2" }), hash: "new-hash" },
+    ],
+    { ingestRunId: 5 }
+  );
+
+  assert.equal(written, 1, "an unchanged project was versioned again");
+  const inserts = ex.statements.filter((s) => s.text.includes("INSERT INTO dbo.ProjectVersion"));
+  assert.equal(inserts.length, 1);
+  assert.equal(inserts[0].params.find((p) => p.name === "projectId").value, "PRJ-2");
+});
+
+test("open risks and questions are counted out for later querying", async () => {
+  const ex = scriptedExecutor();
+  await projectVersionsRepo(ex).appendChanged(
+    [{ project: versionProject({
+        risks: [
+          { title: "a", severity: "High", status: "Open" },
+          { title: "b", severity: "Low", status: "Closed" },
+        ],
+        questions: [{ text: "q", status: "Open" }],
+      }), hash: "h" }],
+    { ingestRunId: 1 }
+  );
+
+  const insert = ex.statements.find((s) => s.text.includes("INSERT INTO dbo.ProjectVersion"));
+  assert.equal(insert.params.find((p) => p.name === "openRisks").value, 1, "closed risks were counted");
+  assert.equal(insert.params.find((p) => p.name === "openQuestions").value, 1);
+});
+
+test("the whole project is kept in the payload", async () => {
+  const ex = scriptedExecutor();
+  await projectVersionsRepo(ex).appendChanged(
+    [{ project: versionProject({ name: "Payload Test" }), hash: "h" }], { ingestRunId: 1 });
+
+  const insert = ex.statements.find((s) => s.text.includes("INSERT INTO dbo.ProjectVersion"));
+  const payload = JSON.parse(insert.params.find((p) => p.name === "payload").value);
+  assert.equal(payload.name, "Payload Test");
+  assert.equal(payload.risks.length, 1);
+});
+
+test("a project's history reads back newest first", async () => {
+  const ex = scriptedExecutor({
+    "FROM dbo.ProjectVersion": [
+      { RecordedAt: new Date("2026-08-20T09:00:00Z"), Health: "Red", Status: "In Progress",
+        PercentComplete: 40, Budget: 1000, Spent: 500, OpenRisks: 2, OpenQuestions: 1,
+        ContentHash: "h2", TargetEndDate: new Date("2026-06-30T00:00:00Z") },
+    ],
+  });
+
+  const history = await projectVersionsRepo(ex).historyFor("PRJ-1", { limit: 10 });
+  assert.equal(history.length, 1);
+  assert.equal(history[0].health, "Red");
+  assert.equal(history[0].recordedAt, "2026-08-20T09:00:00.000Z");
+  assert.equal(history[0].targetEndDate, "2026-06-30");
+});
+
+test("nothing to write is not a database round trip", async () => {
+  const ex = scriptedExecutor();
+  assert.equal(await projectVersionsRepo(ex).appendChanged([], { ingestRunId: 1 }), 0);
+  assert.equal(ex.statements.length, 0, "an empty ingest still queried the database");
+});
+
+test("appendChanged refuses a project id containing a comma", async () => {
+  // The bulk lookup joins ids with commas for STRING_SPLIT. A comma in an id
+  // would silently split it into two ids that match nothing, so this must be
+  // a loud failure that names the offending id rather than a silent mis-split.
+  const ex = scriptedExecutor();
+  await assert.rejects(
+    () => projectVersionsRepo(ex).appendChanged(
+      [{ project: versionProject({ id: "PRJ,1" }), hash: "h" }],
+      { ingestRunId: 1 }
+    ),
+    /PRJ,1/
+  );
+  assert.equal(ex.statements.length, 0, "a rejected batch must not have queried the database first");
+});
+
+test("appendChanged does its work inside a transaction", async () => {
+  /* This is the point of the Task 3 review amendment: reading the newest
+     hash and inserting the new row must not straddle a gap where a second,
+     concurrent ingest of the same project could interleave and also decide
+     the project is new. Spying on ex.tx means a future refactor that quietly
+     drops the transaction fails this test instead of failing silently in
+     production. */
+  const ex = scriptedExecutor();
+  let txCalls = 0;
+  const originalTx = ex.tx.bind(ex);
+  ex.tx = async (fn) => {
+    txCalls += 1;
+    return originalTx(fn);
+  };
+
+  const written = await projectVersionsRepo(ex).appendChanged(
+    [{ project: versionProject({ id: "PRJ-TX" }), hash: "h" }],
+    { ingestRunId: 1 }
+  );
+
+  assert.equal(written, 1);
+  assert.equal(txCalls, 1, "appendChanged must run its read and its inserts inside one ex.tx call");
 });
