@@ -1323,6 +1323,32 @@ git add client server/exporters
 git commit -m "feat(ui): show what moved, and say so when we cannot know"
 ```
 
+**Amended after review — the audit could not see the defect it was there for.**
+
+The "no change history" line was added to the pptx cover by appending `
+` to
+the subtitle. `shared/pptx-lite.mjs` passed the whole subtitle through a single
+`para()` call — one paragraph, one run, one `<a:t>` — and OOXML does not treat a
+line feed inside `<a:t>` as a break. So every deck exported while history was
+thin, which is the default state, rendered
+`... demonstration portfolioNo change history yet ...` run together.
+
+`scripts/pptx-audit.mjs` reported 0 collisions throughout, honestly: the
+writer's `lineCount()` does split on `
+`, but only to size the text box. The
+box was tall enough, nothing overlapped, and the text still never broke. The
+audit measures geometry; it could not see text integrity.
+
+Two fixes, both kept. The renderer now splits a cover subtitle into separate
+paragraphs, matching what bullet `.sub` text already did seven lines below — so
+a multi-line subtitle is a supported thing rather than a trap. And the audit
+gained a `LINEFEED` check that flags any run holding a raw line feed, proven to
+fire on a deliberately re-broken deck and stay silent once fixed.
+
+The lesson worth keeping: this was found by exporting a real deck and reading
+the slide XML, not by the audit passing. For anything that renders, look at what
+it renders.
+
 ---
 
 ### Task 8: Prove it against real SQL
