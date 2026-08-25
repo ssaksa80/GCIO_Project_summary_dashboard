@@ -136,6 +136,11 @@ export function authRoutes(deps) {
         authenticated: false,
         sso: Boolean(config.ssoEnabled),
         devMode: config.authMode === "dev",
+        /* Client id and tenant id are public values in a public-client flow;
+           the client secret is never sent to a browser. */
+        entra: config.ssoEnabled
+          ? { clientId: config.entra.clientId, tenantId: config.entra.tenantId }
+          : null,
       });
     }
     const { principal, displayName, role, expiresAt } = req.session;

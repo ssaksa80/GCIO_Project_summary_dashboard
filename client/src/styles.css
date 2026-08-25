@@ -573,3 +573,21 @@ table.projects tbody tr:hover { background: var(--surface-2); }
   padding: 0 4px; line-height: 1;
 }
 .who-out:hover { color: var(--critical); }
+
+/* Single sign-on is a distinct action from submitting the password form, so it
+   is styled as its own control rather than a second primary button. */
+.signin-sso {
+  background: var(--surface-2); border-color: var(--hairline);
+  font-weight: 700; gap: 9px;
+}
+.signin-sso:hover:not(:disabled) { border-color: var(--accent); }
+
+/* the "or" divider between single sign-on and the password form */
+.signin-or {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  margin: 2px 0;
+}
+.signin-or::before, .signin-or::after {
+  content: ""; flex: 1; height: 1px; background: var(--hairline-soft);
+}

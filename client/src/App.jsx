@@ -133,7 +133,14 @@ export default function App() {
   }
 
   if (!me.authenticated) {
-    return <SignIn devMode={me.devMode} onSignedIn={(signedIn) => setMe({ authenticated: true, ...signedIn })} />;
+    return (
+      <SignIn
+        devMode={me.devMode}
+        sso={me.sso}
+        entra={me.entra}
+        onSignedIn={(signedIn) => setMe({ authenticated: true, ...signedIn })}
+      />
+    );
   }
 
   return (

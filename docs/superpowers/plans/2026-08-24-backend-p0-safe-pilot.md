@@ -355,7 +355,12 @@ git commit -m "feat(audit): expose the audit trail to administrators"
 
 ---
 
-### Task 4: Sign in with SSO from the browser
+### Task 4: Sign in with SSO from the browser ✅ DONE
+
+**Delivered.** A "Sign in with Microsoft" button that appears only when the
+server reports SSO is on. MSAL is imported dynamically, so a password-only
+deployment never downloads its 263 kB. Verified in a real browser in both
+configurations; the Microsoft round trip itself still needs a tenant.
 
 `POST /api/auth/sso` is implemented and tested, and nothing in the client calls it, so SSO is unreachable in production.
 
@@ -667,7 +672,7 @@ git push origin main --tags
 | --- | --- |
 | LDAP sign-in | delivered, `9ef09a9` |
 | Entra SSO, server side | delivered, `111f520` |
-| Entra SSO, browser side | Task 4 |
+| Entra SSO, browser side | delivered, Task 4 |
 | Roles from directory groups | delivered, `9ef09a9` |
 | A fresh database is reachable | delivered, Task 1 |
 | Server-side sessions in SQL | delivered, `9ef09a9` |

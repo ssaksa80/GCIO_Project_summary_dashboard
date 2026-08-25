@@ -7,12 +7,25 @@
  */
 import { useState } from "react";
 import { postJSON } from "../lib/api.js";
+import { signInWithSso, describeSsoError } from "../lib/sso.js";
 
-export default function SignIn({ onSignedIn, devMode }) {
+export default function SignIn({ onSignedIn, devMode, sso, entra }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const startSso = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSignedIn(await signInWithSso(entra));
+    } catch (err) {
+      setError(describeSsoError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -37,6 +50,21 @@ export default function SignIn({ onSignedIn, devMode }) {
           Use your normal network account. Access is granted by directory group
           membership; if you have none, ask the CIO office to add you.
         </p>
+
+        {sso && entra && (
+          <>
+            <button type="button" className="btn signin-submit signin-sso" onClick={startSso} disabled={busy}>
+              <svg width="15" height="15" viewBox="0 0 23 23" aria-hidden="true">
+                <rect x="1" y="1" width="10" height="10" fill="#f25022" />
+                <rect x="12" y="1" width="10" height="10" fill="#7fba00" />
+                <rect x="1" y="12" width="10" height="10" fill="#00a4ef" />
+                <rect x="12" y="12" width="10" height="10" fill="#ffb900" />
+              </svg>
+              Sign in with Microsoft
+            </button>
+            <div className="signin-or"><span>or use your network account</span></div>
+          </>
+        )}
 
         <label className="field">
           <span className="lab">Username</span>

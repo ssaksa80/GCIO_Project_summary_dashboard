@@ -234,6 +234,63 @@ test("reading the audit trail is itself audited", async () => {
   assert.ok(written.some((e) => e.action === "audit.read"), "who read the audit log was not recorded");
 });
 
+/* ------------------------------------------------------------- SSO config */
+
+const ssoConfig = loadConfig({
+  NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "viewer",
+  SSO_ENABLED: "true",
+  ENTRA_TENANT_ID: "tenant-abc",
+  ENTRA_CLIENT_ID: "client-123",
+  ENTRA_CLIENT_SECRET: "super-secret-value",
+});
+
+function makeSsoApp() {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  return createApp({
+    store,
+    config: ssoConfig,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {}, recent: async () => [] },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    entraJwks: { get: async () => ({ keys: [] }) },
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+}
+
+test("with SSO off the client is told so, and given no Entra details", async () => {
+  const res = await request(makeApp().app).get("/api/me");
+  assert.equal(res.body.sso, false);
+  assert.equal(res.body.entra, null);
+});
+
+test("with SSO on the public client details are published", async () => {
+  const res = await request(makeSsoApp()).get("/api/me");
+  assert.equal(res.body.sso, true);
+  assert.equal(res.body.entra.clientId, "client-123");
+  assert.equal(res.body.entra.tenantId, "tenant-abc");
+});
+
+test("the client secret is never sent to a browser", async () => {
+  const res = await request(makeSsoApp()).get("/api/me");
+  assert.ok(!JSON.stringify(res.body).includes("super-secret-value"),
+    "the Entra client secret was exposed to an anonymous caller");
+});
+
+test("the SSO endpoint answers 404 when single sign-on is switched off", async () => {
+  const res = await request(makeApp().app).post("/api/auth/sso").send({ idToken: "anything" });
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error.code, "sso_disabled");
+});
+
+test("an SSO token that validates against nothing is refused, not accepted", async () => {
+  const res = await request(makeSsoApp()).post("/api/auth/sso").send({ idToken: "not.a.token" });
+  assert.equal(res.status, 503, "an unverifiable token must never create a session");
+  assert.equal(res.body.error.code, "no_keys");
+});
+
 test("security headers are set on every response", async () => {
   const { app } = makeApp();
   const res = await request(app).get("/healthz");
