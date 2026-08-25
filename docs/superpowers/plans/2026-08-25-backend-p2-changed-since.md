@@ -1193,12 +1193,33 @@ renders domains whose change comes from `projectId`, not `id`. Match whatever
 element each component already uses for its title rather than introducing
 `item-title` where it does not exist.
 
-- [ ] **Step 3: Say when history is thin**
+- [ ] **Step 3: Say when history is thin, and since when**
 
 Where the period is shown, when `sections.historyAvailable` is false, add a
-quiet line: `No change history for this period yet.` This is the honest-cold-
-start decision made visible — do not hide the feature, and do not imply
-stability.
+quiet line. This is the honest-cold-start decision made visible — do not hide
+the feature, and do not imply stability.
+
+Say *since when* rather than just "not yet", because those answer different
+questions. `store.historyStartedAt()` returns the oldest recorded version, or
+null if nothing has been recorded at all:
+
+- history has never been recorded → `No change history yet — it begins with the next upload.`
+- history exists but starts after the period being viewed →
+  `No change history before 25 Aug.`
+
+That means `/api/summary` must also carry `historyStartedAt`. Add it beside
+`changes` in `server/summarize.js`'s returned object, loaded in the same place
+`loadChanges` is called in Task 6 — one await, not one per section:
+
+```js
+    historyStartedAt: await store.historyStartedAt(),
+```
+
+Note this makes `buildSummary` itself unable to fetch it, since it is
+synchronous. Load it at the route alongside the changes and pass it in the same
+options object — `buildSummary(store, period, date, { changes, historyStartedAt })`
+— rather than making the summary builder async. The rule from the plan header
+still holds: the engine stays synchronous and history arrives as data.
 
 - [ ] **Step 4: The exporters**
 
