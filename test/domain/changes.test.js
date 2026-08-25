@@ -86,3 +86,64 @@ function bump(value) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return "2027-01-01";
   return `${value}-moved`;
 }
+
+// --- Regression tests for the quality-review findings on Task 1 ---
+
+test("a missing baseline or current version is not a change", () => {
+  assert.equal(compareVersions(null, version()), null);
+  assert.equal(compareVersions(version(), undefined), null);
+});
+
+test("a target date appearing for the first time is neutral, not NaN days", () => {
+  const change = compareVersions(version({ targetEndDate: null }), version({ targetEndDate: "2026-06-30" }));
+  assert.equal(change.fields.targetEndDate.direction, "neutral");
+  assert.doesNotMatch(change.headline, /NaN/);
+  assert.equal(change.headline, "target date set to 30 Jun 2026");
+});
+
+test("a target date being removed is neutral, not NaN days", () => {
+  const change = compareVersions(version({ targetEndDate: "2026-06-30" }), version({ targetEndDate: null }));
+  assert.equal(change.fields.targetEndDate.direction, "neutral");
+  assert.doesNotMatch(change.headline, /NaN/);
+  assert.equal(change.headline, "target date removed");
+});
+
+test("a status-only neutral move does not read as an improvement", () => {
+  const change = compareVersions(version({ status: "Proposed" }), version({ status: "Approved" }));
+  assert.equal(change.fields.status.direction, "neutral");
+  assert.equal(change.worst, "neutral");
+});
+
+test("a sub-rounding spend increase is never described as going down", () => {
+  /* DECIMAL(19,2) money: a real 4-fils increase rounds to a delta of 0, but
+     the direction and the headline word must still agree with each other. */
+  const change = compareVersions(version({ spent: 300 }), version({ spent: 300.04 }));
+  assert.equal(change.fields.spent.direction, "worse");
+  assert.match(change.headline, /\bup\b/);
+  assert.doesNotMatch(change.headline, /\bdown\b/);
+});
+
+test("a budget change is reported without judging it", () => {
+  const change = compareVersions(version({ budget: 1000 }), version({ budget: 1500 }));
+  assert.equal(change.fields.budget.direction, "neutral");
+  assert.equal(change.fields.budget.delta, 500);
+});
+
+test("a budget cut under flat spend is not called overspending", () => {
+  const change = compareVersions(
+    version({ spent: 900, budget: 1000 }),
+    version({ spent: 900, budget: 800 })
+  );
+  assert.equal(change.crossedBudget, false);
+});
+
+test("the headline formats amounts the way the rest of the product does", () => {
+  const money = compareVersions(version(), version({ spent: 1300 }));
+  assert.equal(money.headline, "spend up AED 1K");
+
+  const progress = compareVersions(version(), version({ percentComplete: 55 }));
+  assert.equal(progress.headline, "progress up 15%");
+
+  const risks = compareVersions(version(), version({ openRisks: 4 }));
+  assert.equal(risks.headline, "open risks up 3");
+});
