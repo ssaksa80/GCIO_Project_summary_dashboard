@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { hashBytes } from "./ingest/hash.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * @param {string} root vault directory
@@ -35,17 +36,31 @@ export function createVault(root, { logger = console } = {}) {
       const ext = path.extname(originalName).toLowerCase() || ".bin";
       const year = String(at.getUTCFullYear());
       const month = String(at.getUTCMonth() + 1).padStart(2, "0");
-      const relative = path.join(year, month, `${hash}${ext}`);
-      const absolute = path.join(root, relative);
+      const relative = path.posix.join(year, month, `${hash}${ext}`);
+      const absolute = path.join(root, year, month, `${hash}${ext}`);
 
       try {
         fs.mkdirSync(path.dirname(absolute), { recursive: true });
         /* Identical bytes are the same file; writing again would be pointless
            churn on a folder that only ever grows. */
         if (!fs.existsSync(absolute)) {
-          const tmp = `${absolute}.writing`;
-          fs.writeFileSync(tmp, buffer);
-          fs.renameSync(tmp, absolute);
+          /* Unique per call: two processes storing the same bytes must not
+             share a temp path, or one can rename the other's half-written
+             file into place. The rename itself is atomic, and the destination
+             is named by content hash, so last-writer-wins is safe. */
+          const tmp = `${absolute}.${process.pid}.${randomUUID()}.writing`;
+          try {
+            fs.writeFileSync(tmp, buffer);
+            fs.renameSync(tmp, absolute);
+          } catch (err) {
+            /* Unique temp names never get overwritten by a later attempt, so
+               a failed write must clean up after itself or it leaks forever.
+               Untested on purpose: reaching this needs writeFileSync to succeed
+               and renameSync to fail, which cannot be provoked portably without
+               adding an injection seam that would cost more than it proves. */
+            try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+            throw err;
+          }
         }
       } catch (err) {
         logger.error?.(`[vault] could not store ${originalName}: ${err.message}`);
@@ -59,20 +74,32 @@ export function createVault(root, { logger = console } = {}) {
      * @param {string} hash
      * @param {string} ext including the dot
      * @returns {Buffer|null} null when the vault does not hold it
+     * @throws when the vault exists but cannot be read — a recovery tool must
+     *         never report a permissions failure as "the data is gone"
      */
     read(hash, ext) {
-      const candidates = [];
+      let years;
       try {
-        for (const year of fs.readdirSync(root)) {
-          for (const month of fs.readdirSync(path.join(root, year))) {
-            candidates.push(path.join(root, year, month, `${hash}${ext}`));
-          }
-        }
-      } catch {
-        return null; // nothing stored yet
+        years = fs.readdirSync(root);
+      } catch (err) {
+        if (err.code === "ENOENT") return null;   // nothing stored yet
+        logger.error?.(`[vault] cannot read ${root}: ${err.message}`);
+        throw err;
       }
-      const found = candidates.find((p) => fs.existsSync(p));
-      return found ? fs.readFileSync(found) : null;
+
+      for (const year of years) {
+        let months;
+        try {
+          months = fs.readdirSync(path.join(root, year));
+        } catch {
+          continue;   // a stray file where a year directory should be
+        }
+        for (const month of months) {
+          const candidate = path.join(root, year, month, `${hash}${ext}`);
+          if (fs.existsSync(candidate)) return fs.readFileSync(candidate);
+        }
+      }
+      return null;
     },
   };
 }

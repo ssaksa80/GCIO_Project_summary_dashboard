@@ -184,6 +184,13 @@ Every sign-in, upload, export and audit read is recorded. Administrators can
 read the trail at `/api/audit`; with `STORE=mssql` it lives in `dbo.AuditEvent`,
 otherwise in dated JSONL files under `AUDIT_DIR`.
 
+Every ingested workbook is copied into `VAULT_DIR` (default `vault/`) before it is
+parsed, named by content hash and filed by month. That is the recovery story: a
+parser fix can be replayed over the vault to rebuild the portfolio, and "what did
+the file actually say" stays answerable. It holds real portfolio data and grows
+without bound — back it up with the database, and keep it off any share the whole
+organisation can read.
+
 ### Local development
 
 ```bash

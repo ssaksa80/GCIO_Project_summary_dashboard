@@ -58,9 +58,27 @@ test("a vault that cannot be written reports it rather than pretending", () => {
 
   const vault = createVault(notADirectory, { logger: quiet });
   assert.throws(() => vault.store(Buffer.from("x"), "a.xlsx"), /vault/i);
+
+  /* Nothing was left lying around by the failed attempt. */
+  const stray = fs.readdirSync(dir).filter((name) => name.endsWith(".writing"));
+  assert.deepEqual(stray, [], "a .writing file survived a failed store");
 });
 
 test("reading something the vault does not hold returns null", () => {
   const vault = createVault(scratch(), { logger: quiet });
+  assert.equal(vault.read("0".repeat(64), ".xlsx"), null);
+});
+
+test("the stored path uses forward slashes on every platform", () => {
+  /* It is persisted to the database and read by humans and scripts; it must
+     not depend on which OS happened to ingest the file. */
+  const vault = createVault(scratch(), { logger: quiet });
+  const stored = vault.store(Buffer.from("x"), "a.xlsx", { at: new Date("2026-08-25T10:00:00Z") });
+  assert.equal(stored.vaultPath, `2026/08/${hashBytes(Buffer.from("x"))}.xlsx`);
+  assert.ok(!stored.vaultPath.includes("\\"), "a backslash reached the stored path");
+});
+
+test("reading from a vault that was never written returns null", () => {
+  const vault = createVault(path.join(scratch(), "never-created"), { logger: quiet });
   assert.equal(vault.read("0".repeat(64), ".xlsx"), null);
 });
