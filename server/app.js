@@ -36,6 +36,7 @@ const VERSION = "1.0.0";
  *   sessions: object,
  *   roleMapping: object,
  *   audit: {append: Function},
+ *   ingestRuns?: {recent: Function}|null,
  *   ldapAuthenticate?: Function,
  *   dataDir?: string,
  *   clientDist?: string,
@@ -49,6 +50,7 @@ export function createApp(deps) {
   const clientDist = deps.clientDist || path.resolve("client", "dist");
   const startedAt = deps.startedAt || Date.now();
   const audit = deps.audit || { append: async () => {} };
+  const ingestRuns = deps.ingestRuns || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
 
@@ -177,6 +179,25 @@ export function createApp(deps) {
       subject: action ? `${events.length} events, filtered to ${action}` : `${events.length} events`,
     });
     res.json({ count: events.length, events });
+  }));
+
+  /**
+   * The last ingests and what each one did. This is the answer to "why does
+   * the dashboard not show last night's file": either there is no run, or
+   * there is one with an outcome and a reason.
+   *
+   * Not audited: unlike /api/audit, this exposes filenames and counts, not
+   * who did what, so reading it is not itself an accountability event. Not
+   * rate-limited either: it is already behind a session and the admin role,
+   * unlike the anonymous /api/auth/* routes, and its query is a single bounded
+   * SELECT, unlike /api/export's document generation — the same reasoning
+   * that leaves /api/audit unthrottled.
+   */
+  app.get("/api/ingest/runs", requireRole("admin"), wrap(async (req, res) => {
+    if (!ingestRuns) return res.json({ historyEnabled: false, count: 0, runs: [] });
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
+    const runs = await ingestRuns.recent({ limit });
+    res.json({ historyEnabled: true, count: runs.length, runs });
   }));
 
   // ---------- canonical template workbook ----------

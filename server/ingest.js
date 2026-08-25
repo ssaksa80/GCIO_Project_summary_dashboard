@@ -464,7 +464,10 @@ export function ingestFile(filePath) {
   try {
     const buffer = fs.readFileSync(filePath);
     const mtime = dayjs(fs.statSync(filePath).mtime).format("YYYY-MM-DD");
-    return ingestBuffer(buffer, filePath, mtime);
+    const parsed = ingestBuffer(buffer, filePath, mtime);
+    /* The vault needs the original bytes, and only the caller that already
+       read them can supply them without reading the file a second time. */
+    return parsed.ok ? { ...parsed, bytes: buffer } : parsed;
   } catch (err) {
     return { ok: false, file: path.basename(filePath), error: err.message };
   }

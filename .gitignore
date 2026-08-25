@@ -21,6 +21,9 @@ data/*
 # must never be committed; the SQL store writes to dbo.AuditEvent instead.
 audit/
 
+# Ingested workbooks, kept for replay and audit. Real portfolio data.
+vault/
+
 # Local environment
 .env
 

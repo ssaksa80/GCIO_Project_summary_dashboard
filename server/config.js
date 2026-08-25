@@ -83,6 +83,7 @@ export function loadConfig(env = process.env) {
     sessionAbsoluteHours: env.SESSION_ABSOLUTE_HOURS || "8",
     sessionIdleMinutes: Number(env.SESSION_IDLE_MINUTES || 240),
     auditDir: env.AUDIT_DIR || "audit",
+    vaultDir: env.VAULT_DIR || "vault",
     seedAdminGroup: String(env.SEED_ADMIN_GROUP || "").trim(),
   });
 }

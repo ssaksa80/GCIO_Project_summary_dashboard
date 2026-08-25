@@ -28,6 +28,10 @@ import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
+import { sourceFilesRepo } from "./repos/sourceFiles.js";
+import { ingestRunsRepo } from "./repos/ingestRuns.js";
+import { projectVersionsRepo } from "./repos/projectVersions.js";
+import { createVault } from "./vault.js";
 import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
 
@@ -58,9 +62,18 @@ if (config.store === "mssql") {
     audit: auditRepo(ex),
     sessions: sessionsRepo(ex),
     roleMapping: roleMappingRepo(ex),
+    sourceFiles: sourceFilesRepo(ex),
+    ingestRuns: ingestRunsRepo(ex),
+    projectVersions: projectVersionsRepo(ex),
   };
 
-  store = new SqlStore({ projects: repos.projects, posture: repos.posture });
+  store = new SqlStore({
+    projects: repos.projects,
+    posture: repos.posture,
+    sourceFiles: repos.sourceFiles,
+    ingestRuns: repos.ingestRuns,
+    projectVersions: repos.projectVersions,
+  }, { vault: createVault(path.join(ROOT, config.vaultDir)) });
   await store.refresh();
   log(`loaded ${store.projectCount} projects from SQL`);
 
@@ -75,7 +88,12 @@ if (config.store === "mssql") {
         "Set SEED_ADMIN_GROUP and restart, or insert a row into dbo.RoleMapping.");
   }
 
-  backends = { audit: repos.audit, sessions: repos.sessions, roleMapping: repos.roleMapping };
+  backends = {
+    audit: repos.audit,
+    sessions: repos.sessions,
+    roleMapping: repos.roleMapping,
+    ingestRuns: repos.ingestRuns,
+  };
 } else {
   store = new Store();
   backends = {
@@ -88,6 +106,9 @@ if (config.store === "mssql") {
       "gcio-dashboard-pms": "pm",
       "gcio-dashboard-admins": "admin",
     }),
+    /* No database, so no run history to show. The route says so rather than
+       pretending the list is empty. */
+    ingestRuns: null,
   };
   log("store: in-memory (set STORE=mssql for the database-backed store)");
 }
@@ -100,10 +121,10 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 async function apply(result) {
   if (store instanceof SqlStore) {
     if (!result.ok) {
-      store.log({ file: result.file, ok: false, error: result.error });
+      await store.recordRejectedFile(result.file, result.error, { trigger: "boot" });
       return 0;
     }
-    return store.applyFile(result);
+    return store.applyFile(result, { trigger: "boot" });
   }
   return applyResult(store, result);
 }
@@ -116,7 +137,7 @@ if (config.store === "mssql") {
   for (const file of onDisk) {
     if (known.has(file)) continue;
     const parsed = ingestFile(path.join(DATA_DIR, file));
-    if (parsed.ok) await apply(parsed);
+    await apply(parsed);
   }
   if (store.projectCount === 0) log("no data yet — drop workbooks into data/ or upload them");
 } else {
@@ -147,12 +168,17 @@ watchDataDir(DATA_DIR, {
   onUpsert: async (filePath) => {
     const parsed = ingestFile(filePath);
     if (!parsed.ok) {
-      store.log({ file: path.basename(filePath), ok: false, error: parsed.error });
-      log(`rejected ${path.basename(filePath)}: ${parsed.error}`);
+      const fileName = path.basename(filePath);
+      if (store instanceof SqlStore) {
+        await store.recordRejectedFile(fileName, parsed.error, { trigger: "watcher" });
+      } else {
+        store.log({ file: fileName, ok: false, error: parsed.error });
+      }
+      log(`rejected ${fileName}: ${parsed.error}`);
       return;
     }
     if (store instanceof SqlStore) {
-      await store.applyFile(parsed);
+      await store.applyFile(parsed, { trigger: "watcher" });
     } else {
       applyResult(store, parsed);
       if (store.demoMode) store.demoMode = false;
@@ -196,6 +222,7 @@ const app = createApp({
   sessions: backends.sessions,
   roleMapping: backends.roleMapping,
   audit: backends.audit,
+  ingestRuns: backends.ingestRuns,
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),

@@ -13,6 +13,16 @@
 **Decisions taken before writing this plan:**
 - **History is additive.** The spec originally replaced `Project` with a `valid_from`/`valid_to` temporal table. That was decided against: the read path, the store and the live tests all work today, and a defect in a brand-new history writer must not be able to break the dashboard everyone already uses. The cost — the newest `ProjectVersion` duplicates what `Project` holds — is accepted and documented.
 - **Foundation only.** No trends, no "changed since last week", no question ageing. Those are Phase 2, and they will be built against history that has actually accumulated rather than against a fixture.
+- **Growth is bounded by the edition, and that is a Phase 2/3 problem.** The
+  instance is SQL Server 2025 **Express**, which caps a database at 10 GB.
+  `ProjectVersion` grows forever: one row per changed project per ingest, each
+  carrying the whole project as JSON. Measured against the real sample data the
+  payload averages about 1.8 kB, so a 500-project portfolio ingested daily costs
+  roughly 80–250 MB a year at a modest change rate and closer to 1 GB a year if
+  most projects move together. That is years of headroom, not a reason to build
+  archival now — but it is a real ceiling on a fixed-size database, and the
+  choice between upgrading the edition and purging old versions should be made
+  deliberately in Phase 2 rather than by an outage.
 
 ---
 
@@ -20,7 +30,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `server/db/migrations.js` | **modify** — add migrations 6 (`SourceFile`, `IngestRun`) and 7 (`ProjectVersion`) |
+| `server/db/migrations.js` | **modify** — add migrations 6 (`SourceFile`, `IngestRun`), 7 (`ProjectVersion`) and 8 (their constraints) |
 | `server/ingest/hash.js` | **create** — content hashes: one for a file's bytes, one for a project's meaningful fields |
 | `server/vault.js` | **create** — copy a workbook's bytes into the vault; look one up again |
 | `server/repos/sourceFiles.js` | **create** — record a workbook and its hash; find the newest for a name |
@@ -252,7 +262,7 @@ test("the extension is preserved so a replayed file is still openable", () => {
 });
 
 test("a vault that cannot be written reports it rather than pretending", () => {
-  const vault = createVault(path.join(" ", "impossible"), { logger: quiet });
+  const vault = createVault(path.join(" ", "impossible"), { logger: quiet });
   assert.throws(() => vault.store(Buffer.from("x"), "a.xlsx"), /vault/i);
 });
 
@@ -387,6 +397,28 @@ git add server/vault.js server/config.js test/vault.test.js .gitignore .env.exam
 git commit -m "feat(vault): keep every ingested workbook for replay"
 ```
 
+**Amended after review (commit `954af90` plus a follow-up).** Four changes to the
+code above, all of them defects in this plan rather than in the implementation:
+
+1. `store` returns `vaultPath` built with `path.posix.join`, and builds the
+   on-disk `absolute` path separately with `path.join`. The returned value is
+   persisted to `dbo.SourceFile.VaultPath` and read by humans and scripts, so it
+   must not carry Windows separators on one host and POSIX ones on another.
+2. The `.writing` temp path is unique per call
+   (`${absolute}.${process.pid}.${randomUUID()}.writing`), and a failed write
+   unlinks it. Sharing one temp path across processes let a half-written file be
+   renamed into place — silent, permanent corruption of the only copy.
+3. `read` no longer swallows every error. Only `ENOENT` on the root means "not
+   found"; anything else is logged and rethrown, because a recovery tool must
+   never report a permissions failure as "the data is gone".
+4. The plan's fifth test used `createVault(path.join(" ", "impossible"))`, a
+   POSIX assumption. It points the root at a real file instead, so `mkdir`
+   beneath it fails with `ENOTDIR` on any platform.
+
+The README paragraph that Task 9 originally carried was also brought forward to
+here: `vault/` is gitignored, so nothing tracked in the repo would otherwise tell
+an operator that real portfolio data now lives there.
+
 ---
 
 ### Task 3: Schema for source files, runs and versions
@@ -498,6 +530,41 @@ a no-op.
 git add server/db/migrations.js
 git commit -m "feat(db): schema for source files, ingest runs and project versions"
 ```
+
+---
+
+### Task 3b: Constraints the history tables should have had — DONE (`cd0737c`)
+
+Added after a schema review of Task 3, while all three tables still held zero
+rows. Migrations are immutable once shipped, so 6 and 7 were left alone and
+everything went into migration 8, `history_constraints`:
+
+- `IX_ProjectVersion_Project` gains `INCLUDE (ContentHash)`. The bulk
+  newest-hash query in Task 5 runs for every changed project on every ingest and
+  selects exactly `(ProjectId, ContentHash)`; without the include, each row costs
+  a key lookup and the cost grows with the accumulated history.
+- `FK_IngestRun_SourceFile` and `FK_ProjectVersion_IngestRun`. Nothing in the
+  codebase ever deletes a `SourceFile` or an `IngestRun`, so both are safe. Both
+  columns stay nullable — a run with no vault bytes has no source file, and a
+  version appended outside a run has no run.
+  `ProjectVersion.ProjectId` deliberately gets NO key to `dbo.Project`:
+  `replaceForFile` deletes and reinserts every project row on each ingest, so a
+  constraint there would destroy the history it exists to protect.
+- `CK_IngestRun_TriggerSource` (`watcher|upload|boot|replay`) and
+  `CK_IngestRun_Outcome` (NULL, or `applied|unchanged|failed|removed`). Both are
+  written from a fixed vocabulary in JavaScript; a typo would quietly corrupt
+  every Phase 2 aggregate that counts runs by outcome.
+
+The index replacement uses `CREATE INDEX ... WITH (DROP_EXISTING = ON)` rather
+than a guarded `DROP` followed by a guarded `CREATE`. The implementer tested the
+guarded pair adversarially against the live instance and found a real race: one
+booting instance evaluates `IF EXISTS`, stalls, and then drops the index a second
+instance has just recreated, leaving the table with no index of that name and no
+error anywhere. `DROP_EXISTING` replaces it in one atomic statement.
+
+Both constraint kinds were proven to bite: `TriggerSource = 'nonsense'`,
+`Outcome = 'bogus'` and a dangling `SourceFileId` were each rejected with error
+547, while `Outcome = NULL` and `SourceFileId = NULL` were accepted.
 
 ---
 
@@ -755,6 +822,43 @@ git add server/repos/sourceFiles.js server/repos/ingestRuns.js test/db/history.t
 git commit -m "feat(db): source-file and ingest-run repositories"
 ```
 
+**Amended after review.** Six changes to the code above, all defects in this
+plan rather than in the implementation:
+
+1. **`record()` is one `MERGE ... WITH (HOLDLOCK)`**, not SELECT-then-branch.
+   `UX_SourceFile_Name_Sha` is UNIQUE, and chokidar registers `add` and `change`
+   independently without awaiting one handler before firing the next — so a
+   save-then-touch from Excel can put two `record()` calls for identical bytes in
+   flight at once and one dies on a duplicate key. A plain transaction does not
+   help under READ COMMITTED; the range lock does. `OUTPUT $action` yields
+   `alreadySeen`. This matches the upsert idiom already in `roleMapping.set()`.
+2. **`finish()` logs when it closes nothing.** A zero-row UPDATE is not an
+   error, so a stale id would leave a run open forever — the exact failure this
+   table exists to make visible. Logged, not thrown: the caller is usually
+   already handling its own failure.
+3. **`recent()` guards the date conversion** with `instanceof Date`, matching
+   `audit.js`, `sessions.js` and `projects.js`. This was the only repository
+   breaking that convention.
+4. **`finish()` takes an optional `sourceFileId`**, applied with `COALESCE` so
+   omitting it does not blank an existing value. Task 6 needs this because the
+   run is now opened before the source file is recorded.
+5. **Surrogate-safe truncation** of the error text, and the trigger and outcome
+   vocabularies exported as `INGEST_TRIGGERS` / `INGEST_OUTCOMES` with `start()`
+   and `finish()` rejecting anything outside them. There is no type checking in
+   this project, so without that a typo surfaces as SQL error 547 at runtime.
+6. The plan's `scriptedExecutor` helper was declared
+   `function scriptedExecutor({ recordsets = {} } = {})` while every call site
+   passes the needle map directly, so no needle would ever have matched and every
+   test would have failed on undefined rows. Signature corrected to
+   `function scriptedExecutor(recordsets = {})`. The plan's last test also
+   asserted a clamp of `200` against an implementation clamping at `500`; the
+   implementation is right, because Task 7's route allows 500 and a lower
+   repository ceiling would silently return less than the caller asked for.
+
+Note that `test/db/repos.test.js` has a DIFFERENT helper of the same name, with
+a `{ recordsets }` signature, transaction markers and `failOn` support. They are
+deliberately not merged; the header comment in each says so.
+
 ---
 
 ### Task 5: The project-version repository
@@ -990,6 +1094,48 @@ git add server/repos/projectVersions.js test/db/history.test.js
 git commit -m "feat(db): append-only project version history"
 ```
 
+**Amended after the Task 3 schema review.** Two changes to `appendChanged`
+above, both found by reading its SQL rather than running it:
+
+1. **Wrap the read and the writes in one transaction.** The method reads each
+   project's newest hash and then conditionally inserts. Two ingests of the same
+   project interleaving between those two steps would append two consecutive
+   rows with an identical hash — precisely what the method exists to prevent.
+   The watcher handles events serially today, so this is not reachable yet, but
+   a manual replay running alongside it would reach it. Change the body to:
+
+   ```js
+     async appendChanged(candidates, { ingestRunId = null } = {}) {
+       if (!candidates || candidates.length === 0) return 0;
+
+       return ex.tx(async (tx) => {
+         /* ... the existing body, with every ex.query replaced by tx.query ... */
+         return written;
+       });
+     },
+   ```
+
+   The scripted executor in the test already implements `tx(fn)` as `fn(ex)`, so
+   the existing tests keep working unchanged.
+
+2. **Refuse a project id containing a comma.** The bulk query passes ids to
+   `STRING_SPLIT(@ids, ',')` as one comma-joined string. A project id with a
+   comma in it would split into two ids that match nothing, and the method would
+   silently append a version for a project it had just decided was unchanged.
+   Fail loudly instead, immediately after building `ids`:
+
+   ```js
+         const offending = ids.filter((id) => String(id).includes(","));
+         if (offending.length) {
+           /* The bulk lookup joins ids with commas for STRING_SPLIT. A comma in
+              an id would split it in two, match nothing, and silently append a
+              version for a project that had not changed. */
+           throw new Error(`project ids must not contain a comma: ${offending.join(" ")}`);
+         }
+   ```
+
+   Add a test asserting it throws rather than silently mis-splitting.
+
 ---
 
 ### Task 6: Wire history into the ingest path
@@ -1032,7 +1178,11 @@ function harness({ newestHash = null, changed = 2 } = {}) {
     },
     ingestRuns: {
       async start(run) { calls.push(["runs.start", run.fileName, run.trigger]); return 99; },
-      async finish(id, result) { calls.push(["runs.finish", id, result.outcome, result.projectsChanged]); },
+      async finish(id, result) {
+        /* The error text carries whether the snapshot had already moved, so the
+           harness has to keep it rather than only the counts. */
+        calls.push(["runs.finish", id, result.outcome, result.error ?? result.projectsChanged]);
+      },
     },
     projectVersions: {
       async appendChanged() { calls.push(["versions.append"]); return changed; },
@@ -1058,13 +1208,14 @@ test("an ingest vaults the bytes, records the file, and closes the run", async (
   await store.applyFile(parsed(), { trigger: "watcher" });
 
   const order = calls.map((c) => c[0]);
+  assert.equal(order[0], "runs.start", "the run must be open before anything that can fail");
   assert.ok(order.indexOf("vault.store") < order.indexOf("projects.replace"),
     "the bytes must be vaulted before they are parsed into the database");
   assert.ok(order.includes("sourceFiles.record"));
   assert.ok(order.includes("versions.append"));
 
   const finish = calls.find((c) => c[0] === "runs.finish");
-  assert.deepEqual(finish, ["runs.finish", 99, "applied", 2]);
+  assert.deepEqual(finish, ["runs.finish", 99, "applied", 2]);   // no error, so the count
 });
 
 test("a file whose hash has not changed is recorded as unchanged and not rewritten", async () => {
@@ -1085,6 +1236,35 @@ test("a failure still closes the run, with the reason", async () => {
   const finish = calls.find((c) => c[0] === "runs.finish");
   assert.ok(finish, "the run was left open");
   assert.equal(finish[2], "failed");
+});
+
+test("a history failure after the snapshot moved says so", async () => {
+  /* appendChanged rolls itself back, but dbo.Project has already been updated.
+     A bare "failed" would read as "nothing happened", which is the opposite of
+     what an operator needs to know. */
+  const { calls, store } = harness();
+  store.repos.projectVersions.appendChanged = async () => { throw new Error("lock timeout"); };
+
+  await assert.rejects(() => store.applyFile(parsed(), { trigger: "watcher" }), /lock timeout/);
+
+  const finish = calls.find((c) => c[0] === "runs.finish");
+  assert.equal(finish[2], "failed");
+  assert.match(finish[3] ?? "", /snapshot applied but history not recorded/);
+});
+
+test("a vault failure is recorded as a failed run, not as no run at all", async () => {
+  /* The vault write happens before any database write. If it throws and the
+     run were opened later, there would be nothing anywhere saying why the
+     workbook never appeared. */
+  const { calls, store } = harness();
+  store.vault = { store() { throw new Error("vault write failed for master.xlsx: EACCES"); } };
+
+  await assert.rejects(() => store.applyFile(parsed(), { trigger: "watcher" }), /vault write failed/);
+
+  const finish = calls.find((c) => c[0] === "runs.finish");
+  assert.ok(finish, "a vault failure left no run behind");
+  assert.equal(finish[2], "failed");
+  assert.ok(!calls.some((c) => c[0] === "projects.replace"), "the database was written despite the vault failing");
 });
 
 test("removing a file records a run too", async () => {
@@ -1179,37 +1359,48 @@ exactly as they are:
       return result.projects.length;
     }
 
-    let vaulted = null;
-    if (this.vault && result.bytes) {
-      vaulted = this.vault.store(result.bytes, result.file);
-    }
+    /* The run is opened before anything else can fail. Vaulting the bytes and
+       recording the source file can both throw, and if the run were opened
+       after them the one failure mode that happens first would be the one this
+       table cannot explain. The source file is attached when the run closes. */
+    const runId = await this.repos.ingestRuns.start({ fileName: result.file, trigger });
 
-    const unchanged = vaulted
-      ? (await this.repos.sourceFiles.newestHashFor(result.file)) === vaulted.hash
-      : false;
-
-    const recorded = vaulted
-      ? await this.repos.sourceFiles.record({
-          fileName: result.file, sha256: vaulted.hash, bytes: vaulted.bytes,
-          vaultPath: vaulted.vaultPath, uploadedBy: actor,
-        })
-      : { sourceFileId: null };
-
-    const runId = await this.repos.ingestRuns.start({
-      fileName: result.file, trigger, sourceFileId: recorded.sourceFileId,
-    });
-
-    if (unchanged) {
-      await this.repos.ingestRuns.finish(runId, {
-        outcome: "unchanged", projectsSeen: result.projects.length,
-      });
-      this.log({ file: result.file, ok: true, unchanged: true });
-      return 0;
-    }
+    /* "failed" would otherwise mean two different things: nothing happened, or
+       the dashboard moved and only the history is missing. An operator reading
+       the run needs to know which. */
+    let snapshotWritten = false;
 
     try {
+      const vaulted = this.vault && result.bytes
+        ? this.vault.store(result.bytes, result.file)
+        : null;
+
+      /* Read the newest hash BEFORE recording this one, or it compares the file
+         against itself and every ingest looks unchanged. */
+      const unchanged = vaulted
+        ? (await this.repos.sourceFiles.newestHashFor(result.file)) === vaulted.hash
+        : false;
+
+      const recorded = vaulted
+        ? await this.repos.sourceFiles.record({
+            fileName: result.file, sha256: vaulted.hash, bytes: vaulted.bytes,
+            vaultPath: vaulted.vaultPath, uploadedBy: actor,
+          })
+        : { sourceFileId: null };
+
+      if (unchanged) {
+        await this.repos.ingestRuns.finish(runId, {
+          outcome: "unchanged",
+          projectsSeen: result.projects.length,
+          sourceFileId: recorded.sourceFileId,
+        });
+        this.log({ file: result.file, ok: true, unchanged: true });
+        return 0;
+      }
+
       await this.repos.projects.replaceForFile(result.file, result.projects);
       await this.repos.posture.replaceForFile(result.file, result.posture || []);
+      snapshotWritten = true;
 
       const changed = await this.repos.projectVersions.appendChanged(
         result.projects.map((project) => ({ project, hash: hashProject(project) })),
@@ -1224,6 +1415,7 @@ exactly as they are:
         projectsSeen: result.projects.length,
         projectsChanged: changed,
         postureRows: (result.posture || []).length,
+        sourceFileId: recorded.sourceFileId,
       });
 
       this.log({
@@ -1233,8 +1425,11 @@ exactly as they are:
       });
       return result.projects.length;
     } catch (err) {
-      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: err.message });
-      this.log({ file: result.file, ok: false, error: err.message });
+      const reason = snapshotWritten
+        ? `snapshot applied but history not recorded: ${err.message}`
+        : err.message;
+      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason });
+      this.log({ file: result.file, ok: false, error: reason });
       throw err;
     }
   }
@@ -1363,6 +1558,57 @@ constructs `SqlStore` with only the two Phase 0 repositories and must still work
 git add server/store/sqlStore.js server/index.js server/ingest.js test/db/sqlStoreHistory.test.js
 git commit -m "feat(ingest): vault every workbook and record what each ingest changed"
 ```
+
+**Amended after the Task 4 review.** The run is now opened FIRST, before the
+bytes are vaulted and before the source file is recorded, and the source file id
+is attached when the run closes. (Superseded in part by the amendment below —
+`newestHashFor` is no longer what decides "unchanged".) Originally `vault.store()` and
+`sourceFiles.record()` both ran before `ingestRuns.start()`, so a failure in
+either produced no run at all — and "either there is no run, or there is a run
+with a reason" stopped being true for the one failure mode that happens first.
+`newestHashFor` is still read before `record()`, or the file would be compared
+against itself and every ingest would look unchanged.
+
+**Amended again after the Task 6 review — two Critical defects in this plan.**
+
+Deciding "unchanged" from `sourceFiles.newestHashFor` was wrong, and wrong in a
+way that could hide a portfolio permanently. `record()` writes the `SourceFile`
+row before the snapshot write and outside its transaction, so the hash becomes
+durable whether or not the write that follows succeeds. Four reachable
+consequences, none of which a restart recovers, because the boot sweep runs
+through the same code:
+
+- A first ingest that fails between `record()` and `replaceForFile` leaves that
+  file's portfolio permanently invisible — every later drop of the identical
+  file is short-circuited as "unchanged".
+- A re-ingest that fails the same way rolls the snapshot back cleanly, so the
+  OLD rows survive and the dashboard is stuck on stale data — and resending the
+  corrected file is swallowed as "unchanged".
+- `dbo.Project` emptied by a restore or a manual DELETE cannot be repopulated by
+  re-dropping the same workbook.
+- `removeFile` deletes the project rows but leaves the `SourceFile` row, so an
+  operator who removes a workbook and puts it straight back gets nothing.
+
+The root cause is using "these bytes have been seen" as an oracle for "this
+content is what is currently live". The fix is to ask the second question
+directly: `ingestRuns.liveHashFor(fileName)` returns the hash of the file whose
+most recently CLOSED run for that name closed `applied` or `unchanged`, and null
+otherwise. A `failed` run proves nothing was applied; a `removed` run proves it
+was taken away; both must let the next ingest do the work even for identical
+bytes. `Outcome IS NOT NULL` excludes the run just opened, which is what makes
+this work at all. `sourceFiles.newestHashFor` is deleted — a method whose name
+invites exactly this bug is worse than no method. `record()` stays: it is the
+vault ledger, and recording bytes we vaulted is correct unconditionally.
+
+The `snapshotWritten` flag was also wrong in two of its three cases. It is set
+before `appendChanged` runs, so "snapshot applied but history not recorded" is
+only true for a failure inside `appendChanged`; a failure in `refresh()` or in
+the closing `finish()` happens after both are committed. Worse, if the closing
+`finish()` threw after its UPDATE committed, the catch overwrote a correct
+`applied` row with `failed`. Replaced by a `stage` marker — `opening`,
+`snapshot`, `history`, `closed` — with a distinct message for each, and a
+`closed` stage that refuses to touch the run at all, because at that point only
+the in-memory read model is stale.
 
 ---
 
@@ -1506,9 +1752,60 @@ git add server/app.js server/index.js test/api/app.test.js
 git commit -m "feat(api): expose recent ingest runs to administrators"
 ```
 
+**Amended after review.** The route itself was right, but it exposed a hole
+older than this phase: `server/index.js` returns early on `!parsed.ok`, so a
+workbook that fails to parse never reaches `applyFile` and never opens a run.
+A corrupt file and a night when nobody dropped anything therefore looked
+IDENTICAL through this endpoint — no row either way — and the phase's promise
+that "either there is no run, or there is a run with an outcome and a reason"
+was false exactly where it mattered most. `SqlStore.recordRejectedFile` now
+opens and immediately closes a `failed` run for a rejected workbook, and both
+parse-failure call sites use it.
+
+Two judgement calls, both checked against the codebase and both kept: the route
+is NOT audited (`/api/audit` records itself because it exposes who-did-what
+about people; ingest runs carry no actor at all and sit closer to `/api/health`)
+and NOT rate-limited (the throttles cover anonymous-reachable and expensive
+routes; this is admin-gated with a bounded SELECT, exactly like the unthrottled
+`/api/audit`).
+
+`deps.ingestRuns || null` is deliberately NOT the codebase's usual no-op-default
+idiom. Defaulting to `{ recent: async () => [] }` would turn "no history store"
+into "a history store holding nothing", which is precisely the distinction this
+route exists to preserve.
+
 ---
 
 ### Task 8: Prove the whole thing against real SQL
+
+The hermetic suite fakes every repository and the vault. That proves ordering
+and branching; it cannot prove anything about SQL Server, about transaction
+boundaries between repositories, or about a SEQUENCE of ingests sharing state.
+The Task 6 review found two Critical defects that no amount of faking could
+catch, precisely because the fakes do not share a database the way `SourceFile`
+and `Project` do. So the live subtests below are not a formality — they are the
+only place several of these behaviours are ever exercised for real.
+
+**The scenarios this task must prove, beyond the happy path:**
+
+1. **A failed ingest does not hide the file forever.** Ingest a new workbook,
+   force `projects.replaceForFile` to fail, then drop the identical bytes again
+   and assert the portfolio DOES appear. Repeat with a fresh `SqlStore` between
+   the two attempts, since a restart was the obvious escape hatch and is not one.
+2. **Remove then re-drop.** Ingest, remove the file, drop the byte-identical
+   file back in, and assert it is applied rather than reported unchanged.
+3. **A failed update does not freeze stale data.** Ingest v1 successfully, then
+   attempt v2 of the same name with a failing snapshot write. Confirm v1's rows
+   survive the rollback, then confirm v2 CAN still be applied by re-dropping it.
+4. **A misleading outcome is not recorded.** Force `refresh()` to fail after a
+   genuinely successful apply and confirm the run still reads `applied`, with
+   `dbo.Project` and `dbo.ProjectVersion` holding correct data.
+5. **`liveHashFor` under two versions of one name.** Ingest v1, then v2, and
+   confirm the answer tracks the most recently settled run rather than whichever
+   `SourceFile` row was touched last.
+6. **A cold process.** Everything above with a freshly constructed store, not
+   the same in-memory instance — `store.sourceFiles` is only populated by
+   `refresh()`, and this is the first place that boundary is real.
 
 **Files:**
 - Modify: `test/db/live.test.js`
@@ -1608,6 +1905,47 @@ The "every table the application needs exists" subtest filters by an explicit
     ].sort();
 ```
 
+Tables alone are not enough. An index silently dropped or renamed by a later
+migration turns a seek into a scan with nothing failing, and a constraint
+dropped by hand stops protecting anything. Add a second subtest beside it:
+
+```js
+  await t.test("the history tables keep the indexes and constraints they were given", async () => {
+    const { recordset: indexes } = await ex.query(`
+      SELECT name FROM sys.indexes
+      WHERE name IN ('UX_SourceFile_Name_Sha','IX_IngestRun_StartedAt',
+                     'IX_ProjectVersion_Project','IX_ProjectVersion_RecordedAt')
+    `);
+    assert.deepEqual(indexes.map((r) => r.name).sort(), [
+      "IX_IngestRun_StartedAt", "IX_ProjectVersion_Project",
+      "IX_ProjectVersion_RecordedAt", "UX_SourceFile_Name_Sha",
+    ]);
+
+    /* The hot path selects ContentHash for every changed project on every
+       ingest; without the include it pays a key lookup per row. */
+    const { recordset: included } = await ex.query(`
+      SELECT c.name FROM sys.index_columns ic
+      JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+      JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+      WHERE i.name = 'IX_ProjectVersion_Project' AND ic.is_included_column = 1
+    `);
+    assert.deepEqual(included.map((r) => r.name), ["ContentHash"]);
+
+    const { recordset: keys } = await ex.query(`
+      SELECT name FROM sys.foreign_keys
+      WHERE name IN ('FK_IngestRun_SourceFile','FK_ProjectVersion_IngestRun') AND is_disabled = 0
+    `);
+    assert.equal(keys.length, 2, "a foreign key on the history tables is missing or disabled");
+
+    const { recordset: checks } = await ex.query(`
+      SELECT name FROM sys.check_constraints
+      WHERE name IN ('CK_IngestRun_TriggerSource','CK_IngestRun_Outcome')
+        AND is_disabled = 0 AND is_not_trusted = 0
+    `);
+    assert.equal(checks.length, 2, "a check constraint on dbo.IngestRun is missing or untrusted");
+  });
+```
+
 - [ ] **Step 3: Extend the cleanup so the suite leaves nothing behind**
 
 In the `cleanup` helper in the same file, add:
@@ -1676,17 +2014,62 @@ npm run build
 
 Expected: all green.
 
-- [ ] **Step 2: Document the vault in `README.md`**
+- [ ] **Step 2: Document how to diagnose a missing workbook**
 
-Add to the "Running it for real" section, after the audit paragraph:
+Add to the `### Continuous operation` section of `README.md`, after the
+paragraph ending "point monitoring at `/readyz`":
 
 ```markdown
-Every ingested workbook is copied into `VAULT_DIR` before it is parsed, named by
-content hash and filed by month. That is the recovery story: a parser fix can be
-replayed over the vault to rebuild the portfolio, and "what did the file actually
-say" stays answerable. It holds real portfolio data — back it up with the
-database, and keep it off any share the whole organisation can read.
+When the dashboard does not show a workbook you just dropped, `GET
+/api/ingest/runs` (admin only) lists the most recent ingest attempts and what
+each one did — `applied` with the number of projects that actually changed,
+`unchanged` because the content matched what is already live, `failed` with the
+specific reason, or `removed`. A run that opened and never closed
+(`finishedAt: null`) means the process died mid-ingest. A workbook that never
+appears here at all did not reach the ingest path — check the server log for a
+`rejected <file>: ...` line. Under `STORE=memory` the response reports
+`historyEnabled: false` and an empty list, because there is no database to hold
+the history.
 ```
+
+Add a row to the API surface table, directly below `/api/audit`:
+
+```markdown
+| `GET /api/ingest/runs?limit=` | recent ingest attempts and their outcomes — **admin only**; `historyEnabled: false` under `STORE=memory` |
+```
+
+and extend the Admin row of the "Who can do what" table:
+
+```markdown
+| Admin | everything, plus read the audit trail and recent ingest run history |
+```
+
+- [ ] **Step 2c: Record what the live suite can and cannot do**
+
+Add to `README.md` beside wherever the test commands are described:
+
+```markdown
+The live SQL suite (`DB_LIVE=1 npm run test:db`) migrates and deletes against
+whatever `.env` resolves to, so it prints the server and database it is about to
+touch and refuses to run with `NODE_ENV=production`. Everything it writes is
+named `livetest*` and swept afterwards, and a final subtest asserts the sweep
+was complete.
+
+Its subtests all nest inside one top-level test, which means
+`--test-name-pattern` cannot isolate one of them — Node only descends into a
+parent whose own name matches, so a scenario-specific pattern silently runs
+nothing at all. Chasing a single red scenario currently costs the whole file,
+about eight seconds warm and rather more on the first run in a session.
+Restructuring the scenarios as independent top-level tests sharing one pool
+would fix it and is worth doing when Phase 2 extends this suite.
+```
+
+- [ ] **Step 2b: Confirm the vault is documented**
+
+The README paragraph this step originally carried was brought forward to Task 2,
+so that `vault/` was documented from the moment it started holding real data
+rather than at the end of the phase. Confirm it is present and still accurate —
+`grep -n VAULT_DIR README.md` — and correct it if the implementation drifted.
 
 - [ ] **Step 3: Mark the phase in the spec**
 

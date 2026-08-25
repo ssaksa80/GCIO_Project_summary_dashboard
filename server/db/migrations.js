@@ -136,6 +136,131 @@ export const MIGRATIONS = [
         CREATE INDEX IX_ProjectChild_SourceFile ON dbo.ProjectChild (SourceFile);
     `,
   },
+  {
+    id: 6,
+    name: "source_files_and_runs",
+    sql: `
+      IF OBJECT_ID('dbo.SourceFile', 'U') IS NULL
+      CREATE TABLE dbo.SourceFile (
+        SourceFileId  BIGINT IDENTITY(1,1) PRIMARY KEY,
+        FileName      NVARCHAR(260)  NOT NULL,
+        Sha256        CHAR(64)       NOT NULL,
+        Bytes         BIGINT         NOT NULL,
+        VaultPath     NVARCHAR(400)  NULL,
+        UploadedBy    NVARCHAR(320)  NULL,
+        FirstSeenAt   DATETIME2(3)   NOT NULL,
+        LastSeenAt    DATETIME2(3)   NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_SourceFile_Name_Sha')
+        CREATE UNIQUE INDEX UX_SourceFile_Name_Sha ON dbo.SourceFile (FileName, Sha256);
+
+      IF OBJECT_ID('dbo.IngestRun', 'U') IS NULL
+      CREATE TABLE dbo.IngestRun (
+        IngestRunId     BIGINT IDENTITY(1,1) PRIMARY KEY,
+        SourceFileId    BIGINT         NULL,
+        FileName        NVARCHAR(260)  NOT NULL,
+        TriggerSource   VARCHAR(16)    NOT NULL,   -- TRIGGER is a reserved word
+        StartedAt       DATETIME2(3)   NOT NULL,
+        FinishedAt      DATETIME2(3)   NULL,
+        Outcome         VARCHAR(16)    NULL,
+        ProjectsSeen    INT            NOT NULL CONSTRAINT DF_IngestRun_Seen DEFAULT (0),
+        ProjectsChanged INT            NOT NULL CONSTRAINT DF_IngestRun_Changed DEFAULT (0),
+        PostureRows     INT            NOT NULL CONSTRAINT DF_IngestRun_Posture DEFAULT (0),
+        Error           NVARCHAR(1000) NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_IngestRun_StartedAt')
+        CREATE INDEX IX_IngestRun_StartedAt ON dbo.IngestRun (StartedAt DESC);
+    `,
+  },
+  {
+    id: 7,
+    name: "project_version",
+    sql: `
+      IF OBJECT_ID('dbo.ProjectVersion', 'U') IS NULL
+      CREATE TABLE dbo.ProjectVersion (
+        ProjectVersionId BIGINT IDENTITY(1,1) PRIMARY KEY,
+        ProjectId        NVARCHAR(60)   NOT NULL,
+        ContentHash      CHAR(64)       NOT NULL,
+        IngestRunId      BIGINT         NULL,
+        RecordedAt       DATETIME2(3)   NOT NULL,
+        Name             NVARCHAR(400)  NOT NULL,
+        Department       NVARCHAR(200)  NULL,
+        Status           NVARCHAR(40)   NOT NULL,
+        Health           NVARCHAR(20)   NOT NULL,
+        Priority         NVARCHAR(20)   NOT NULL,
+        Phase            NVARCHAR(40)   NULL,
+        Owner            NVARCHAR(200)  NULL,
+        TargetEndDate    DATE           NULL,
+        ActualEndDate    DATE           NULL,
+        Budget           DECIMAL(19,2)  NOT NULL CONSTRAINT DF_ProjectVersion_Budget DEFAULT (0),
+        Spent            DECIMAL(19,2)  NOT NULL CONSTRAINT DF_ProjectVersion_Spent DEFAULT (0),
+        PercentComplete  DECIMAL(5,2)   NOT NULL CONSTRAINT DF_ProjectVersion_Pct DEFAULT (0),
+        OpenRisks        INT            NOT NULL CONSTRAINT DF_ProjectVersion_Risks DEFAULT (0),
+        OpenQuestions    INT            NOT NULL CONSTRAINT DF_ProjectVersion_Questions DEFAULT (0),
+        Payload          NVARCHAR(MAX)  NOT NULL
+      );
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_Project')
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC);
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_RecordedAt')
+        CREATE INDEX IX_ProjectVersion_RecordedAt ON dbo.ProjectVersion (RecordedAt DESC);
+    `,
+  },
+  {
+    id: 8,
+    name: "history_constraints",
+    sql: `
+      /* The ingest hot path reads (ProjectId, ContentHash) for every changed
+         project on every ingest. Without ContentHash in the index each row
+         costs a key lookup, and that cost grows with the history.
+
+         This is written as a single atomic CREATE ... WITH (DROP_EXISTING = ON)
+         rather than a separate IF EXISTS DROP / IF NOT EXISTS CREATE pair.
+         The separate-statement version was tried first and failed a forced
+         concurrency test: with two boots racing, session A can evaluate its
+         "IF EXISTS" as true, stall, and by the time its DROP INDEX actually
+         runs, session B has already dropped and recreated the same-named
+         index — so A's DROP removes B's brand-new index and nothing ever
+         recreates it, leaving the table with no index of that name at all.
+         DROP_EXISTING replaces the index in one statement with no gap
+         between the check and the act, so there is no window in which the
+         index can be observed missing, whichever branch a racing session
+         takes. */
+      IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_Project')
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC)
+          INCLUDE (ContentHash) WITH (DROP_EXISTING = ON);
+      ELSE
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC)
+          INCLUDE (ContentHash);
+
+      /* Nothing ever deletes a SourceFile or an IngestRun, so these two can be
+         enforced. ProjectVersion.ProjectId deliberately has NO key to
+         dbo.Project: replaceForFile deletes and reinserts every project row on
+         each ingest, so a constraint there would destroy the history it is
+         supposed to protect. */
+      IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_IngestRun_SourceFile')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT FK_IngestRun_SourceFile FOREIGN KEY (SourceFileId)
+          REFERENCES dbo.SourceFile (SourceFileId);
+
+      IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ProjectVersion_IngestRun')
+        ALTER TABLE dbo.ProjectVersion WITH CHECK
+          ADD CONSTRAINT FK_ProjectVersion_IngestRun FOREIGN KEY (IngestRunId)
+          REFERENCES dbo.IngestRun (IngestRunId);
+
+      /* Both columns are written from a fixed vocabulary in JavaScript. A typo
+         or an undocumented fifth value would quietly corrupt every Phase 2
+         aggregate that counts runs by outcome. */
+      IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_IngestRun_TriggerSource')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT CK_IngestRun_TriggerSource
+          CHECK (TriggerSource IN ('watcher', 'upload', 'boot', 'replay'));
+
+      IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_IngestRun_Outcome')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT CK_IngestRun_Outcome
+          CHECK (Outcome IS NULL OR Outcome IN ('applied', 'unchanged', 'failed', 'removed'));
+    `,
+  },
 ];
 
 const LEDGER = `

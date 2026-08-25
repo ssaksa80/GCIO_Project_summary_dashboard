@@ -1,7 +1,7 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** Phase 0 delivered, tagged `v1.1.0-p0`. The SQL Server path is now
+**Status:** Phase 1 delivered, tagged `v1.2.0-p1`. The SQL Server path is now
 proven against a live instance (SQL Server 2025): migrations apply and re-apply
 cleanly, a real workbook persists and reads back, the section engine runs over
 SQL data unchanged, and dropping a workbook into the watched folder reaches the
@@ -230,11 +230,23 @@ until GitHub Actions minutes are available.
 | Phase | Delivers | Done when |
 | --- | --- | --- |
 | **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 102 hermetic tests plus 10 live SQL tests | **Met.** An unauthenticated request gets 401 and a Viewer's upload 403; the SQL path is verified end to end against SQL Server 2025 |
-| **P1 — persistence** | Postgres, migrations, repository split, file vault, `STORE=memory` retained | Restarting mid-ingest loses nothing; the same summary comes out of both adapters |
+| **P1 — history foundation** | `SourceFile`, `IngestRun`, `ProjectVersion`, content-hash idempotency, the file vault; `STORE=memory` retained | **Met.** Re-ingesting an unchanged workbook records `unchanged` and manufactures no history; a changed project appends exactly one version; the in-memory store is untouched |
 | **P2 — history pays off** | Real trends, "changed since last week" in sections and exports, question ageing | The weekly brief states what changed, sourced from versions rather than file dates |
 | **P3 — scale and ops** | Role split, advisory-lock election, worker-thread parsing, metrics, backup/restore drill, runbook | Two instances started together: exactly one ingests; a restore drill passes |
 
 Each phase ships independently and leaves the product working.
+
+Two notes on the table above, both written before decisions that outlived the
+wording. The store is **SQL Server**, not Postgres — the P1 row said Postgres
+because it predates the DEDB stack decision recorded in the amendment at the top
+of this document. And P1 as delivered keeps `dbo.Project` as the current
+snapshot and adds history beside it, rather than replacing it with the
+`valid_from`/`valid_to` temporal table this spec originally described: the read
+path, the store and the live tests all worked already, and a defect in a
+brand-new history writer must not be able to break the dashboard everyone
+depends on. The cost — the newest `ProjectVersion` duplicates what `Project`
+holds — was accepted deliberately. `question_asked` ageing moved to P2, where it
+belongs with the other things history makes possible.
 
 ## Risks
 
