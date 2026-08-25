@@ -1138,6 +1138,25 @@ git commit -m "feat(api): the summary carries what changed, or says it cannot kn
 
 ### Task 7: Show it — client and exports
 
+**Two rules for this task, both from the Task 4 review.**
+
+**Never write to `item.change`.** `annotateChanges` stores the SAME object
+reference on every item sharing a project id — the same change object is on the
+Successes row, the Priorities row and the Roadmap row. Nothing mutates it today,
+and the first temptation to do so is right here: this task says the slide can
+say `▲ Red` where the web says `▲ health Green to Red`, and `pptx.js` measures
+text, so memoising a shortened label onto `change` would look sensible. It would
+leak that label into every other section and every other exporter. Build display
+strings locally and pass them down; treat `item.change` as read-only.
+
+**While you are in `server/sections.js`, add one line to `annotateChanges`'s
+docblock** recording the convention it depends on: an `id` or `projectId` on a
+section item always means the project's id. That is true of every builder today
+— checked against all five — but nothing enforces it, so a future builder that
+surfaced a milestone's or risk's own id under the same field name would be
+silently misannotated with its parent project's change.
+
+
 **Files:**
 - Create: `client/src/components/ChangeBadge.jsx`
 - Modify: `client/src/components/Section{Successes,QRI,Priorities,Roadmap,Posture}.jsx`
