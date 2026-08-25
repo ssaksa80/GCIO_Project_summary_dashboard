@@ -56,7 +56,7 @@ async function cleanup(ex) {
 
   await ex.query(`
     IF OBJECT_ID('dbo.ProjectVersion','U') IS NOT NULL
-      DELETE FROM dbo.ProjectVersion WHERE ProjectId = 'PRJ-HIST-TEST'
+      DELETE FROM dbo.ProjectVersion WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'P2-%'
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE @pattern)`,
     [pattern]);
   await ex.query(
@@ -376,6 +376,193 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
     await ex.query("DELETE FROM dbo.ProjectVersion WHERE ProjectId = @id",
       [{ name: "id", type: sql.NVarChar(60), value: "PRJ-HIST-TEST" }]);
+  });
+
+  /* --------------------------------------------------------------------
+   * Task 8 (Phase 2): changedSince against real rows. Every marker here uses
+   * a ProjectId prefixed "P2-", swept by cleanup()'s ProjectId LIKE 'P2-%'.
+   * -------------------------------------------------------------------- */
+
+  await t.test("changedSince reports the baseline and the current version of what moved", async () => {
+    const { projectVersionsRepo } = await import("../../server/repos/projectVersions.js");
+    const { hashProject } = await import("../../server/ingest/hash.js");
+    const versions = projectVersionsRepo(ex);
+
+    const moved = "P2-MOVED";
+    const still = "P2-STILL";
+    const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
+
+    /* Two versions of one project a week apart, and one that never moves.
+       ingestRunId stays null: FK_ProjectVersion_IngestRun permits it, and this
+       exercises the query rather than the ingest path. */
+    const v1 = { ...base, id: moved, health: "Green", percentComplete: 40 };
+    const unmoved = { ...base, id: still, health: "Amber" };
+    await versions.appendChanged([
+      { project: v1, hash: hashProject(v1) },
+      { project: unmoved, hash: hashProject(unmoved) },
+    ], { ingestRunId: null });
+
+    /* Backdate the first pair so "since" has something to sit between. */
+    await ex.query(`UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId IN (@a, @b)`, [
+      { name: "at", type: sql.DateTime2, value: new Date("2026-08-10T09:00:00Z") },
+      { name: "a", type: sql.NVarChar(60), value: moved },
+      { name: "b", type: sql.NVarChar(60), value: still },
+    ]);
+
+    const v2 = { ...v1, health: "Red", percentComplete: 45 };
+    await versions.appendChanged([{ project: v2, hash: hashProject(v2) }], { ingestRunId: null });
+
+    const changes = await versions.changedSince("2026-08-18");
+
+    assert.ok(changes.has(moved), "the project that moved was not reported");
+    assert.equal(changes.get(moved).baseline.health, "Green", "the baseline is not the pre-period version");
+    assert.equal(changes.get(moved).current.health, "Red", "the current version is not the newest");
+    assert.equal(changes.get(moved).trackedSince, null, "a baseline exists, so trackedSince must be null");
+
+    assert.ok(!changes.has(still), "a project that never moved was reported as changed");
+  });
+
+  await t.test("a project first recorded inside the period has no baseline and no invented comparison", async () => {
+    const { projectVersionsRepo } = await import("../../server/repos/projectVersions.js");
+    const { hashProject } = await import("../../server/ingest/hash.js");
+    const versions = projectVersionsRepo(ex);
+
+    const fresh = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: "P2-FRESH" };
+    await versions.appendChanged([{ project: fresh, hash: hashProject(fresh) }], { ingestRunId: null });
+
+    const entry = (await versions.changedSince("2026-08-01")).get("P2-FRESH");
+    assert.ok(entry, "a newly tracked project was dropped entirely");
+    assert.equal(entry.baseline, null, "a baseline was invented for a project we have only just met");
+    assert.ok(entry.trackedSince, "trackedSince must say when we first saw it");
+  });
+
+  await t.test("a version recorded exactly at the cutoff is the baseline, not a change", async () => {
+    /* Off by one here reports the entire portfolio as changed every week,
+       which is both wrong and the kind of wrong nobody questions. */
+    const { projectVersionsRepo } = await import("../../server/repos/projectVersions.js");
+    const { hashProject } = await import("../../server/ingest/hash.js");
+    const versions = projectVersionsRepo(ex);
+
+    const edge = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: "P2-EDGE" };
+    await versions.appendChanged([{ project: edge, hash: hashProject(edge) }], { ingestRunId: null });
+    await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
+      { name: "at", type: sql.DateTime2, value: new Date("2026-08-18T00:00:00Z") },
+      { name: "id", type: sql.NVarChar(60), value: "P2-EDGE" },
+    ]);
+
+    const changes = await versions.changedSince("2026-08-18");
+    assert.ok(!changes.has("P2-EDGE"),
+      "a version recorded exactly at the cutoff was treated as a change within the period");
+  });
+
+  await t.test("changesSince through the SqlStore returns comparisons, not raw version pairs", async () => {
+    /* The three subtests above prove projectVersionsRepo.changedSince() is
+       correct against real rows. This proves the layer above it -- the one
+       every route actually calls -- applies compareVersions to those rows
+       rather than handing the raw {baseline, current} pairs upward, and that
+       real DECIMAL(19,2)/DECIMAL(5,2)/DATE values read back through tedious
+       feed compareField correctly rather than as strings or NaN. */
+    const versions = projectVersionsRepo(ex);
+
+    const moved = "P2-CHAIN-MOVED";
+    const untracked = "P2-CHAIN-UNTRACKED";
+    const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
+
+    const baseline = {
+      ...base, id: moved, health: "Green", percentComplete: 40,
+      budget: 100000.5, spent: 50000.25, targetEndDate: "2026-09-01",
+    };
+    /* owner is hashed (server/ingest/hash.js) but not one of changes.js's
+       TRACKED_FIELDS -- so this project's content hash changes (a version
+       gets written) but the comparison the phase cares about must not. */
+    const untrackedBaseline = { ...base, id: untracked, owner: "Original Owner" };
+
+    await versions.appendChanged([
+      { project: baseline, hash: hashProject(baseline) },
+      { project: untrackedBaseline, hash: hashProject(untrackedBaseline) },
+    ], { ingestRunId: null });
+
+    await ex.query(`UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId IN (@a, @b)`, [
+      { name: "at", type: sql.DateTime2, value: new Date("2026-08-10T09:00:00Z") },
+      { name: "a", type: sql.NVarChar(60), value: moved },
+      { name: "b", type: sql.NVarChar(60), value: untracked },
+    ]);
+
+    const current = {
+      ...baseline, health: "Red", percentComplete: 65.5,
+      budget: 100000.5, spent: 120000.75, targetEndDate: "2026-10-15",
+    };
+    const untrackedCurrent = { ...untrackedBaseline, owner: "New Owner" };
+
+    await versions.appendChanged([
+      { project: current, hash: hashProject(current) },
+      { project: untrackedCurrent, hash: hashProject(untrackedCurrent) },
+    ], { ingestRunId: null });
+
+    const store = new SqlStore({ projectVersions: versions }, { logger: quiet });
+    const changes = await store.changesSince("2026-08-18");
+
+    const entry = changes.get(moved);
+    assert.ok(entry, "a project that moved through real SQL rows was not reported by the store");
+    assert.equal(entry.baseline, undefined,
+      "the store handed back a raw version pair instead of a comparison");
+    assert.equal(entry.current, undefined,
+      "the store handed back a raw version pair instead of a comparison");
+    assert.ok(entry.fields, "compareVersions was not applied to rows read back from SQL");
+    assert.equal(entry.fields.health.from, "Green");
+    assert.equal(entry.fields.health.to, "Red");
+    assert.equal(entry.fields.percentComplete.delta, 25.5,
+      "a real DECIMAL(5,2) percentComplete did not round-trip through tedious correctly");
+    assert.equal(entry.fields.spent.delta, 70000.5,
+      "a real DECIMAL(19,2) spent did not round-trip through tedious correctly");
+    assert.equal(entry.fields.targetEndDate.days, 44,
+      "a real DATE targetEndDate did not round-trip through tedious correctly");
+    assert.equal(entry.worst, "worse");
+    assert.equal(new Date(entry.since).getTime(), new Date("2026-08-10T09:00:00Z").getTime());
+
+    assert.ok(!changes.has(untracked),
+      "a project whose only change was in a field the phase does not track (owner) was reported as changed");
+  });
+
+  await t.test("historyStartedAt reflects the oldest recorded version, and null when nothing is recorded", async () => {
+    /* Every row written by the suite so far is already covered by patterns
+       cleanup() knows about (livetest%-tied IngestRunId, PRJ-HIST-TEST, and
+       now P2-%), so calling it here -- mid-suite, not only in t.after --
+       leaves dbo.ProjectVersion genuinely empty rather than merely assumed
+       to be. That is the only honest way to exercise the null branch: the
+       hermetic tests only ever saw a scripted executor stand in for "empty". */
+    await cleanup(ex);
+
+    const versions = projectVersionsRepo(ex);
+    const store = new SqlStore({ projectVersions: versions }, { logger: quiet });
+
+    assert.equal(await store.historyStartedAt(), null,
+      "historyStartedAt reported a start date with nothing recorded anywhere");
+
+    const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
+    const oldest = { ...base, id: "P2-OLDEST" };
+    const newer = { ...base, id: "P2-NEWER", health: "Amber" };
+
+    await versions.appendChanged([
+      { project: oldest, hash: hashProject(oldest) },
+      { project: newer, hash: hashProject(newer) },
+    ], { ingestRunId: null });
+
+    /* An anchor early enough that nothing else in this suite could ever
+       backdate past it, so the assertion below does not depend on this
+       subtest running before or after any other scenario. */
+    await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
+      { name: "at", type: sql.DateTime2, value: new Date("2020-01-01T00:00:00Z") },
+      { name: "id", type: sql.NVarChar(60), value: "P2-OLDEST" },
+    ]);
+    await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
+      { name: "at", type: sql.DateTime2, value: new Date("2020-06-01T00:00:00Z") },
+      { name: "id", type: sql.NVarChar(60), value: "P2-NEWER" },
+    ]);
+
+    const started = await store.historyStartedAt();
+    assert.equal(new Date(started).getTime(), new Date("2020-01-01T00:00:00Z").getTime(),
+      "historyStartedAt did not return the oldest recorded version's timestamp");
   });
 
   /* --------------------------------------------------------------------
@@ -738,12 +925,12 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
     /* ProjectVersion has neither column: it is identified by the ProjectId
        markers this suite's scenarios use (S1-.. through S6-.. and SV-.. tag
-       prefixes, plus the literal PRJ-HIST-TEST) or, for the given-block
-       history that goes through a real ingest, by the IngestRunId of
-       whichever livetest% run wrote it. */
+       prefixes, the Task 8 P2-.. markers, plus the literal PRJ-HIST-TEST) or,
+       for the given-block history that goes through a real ingest, by the
+       IngestRunId of whichever livetest% run wrote it. */
     const { recordset: versions } = await ex.query(`
       SELECT COUNT(*) AS n FROM dbo.ProjectVersion
-      WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'S[1-6V]-%'
+      WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'S[1-6V]-%' OR ProjectId LIKE 'P2-%'
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE 'livetest%')
     `);
     assert.equal(versions[0].n, 0, "dbo.ProjectVersion still holds rows this suite created");
