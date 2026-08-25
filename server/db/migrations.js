@@ -205,6 +205,62 @@ export const MIGRATIONS = [
         CREATE INDEX IX_ProjectVersion_RecordedAt ON dbo.ProjectVersion (RecordedAt DESC);
     `,
   },
+  {
+    id: 8,
+    name: "history_constraints",
+    sql: `
+      /* The ingest hot path reads (ProjectId, ContentHash) for every changed
+         project on every ingest. Without ContentHash in the index each row
+         costs a key lookup, and that cost grows with the history.
+
+         This is written as a single atomic CREATE ... WITH (DROP_EXISTING = ON)
+         rather than a separate IF EXISTS DROP / IF NOT EXISTS CREATE pair.
+         The separate-statement version was tried first and failed a forced
+         concurrency test: with two boots racing, session A can evaluate its
+         "IF EXISTS" as true, stall, and by the time its DROP INDEX actually
+         runs, session B has already dropped and recreated the same-named
+         index — so A's DROP removes B's brand-new index and nothing ever
+         recreates it, leaving the table with no index of that name at all.
+         DROP_EXISTING replaces the index in one statement with no gap
+         between the check and the act, so there is no window in which the
+         index can be observed missing, whichever branch a racing session
+         takes. */
+      IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProjectVersion_Project')
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC)
+          INCLUDE (ContentHash) WITH (DROP_EXISTING = ON);
+      ELSE
+        CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC)
+          INCLUDE (ContentHash);
+
+      /* Nothing ever deletes a SourceFile or an IngestRun, so these two can be
+         enforced. ProjectVersion.ProjectId deliberately has NO key to
+         dbo.Project: replaceForFile deletes and reinserts every project row on
+         each ingest, so a constraint there would destroy the history it is
+         supposed to protect. */
+      IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_IngestRun_SourceFile')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT FK_IngestRun_SourceFile FOREIGN KEY (SourceFileId)
+          REFERENCES dbo.SourceFile (SourceFileId);
+
+      IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ProjectVersion_IngestRun')
+        ALTER TABLE dbo.ProjectVersion WITH CHECK
+          ADD CONSTRAINT FK_ProjectVersion_IngestRun FOREIGN KEY (IngestRunId)
+          REFERENCES dbo.IngestRun (IngestRunId);
+
+      /* Both columns are written from a fixed vocabulary in JavaScript. A typo
+         or an undocumented fifth value would quietly corrupt every Phase 2
+         aggregate that counts runs by outcome. */
+      IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_IngestRun_TriggerSource')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT CK_IngestRun_TriggerSource
+          CHECK (TriggerSource IN ('watcher', 'upload', 'boot', 'replay'));
+
+      IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_IngestRun_Outcome')
+        ALTER TABLE dbo.IngestRun WITH CHECK
+          ADD CONSTRAINT CK_IngestRun_Outcome
+          CHECK (Outcome IS NULL OR Outcome IN ('applied', 'unchanged', 'failed', 'removed'));
+    `,
+  },
 ];
 
 const LEDGER = `
