@@ -39,6 +39,21 @@ function changeMark(change) {
 }
 
 /**
+ * The client's honest-cold-start line: a deck with no change markers must say
+ * why, because it gets emailed onward and read with nobody present to explain
+ * the absence — without this a reader infers a stable portfolio, which is
+ * exactly the wrong inference when the truth is "we cannot know". Suppressed
+ * outright when history IS available: a period where nothing moved is a real
+ * answer and gets no apology.
+ */
+function noHistoryLine(summary) {
+  if (summary?.sections?.historyAvailable) return null;
+  return summary?.historyStartedAt
+    ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+    : "No change history yet — it begins with the next upload.";
+}
+
+/**
  * @param {{summary: object, meta: object}} payload
  * @returns {Uint8Array} .pptx bytes
  */
@@ -49,11 +64,14 @@ export function buildPptxDeck(payload) {
 
   const slides = [];
 
+  const coverSubtitle = `${range(summary)} · ${kpis.totalProjects} projects · ${fmtMoney(kpis.budgetTotal)} committed${meta.demoMode ? " · demonstration portfolio" : ""}`;
+  const noHistory = noHistoryLine(summary);
+
   slides.push({
     cover: true,
     eyebrow: "GCIO · PROJECT INTELLIGENCE",
     title: PERIOD_TITLE[summary.period] || "Executive Summary",
-    subtitle: `${range(summary)} · ${kpis.totalProjects} projects · ${fmtMoney(kpis.budgetTotal)} committed${meta.demoMode ? " · demonstration portfolio" : ""}`,
+    subtitle: noHistory ? `${coverSubtitle}\n${noHistory}` : coverSubtitle,
     kpis: [
       { lab: "Portfolio", val: String(kpis.totalProjects), sub: `${kpis.active} active` },
       { lab: "Healthy", val: `${kpis.totalProjects ? Math.round((kpis.health.green / kpis.totalProjects) * 100) : 0}%`, sub: `${kpis.health.green} green · ${kpis.health.red} red` },

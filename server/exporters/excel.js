@@ -97,6 +97,21 @@ function changeText(change) {
   return ` (${arrow} ${str(change.headline, "")})`;
 }
 
+/**
+ * The client's honest-cold-start line: a workbook with no change markers must
+ * say why, because it is read and forwarded with nobody present to explain
+ * the absence — without this a reader infers a stable portfolio, which is
+ * exactly the wrong inference when the truth is "we cannot know". Suppressed
+ * outright when history IS available: a period where nothing moved is a real
+ * answer and gets no apology.
+ */
+function noHistoryLine(summary) {
+  if (summary?.sections?.historyAvailable) return null;
+  return summary?.historyStartedAt
+    ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+    : "No change history yet — it begins with the next upload.";
+}
+
 /* ------------------------------------------------------------------ */
 /* Style helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -165,6 +180,18 @@ function buildExecutiveSummarySheet(wb, payload) {
   gen.font = { name: "Calibri", size: 9, italic: true, color: { argb: INK_SOFT } };
   gen.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
   ws.getRow(4).height = 16;
+
+  // ---- No-history line, reusing the blank spacer row above the KPI grid so
+  // the grid's own fixed start row (6) never has to move for it. ----
+  const noHistory = noHistoryLine(summary);
+  if (noHistory) {
+    ws.mergeCells("A5:H5");
+    const note = ws.getCell("A5");
+    note.value = noHistory;
+    note.font = { name: "Calibri", size: 9, italic: true, color: { argb: INK_SOFT } };
+    note.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+    ws.getRow(5).height = 16;
+  }
 
   // ---- KPI grid: 3 rows x 4 columns (label cell above value cell) ----
   const kpiDefs = [

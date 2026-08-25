@@ -104,6 +104,21 @@ function changeText(change) {
   return ` (${arrow} ${str(change.headline, "")})`;
 }
 
+/**
+ * The client's honest-cold-start line: a briefing with no change markers must
+ * say why, because it is read and forwarded with nobody present to explain
+ * the absence — without this a reader infers a stable portfolio, which is
+ * exactly the wrong inference when the truth is "we cannot know". Suppressed
+ * outright when history IS available: a period where nothing moved is a real
+ * answer and gets no apology.
+ */
+function noHistoryLine(summary) {
+  if (summary?.sections?.historyAvailable) return null;
+  return summary?.historyStartedAt
+    ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+    : "No change history yet — it begins with the next upload.";
+}
+
 /** Decode the base64 body of a data URL into a Buffer, or null on failure. */
 function bufferFromDataUrl(dataUrl) {
   try {
@@ -216,6 +231,7 @@ function fullTable(rows) {
 function coverPage(payload) {
   const summary = payload.summary || {};
   const period = str(summary.period, "portfolio");
+  const noHistory = noHistoryLine(summary);
   return [
     new Paragraph({ spacing: { before: 2400, after: 0 }, children: [] }),
     new Paragraph({
@@ -258,6 +274,15 @@ function coverPage(payload) {
         }),
       ],
     }),
+    ...(noHistory ? [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 60 },
+        children: [
+          new TextRun({ text: noHistory, italics: true, color: INK_SOFT, size: 20 }),
+        ],
+      }),
+    ] : []),
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 0 },
