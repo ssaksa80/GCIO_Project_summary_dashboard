@@ -73,6 +73,11 @@
  * which needs a more privileged login exactly once, by design: creating a
  * database from nothing is the one operation in this whole drill that
  * `gcio_app` was deliberately not granted.
+ *
+ * SQL identifiers throughout (source, target, backup path, logical file
+ * names) are built by plain string interpolation, not parameterised — fine
+ * for an operator running this by hand with --to/--as of their own choosing,
+ * not safe to wrap in anything that accepts an untrusted --as or --to.
  */
 import "dotenv/config";
 import fs from "node:fs";
@@ -208,7 +213,13 @@ try {
      only required to restore onto a name that does not exist yet, which is
      exactly the one thing gcio_app cannot do. So the target must already be
      provisioned; check plainly rather than let a missing database surface as
-     an opaque permission error partway through RESTORE. */
+     an opaque permission error partway through RESTORE.
+
+     This check runs after the backup rather than before it, on purpose: a
+     first-ever run without the one-time provisioning still burns a real
+     backup before failing, which means a failed drill attempt still leaves
+     behind a genuine, usable backup of the source database rather than
+     nothing at all. */
   const targetExists = await q(`SELECT database_id FROM sys.databases WHERE name = N'${target}'`);
   if (!targetExists.length) {
     console.error(`[drill] ${target} does not exist, and this login cannot create it (no dbcreator / ` +
