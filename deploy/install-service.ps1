@@ -51,6 +51,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# $PSScriptRoot is empty while parameter DEFAULT VALUES are being evaluated
+# under Windows PowerShell 5.1 (fixed in 7) — which is what Windows Server
+# ships. Left alone, an unelevated -Preflight run (or the elevated install
+# path, which has the identical latent bug) would resolve $EnvFile to
+# "\..\.env" and report six invented failures instead of the real ones.
+# Re-resolving it here, in the script body rather than a parameter default,
+# works under both shells.
+if (-not $PSBoundParameters.ContainsKey('EnvFile')) {
+    $EnvFile = Join-Path $PSScriptRoot '..\.env'
+}
+
 # ---------------------------------------------------------- shared helpers ---
 # Read-EnvPairs / ConvertTo-EnvMap are used by both the install path and
 # -Preflight, so the two cannot drift apart on what counts as a valid line.
@@ -83,17 +94,30 @@ function Write-CheckResult {
     <#
     Records one preflight check result and prints it immediately, so an
     operator sees the whole list even if a later check throws.
+
+    Status is one of:
+      PASS - verified good.
+      FAIL - verified bad; counts toward the failure total and exit code 1.
+      SKIP - not applicable to this configuration (e.g. a database check
+             when STORE is not mssql); different from a PASS, and does not
+             count toward the failure total.
+      WARN - the install path itself only warns about this, not a hard
+             failure; does not count toward the failure total.
     #>
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Results,
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][bool]$Pass,
+        [Parameter(Mandatory)][ValidateSet('PASS', 'FAIL', 'SKIP', 'WARN')][string]$Status,
         [string]$Detail
     )
-    $Results.Add([pscustomobject]@{ Name = $Name; Pass = $Pass; Detail = $Detail })
-    $status = if ($Pass) { "PASS" } else { "FAIL" }
-    $color = if ($Pass) { "Green" } else { "Red" }
-    $line = "  [{0}] {1}" -f $status, $Name
+    $Results.Add([pscustomobject]@{ Name = $Name; Status = $Status; Detail = $Detail })
+    $color = switch ($Status) {
+        'PASS' { 'Green' }
+        'FAIL' { 'Red' }
+        'SKIP' { 'DarkYellow' }
+        'WARN' { 'Yellow' }
+    }
+    $line = "  [{0}] {1}" -f $Status, $Name
     if ($Detail) { $line += " - $Detail" }
     Write-Host $line -ForegroundColor $color
 }
@@ -117,34 +141,34 @@ function Invoke-Preflight {
     try {
         $node = Get-Command node -ErrorAction SilentlyContinue
         if (-not $node) {
-            Write-CheckResult $results "Node on PATH, v20+" $false "node was not found on PATH"
+            Write-CheckResult $results "Node on PATH, v20+" "FAIL" "node was not found on PATH"
         } else {
             $verRaw = (& node --version).Trim()
             if ($verRaw -match '^v(\d+)\.') {
                 $major = [int]$Matches[1]
                 if ($major -ge 20) {
-                    Write-CheckResult $results "Node on PATH, v20+" $true "$verRaw at $($node.Source)"
+                    Write-CheckResult $results "Node on PATH, v20+" "PASS" "$verRaw at $($node.Source)"
                 } else {
-                    Write-CheckResult $results "Node on PATH, v20+" $false "$verRaw is older than the required v20"
+                    Write-CheckResult $results "Node on PATH, v20+" "FAIL" "$verRaw is older than the required v20"
                 }
             } else {
-                Write-CheckResult $results "Node on PATH, v20+" $false "could not parse a version from '$verRaw'"
+                Write-CheckResult $results "Node on PATH, v20+" "FAIL" "could not parse a version from '$verRaw'"
             }
         }
     } catch {
-        Write-CheckResult $results "Node on PATH, v20+" $false "error checking node: $($_.Exception.Message)"
+        Write-CheckResult $results "Node on PATH, v20+" "FAIL" "error checking node: $($_.Exception.Message)"
     }
 
     # 2. NSSM is on PATH. Expected to fail on a machine that never installed it.
     try {
         $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
         if ($nssmCmd) {
-            Write-CheckResult $results "NSSM on PATH" $true $nssmCmd.Source
+            Write-CheckResult $results "NSSM on PATH" "PASS" $nssmCmd.Source
         } else {
-            Write-CheckResult $results "NSSM on PATH" $false "nssm was not found on PATH - download from https://nssm.cc/download"
+            Write-CheckResult $results "NSSM on PATH" "FAIL" "nssm was not found on PATH - download from https://nssm.cc/download"
         }
     } catch {
-        Write-CheckResult $results "NSSM on PATH" $false "error checking nssm: $($_.Exception.Message)"
+        Write-CheckResult $results "NSSM on PATH" "FAIL" "error checking nssm: $($_.Exception.Message)"
     }
 
     # 3. The env file exists, is readable, and every non-blank, non-comment
@@ -153,28 +177,28 @@ function Invoke-Preflight {
     $envFileOk = $false
     try {
         if (-not (Test-Path $EnvFile)) {
-            Write-CheckResult $results "Env file exists and parses" $false "not found: $EnvFile"
+            Write-CheckResult $results "Env file exists and parses" "FAIL" "not found: $EnvFile"
         } else {
             $rawLines = Get-Content $EnvFile -ErrorAction Stop
             $badLines = @($rawLines | ForEach-Object { $_.Trim() } | Where-Object {
                 $_ -ne '' -and $_ -notmatch '^#' -and $_ -notmatch '^[A-Za-z_][A-Za-z0-9_]*\s*='
             })
             if ($badLines.Count -gt 0) {
-                Write-CheckResult $results "Env file exists and parses" $false `
+                Write-CheckResult $results "Env file exists and parses" "FAIL" `
                     "$($badLines.Count) line(s) do not parse as NAME=VALUE, e.g. '$($badLines[0])'"
             } else {
                 $pairs = Read-EnvPairs -Path $EnvFile
                 if (-not $pairs) {
-                    Write-CheckResult $results "Env file exists and parses" $false "no NAME=VALUE lines found"
+                    Write-CheckResult $results "Env file exists and parses" "FAIL" "no NAME=VALUE lines found"
                 } else {
                     $envMap = ConvertTo-EnvMap -Pairs $pairs
                     $envFileOk = $true
-                    Write-CheckResult $results "Env file exists and parses" $true "$($pairs.Count) variable(s) found"
+                    Write-CheckResult $results "Env file exists and parses" "PASS" "$($pairs.Count) variable(s) found"
                 }
             }
         }
     } catch {
-        Write-CheckResult $results "Env file exists and parses" $false "error reading $($EnvFile): $($_.Exception.Message)"
+        Write-CheckResult $results "Env file exists and parses" "FAIL" "error reading $($EnvFile): $($_.Exception.Message)"
     }
 
     # 4. STORE and AUTH_MODE are present; when STORE=mssql, the connection
@@ -184,7 +208,7 @@ function Invoke-Preflight {
     #    DB_SERVER/DB_DATABASE fall back to localhost\SQLEXPRESS/GCIO).
     try {
         if (-not $envFileOk) {
-            Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" $false "skipped - env file did not parse"
+            Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" "FAIL" "skipped - env file did not parse"
         } else {
             $missing = @()
             if (-not $envMap['STORE']) { $missing += 'STORE' }
@@ -201,28 +225,45 @@ function Invoke-Preflight {
                 }
             }
             if ($missing.Count -gt 0) {
-                Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" $false "missing: $($missing -join ', ')"
+                Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" "FAIL" "missing: $($missing -join ', ')"
             } else {
-                Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" $true "STORE=$($envMap['STORE']), AUTH_MODE=$($envMap['AUTH_MODE'])"
+                Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" "PASS" "STORE=$($envMap['STORE']), AUTH_MODE=$($envMap['AUTH_MODE'])"
             }
         }
     } catch {
-        Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" $false "error: $($_.Exception.Message)"
+        Write-CheckResult $results "STORE / AUTH_MODE / DB variables present" "FAIL" "error: $($_.Exception.Message)"
     }
 
     # 5. AUTH_MODE is not dev - the install path already refuses this.
     try {
         if (-not $envFileOk) {
-            Write-CheckResult $results "AUTH_MODE is not dev" $false "skipped - env file did not parse"
+            Write-CheckResult $results "AUTH_MODE is not dev" "FAIL" "skipped - env file did not parse"
         } elseif (-not $envMap['AUTH_MODE']) {
-            Write-CheckResult $results "AUTH_MODE is not dev" $false "AUTH_MODE is not set"
+            Write-CheckResult $results "AUTH_MODE is not dev" "FAIL" "AUTH_MODE is not set"
         } elseif ($envMap['AUTH_MODE'] -eq 'dev') {
-            Write-CheckResult $results "AUTH_MODE is not dev" $false "AUTH_MODE=dev accepts any password; the install path refuses this"
+            Write-CheckResult $results "AUTH_MODE is not dev" "FAIL" "AUTH_MODE=dev accepts any password; the install path refuses this"
         } else {
-            Write-CheckResult $results "AUTH_MODE is not dev" $true "AUTH_MODE=$($envMap['AUTH_MODE'])"
+            Write-CheckResult $results "AUTH_MODE is not dev" "PASS" "AUTH_MODE=$($envMap['AUTH_MODE'])"
         }
     } catch {
-        Write-CheckResult $results "AUTH_MODE is not dev" $false "error: $($_.Exception.Message)"
+        Write-CheckResult $results "AUTH_MODE is not dev" "FAIL" "error: $($_.Exception.Message)"
+    }
+
+    # NODE_ENV: the install path only Write-Warnings about this (further
+    # below), it does not refuse to install. Mirrored here at the same
+    # severity - a WARN, not a FAIL - rather than inventing a stricter rule
+    # the install path itself does not enforce.
+    try {
+        if (-not $envFileOk) {
+            Write-CheckResult $results "NODE_ENV is production" "SKIP" "skipped - env file did not parse"
+        } elseif ($envMap['NODE_ENV'] -ne 'production') {
+            Write-CheckResult $results "NODE_ENV is production" "WARN" `
+                "NODE_ENV is '$($envMap['NODE_ENV'])'; the install path warns but does not refuse this"
+        } else {
+            Write-CheckResult $results "NODE_ENV is production" "PASS" "NODE_ENV=production"
+        }
+    } catch {
+        Write-CheckResult $results "NODE_ENV is production" "FAIL" "error: $($_.Exception.Message)"
     }
 
     # 6. The configured PORT is free.
@@ -233,28 +274,33 @@ function Invoke-Preflight {
             $owners = ($inUse | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
                 try { (Get-Process -Id $_ -ErrorAction Stop).ProcessName } catch { "pid $_" }
             }) -join ', '
-            Write-CheckResult $results "Port $port is free" $false "already in use by: $owners"
+            Write-CheckResult $results "Port $port is free" "FAIL" "already in use by: $owners"
         } else {
-            Write-CheckResult $results "Port $port is free" $true "no listener found"
+            Write-CheckResult $results "Port $port is free" "PASS" "no listener found"
         }
     } catch {
-        Write-CheckResult $results "Port is free" $false "error checking the port: $($_.Exception.Message)"
+        Write-CheckResult $results "Port is free" "FAIL" "error checking the port: $($_.Exception.Message)"
     }
 
     # 7. The client is built - without it the service serves a 503 page.
     try {
         $clientBundle = Join-Path $root "client\dist\index.html"
         if (Test-Path $clientBundle) {
-            Write-CheckResult $results "Client build present" $true $clientBundle
+            Write-CheckResult $results "Client build present" "PASS" $clientBundle
         } else {
-            Write-CheckResult $results "Client build present" $false "$clientBundle is missing - run: npm ci; npm run build"
+            Write-CheckResult $results "Client build present" "FAIL" "$clientBundle is missing - run: npm ci; npm run build"
         }
     } catch {
-        Write-CheckResult $results "Client build present" $false "error: $($_.Exception.Message)"
+        Write-CheckResult $results "Client build present" "FAIL" "error: $($_.Exception.Message)"
     }
 
     # 8. VAULT_DIR and AUDIT_DIR are writable. Creating them if absent is
-    #    acceptable; it is reported below when it happens.
+    #    acceptable; it is reported below when it happens. AUDIT_DIR is
+    #    still checked even when STORE=mssql (server/index.js routes audit
+    #    to dbo.AuditEvent in that case - createFileAudit(AUDIT_DIR) is only
+    #    wired up for STORE=memory), but the detail line says so, so a pass
+    #    or fail there is not mistaken for meaning anything about the mssql
+    #    configuration actually used.
     foreach ($dirVar in @(
         @{ Name = 'VAULT_DIR'; Default = 'vault' },
         @{ Name = 'AUDIT_DIR'; Default = 'audit' }
@@ -271,44 +317,53 @@ function Invoke-Preflight {
             [IO.File]::WriteAllText($probe, "preflight")
             Remove-Item $probe -Force
             $detail = if ($created) { "writable (created $path)" } else { "writable ($path)" }
-            Write-CheckResult $results "$($dirVar.Name) writable" $true $detail
+            if ($dirVar.Name -eq 'AUDIT_DIR' -and $envFileOk -and $envMap['STORE'] -eq 'mssql') {
+                $detail += " (unused: STORE=mssql routes audit to dbo.AuditEvent, not the filesystem)"
+            }
+            Write-CheckResult $results "$($dirVar.Name) writable" "PASS" $detail
         } catch {
-            Write-CheckResult $results "$($dirVar.Name) writable" $false "error: $($_.Exception.Message)"
+            Write-CheckResult $results "$($dirVar.Name) writable" "FAIL" "error: $($_.Exception.Message)"
         }
     }
 
     # 9. The database is reachable, checked by invoking the app's own
     #    scripts/db-check.mjs (which calls server/db/pool.js's buildConfig)
-    #    rather than reimplementing the connection logic here.
+    #    rather than reimplementing the connection logic here. Only mssql
+    #    ever touches SQL Server, so anything else is a SKIP, not a PASS -
+    #    a pass would claim to have verified something it never contacted.
     try {
-        $node = Get-Command node -ErrorAction SilentlyContinue
-        if (-not $node) {
-            Write-CheckResult $results "Database reachable (db-check.mjs)" $false "cannot run - node is not on PATH (see check 1)"
-        } elseif (-not $envFileOk) {
-            Write-CheckResult $results "Database reachable (db-check.mjs)" $false "skipped - env file did not parse"
+        if (-not $envFileOk) {
+            Write-CheckResult $results "Database reachable (db-check.mjs)" "FAIL" "skipped - env file did not parse"
+        } elseif ($envMap['STORE'] -ne 'mssql') {
+            Write-CheckResult $results "Database reachable (db-check.mjs)" "SKIP" "STORE=$($envMap['STORE']) does not use SQL Server"
         } else {
-            foreach ($key in $envMap.Keys) {
-                [Environment]::SetEnvironmentVariable($key, $envMap[$key], 'Process')
-            }
-            Push-Location $root
-            try {
-                $dbOutput = & node "scripts/db-check.mjs" 2>&1 | ForEach-Object { $_.ToString() }
-                $dbExit = $LASTEXITCODE
-            } finally {
-                Pop-Location
-            }
-            foreach ($outLine in $dbOutput) { Write-Host "      $outLine" }
-            if ($dbExit -eq 0) {
-                Write-CheckResult $results "Database reachable (db-check.mjs)" $true "exit code 0"
+            $node = Get-Command node -ErrorAction SilentlyContinue
+            if (-not $node) {
+                Write-CheckResult $results "Database reachable (db-check.mjs)" "FAIL" "cannot run - node is not on PATH (see check 1)"
             } else {
-                Write-CheckResult $results "Database reachable (db-check.mjs)" $false "exit code $dbExit"
+                foreach ($key in $envMap.Keys) {
+                    [Environment]::SetEnvironmentVariable($key, $envMap[$key], 'Process')
+                }
+                Push-Location $root
+                try {
+                    $dbOutput = & node "scripts/db-check.mjs" 2>&1 | ForEach-Object { $_.ToString() }
+                    $dbExit = $LASTEXITCODE
+                } finally {
+                    Pop-Location
+                }
+                foreach ($outLine in $dbOutput) { Write-Host "      $outLine" }
+                if ($dbExit -eq 0) {
+                    Write-CheckResult $results "Database reachable (db-check.mjs)" "PASS" "exit code 0"
+                } else {
+                    Write-CheckResult $results "Database reachable (db-check.mjs)" "FAIL" "exit code $dbExit"
+                }
             }
         }
     } catch {
-        Write-CheckResult $results "Database reachable (db-check.mjs)" $false "error: $($_.Exception.Message)"
+        Write-CheckResult $results "Database reachable (db-check.mjs)" "FAIL" "error: $($_.Exception.Message)"
     }
 
-    $failed = @($results | Where-Object { -not $_.Pass })
+    $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
     Write-Host ""
     if ($failed.Count -eq 0) {
         Write-Host "Preflight: all $($results.Count) checks passed." -ForegroundColor Green
