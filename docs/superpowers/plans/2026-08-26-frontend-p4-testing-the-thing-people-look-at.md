@@ -535,9 +535,9 @@ test("a user can open a project, read it, and get back", { skip: !ui }, async (t
 
   await t.test("clicking a project opens its own record, not an empty drawer", async () => {
     await page.waitForSelector("[data-section='priorities']");
-    const name = await page.$eval("[data-section='priorities'] [data-project-name]",
+    const name = await page.$eval("[data-section='priorities'] .pname",
       (el) => el.textContent.trim());
-    await page.click("[data-section='priorities'] [data-project-name]");
+    await page.click("[data-section='priorities'] .pname");
 
     const drawer = await page.waitForSelector(".drawer, [role='dialog']");
     const text = await drawer.evaluate((el) => el.innerText);
@@ -568,21 +568,29 @@ test("the all-projects table filters", { skip: !ui }, async (t) => {
 
   /* Narrowing must actually narrow. A filter that silently does nothing looks
      identical to one that matched everything. */
-  await page.type("[data-filter='q'], input[type='search']", "zzzzz-no-such-project");
+  await page.type("input[type='search']", "zzzzz-no-such-project");
   await page.waitForFunction((n) => document.querySelectorAll("table tbody tr").length < n, {}, before);
   assert.ok(await rows() < before, "the filter did not narrow the table");
 });
 ```
 
-`startDashboardSignedOut` is a second harness export that does everything
-`startDashboard` does except the sign-in step. `data-project-name` and
-`data-filter` are test seams — read the components first, and if no stable hook
-exists, add one rather than selecting on a styling class that will move. Say in
-your report which hooks you added.
+**The app already has the hooks these tests need — do not add `data-*` for
+them.** Confirmed by reading the components:
 
-If the drawer does not close on Escape, that is a finding worth reporting
-before you change the test — a modal that traps a keyboard user is exactly what
-Task 5 is about to audit for.
+| What the test needs | Use this | Where |
+| --- | --- | --- |
+| a clickable project name | `.pname` | `<button type="button" className="pname">` in Priorities and elsewhere |
+| the drawer | `[role="dialog"]` | `ProjectDrawer.jsx:61`, with `aria-label="Project detail"` |
+| the free-text filter | `input[type="search"]` | `ProjectTable.jsx:80` |
+| the three dropdown filters | `[aria-label="Department filter"]` and siblings | `ProjectTable.jsx:68-76` |
+
+Replace `[data-project-name]` and `[data-filter='q']` in the tests above with
+those. `startDashboardSignedOut` is the harness export Task 1 built.
+
+Escape-to-close **is** wired — `ProjectDrawer.jsx:39` binds it — so the test
+should pass. If it does not, that is a finding worth reporting rather than
+working around, because a modal a keyboard user cannot leave is exactly what
+Task 5 audits for.
 
 - [ ] **Step 2: Run it three times**
 
@@ -678,9 +686,9 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
        audit of the page behind it. */
     const app = await startDashboard();
     try {
-      await app.page.waitForSelector("[data-section='priorities'] [data-project-name]");
-      await app.page.click("[data-section='priorities'] [data-project-name]");
-      await app.page.waitForSelector(".drawer, [role='dialog']");
+      await app.page.waitForSelector("[data-section='priorities'] .pname");
+      await app.page.click("[data-section='priorities'] .pname");
+      await app.page.waitForSelector("[role='dialog']");
 
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
