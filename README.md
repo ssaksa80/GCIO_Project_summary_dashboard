@@ -247,6 +247,55 @@ about eight seconds warm, rather more on the first run in a session.
 Restructuring the scenarios as independent top-level tests sharing one pool
 would fix it, and is worth doing when Phase 2 extends this suite.
 
+There is a third suite, for the client — the thing people actually look at.
+It drives real Chrome (or Edge) against the real built client with
+`puppeteer-core`, the same pattern `scripts/e2e-signin.mjs` already uses:
+
+```bash
+UI_LIVE=1 npm run test:ui
+```
+
+It needs Chrome or Edge on the machine — set `CHROME_PATH` if it is not in
+the usual install location — and it starts its own server on an ephemeral
+port, so nothing needs to be running first and it will not collide with
+whatever else is on 8123. Like the live SQL suite, it self-skips without its
+flag, so plain `npm test` stays hermetic and fast.
+
+It also needs a built client — run `npm run build` first if `client/dist`
+does not exist yet. The harness checks for this itself and fails immediately
+with that instruction rather than leaving you a bare Puppeteer timeout to
+puzzle over; it does not build the client for you, so that a stale build is
+never silently rebuilt (and re-hidden) mid-test-run.
+
+**What it covers:** the five report sections rendering with real content in
+the CIO's specified order, the four change-badge states with their actual
+computed colours, the sign-in gate, opening and closing a project drawer,
+the all-projects table filter, and an `axe-core` accessibility pass against
+the sign-in page, the dashboard, and an open drawer.
+
+**What it does not cover**, which matters more than the list above:
+
+- **Not a pixel-comparison suite.** It asserts on DOM content, computed
+  styles, and axe results — it will not catch a layout that merely looks
+  wrong to a human eye.
+- **Does not test the exporters.** PPTX, DOCX, XLSX, and HTML output are
+  covered separately by `node scripts/pptx-audit.mjs <file>` and the other
+  export tests under `test/`, not by this suite.
+- **Runs against the bundled sample portfolio**, not real data — an in-memory
+  store seeded the same way demo mode is, not a live SQL-backed dataset.
+- **One role.** Everything runs as the harness's default (`admin`); viewer-
+  and PM-scoped rendering are not exercised here.
+- **No real screen reader.** The accessibility pass is `axe-core`'s static
+  analysis, which its own documentation says automates roughly a third to a
+  half of WCAG success criteria — not a substitute for NVDA, JAWS, or
+  VoiceOver actually reading the page.
+
+The accessibility suite itself carries one known, deliberate `todo`: a
+colour-contrast finding that conflicts with a mandated brand colour and is
+therefore a brand decision, not a bug for this suite to hide or to block on.
+See [`docs/accessibility-assessment.md`](docs/accessibility-assessment.md)
+for what was found, what it would take to fix, and why it is not fixed here.
+
 ### Continuous operation
 
 The process is built to stay up: malformed workbooks are logged and skipped

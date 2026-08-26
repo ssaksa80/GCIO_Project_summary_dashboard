@@ -375,6 +375,19 @@ async function signIn(page, { username = "pat", password = "whatever" } = {}) {
  * leave that partial state behind forever: nobody holds a `close()` for an
  * app that never finished booting. */
 async function boot({ role = "admin", stubs = null } = {}) {
+  /* Without a built client, the server still starts and prints "listening
+     on" fine - it only 503s on the first page request (app.js's static
+     fallback: "GCIO dashboard client is not built yet. Run: npm run
+     build"). Puppeteer never sees that message; it just never finds
+     ".signin input" and the caller gets a bare 30s TimeoutError with no clue
+     what was actually wrong. Checking here, before anything is spawned,
+     turns that into an immediate, actionable failure instead of a 30s wait
+     per test file that ends the same way anyway. */
+  const clientEntry = path.join(ROOT, "client", "dist", "index.html");
+  if (!fs.existsSync(clientEntry)) {
+    throw new Error("client/dist is missing - run `npm run build` first, then re-run the UI suite.");
+  }
+
   const port = await freePort();
   const server = spawn(process.execPath, ["server/index.js"], {
     cwd: ROOT,
