@@ -8,10 +8,14 @@ import { sql } from "../db/executor.js";
 
 const ERROR_MAX = 1000;
 
-/* Past this, parsing is slow enough that a request served during an ingest
-   would notice. It is the number that would justify revisiting the decision to
-   defer worker-thread parsing. */
-const SLOW_PARSE_MS = 5000;
+/* An event-loop stall becomes visible to a concurrent request at somewhere
+   around 50-100ms, and this runs behind a proxy whose request timeout is
+   shorter than a second's stall is comfortable with. 500ms is an order of
+   magnitude above what today's 14-27 kB workbooks take, and well below the
+   point where a request served during an ingest would fail rather than merely
+   feel slow. If this starts firing, the decision to defer worker-thread
+   parsing has stopped being justified. */
+const SLOW_PARSE_MS = 500;
 
 /* Enforced in SQL by CK_IngestRun_TriggerSource / CK_IngestRun_Outcome, which
    fail at runtime with error 547. There is no type checking in this project
@@ -35,15 +39,6 @@ function truncate(text) {
 }
 
 export function ingestRunsRepo(ex, { logger = console } = {}) {
-  /* finish() needs the filename to name it in the slow-parse warning, but only
-     start() is ever given one, and this repo is a single instance held for
-     the app's lifetime (see server/index.js), so a run's own start() and
-     finish() calls land on the same instance -- no second SELECT, and no
-     extra parameter every caller of finish() would otherwise have to thread
-     through just for a warning message. Entries are removed as each run
-     closes, so this holds at most one per ingest genuinely in flight. */
-  const pendingFileNames = new Map();
-
   return {
     /**
      * @param {{fileName: string, trigger: "watcher"|"upload"|"boot"|"replay", sourceFileId?: number|null}} run
@@ -62,29 +57,29 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         { name: "name", type: sql.NVarChar(260), value: fileName },
         { name: "trigger", type: sql.VarChar(16), value: trigger },
       ]);
-      const runId = Number(recordset[0].IngestRunId);
-      pendingFileNames.set(runId, fileName);
-      return runId;
+      return Number(recordset[0].IngestRunId);
     },
 
     /**
      * @param {number} runId
      * @param {{outcome: "applied"|"unchanged"|"failed"|"removed", projectsSeen?: number,
      *          projectsChanged?: number, postureRows?: number, error?: string|null,
-     *          sourceFileId?: number|null, parseMs?: number|null, persistMs?: number|null}} result
+     *          sourceFileId?: number|null, parseMs?: number|null, persistMs?: number|null,
+     *          fileName?: string}} result
      *          sourceFileId is optional: omit it (leave undefined) to leave the column
      *          untouched — Task 6 opens the run before the workbook is vaulted, so the id
      *          is not always known yet. parseMs/persistMs are nullable on purpose: a run
      *          rejected before parsing, or one that died before persisting, has no honest
-     *          number to report, and a zero would be a lie.
+     *          number to report, and a zero would be a lie. fileName only names the run in
+     *          the slow-parse warning below — every real caller already has it in scope
+     *          (it is what it passed to start()), so this is not a second source of truth.
      */
     async finish(runId, { outcome, projectsSeen = 0, projectsChanged = 0, postureRows = 0,
-                          error = null, sourceFileId, parseMs = null, persistMs = null } = {}) {
+                          error = null, sourceFileId, parseMs = null, persistMs = null,
+                          fileName = null } = {}) {
       if (!INGEST_OUTCOMES.includes(outcome)) {
         throw new Error(`unknown ingest outcome '${outcome}' — expected one of ${INGEST_OUTCOMES.join(", ")}`);
       }
-      const fileName = pendingFileNames.get(runId);
-      pendingFileNames.delete(runId);
 
       const { rowsAffected } = await ex.query(`
         UPDATE dbo.IngestRun
@@ -172,7 +167,13 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
     },
 
     /**
-     * What the metrics endpoint needs, in one query.
+     * What the metrics endpoint needs, windowed to the last 7 days so a single
+     * cold-cache run does not pin the maxima for the life of the database --
+     * MAX() over the whole table never decays, and a metric that cannot decay
+     * stops telling an operator anything about the present. `runs` is windowed
+     * too, since it is the denominator that makes the maxima interpretable.
+     * A window with nothing in it returns nulls, not zeroes: a quiet week is
+     * not the same claim as "parsing took 0ms".
      * @returns {Promise<{runs: number, slowestParseMs: number|null,
      *                    slowestPersistMs: number|null, lastFinishedAt: string|null}>}
      */
@@ -181,6 +182,7 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         SELECT COUNT(*) AS runs, MAX(ParseMs) AS slowestParse,
                MAX(PersistMs) AS slowestPersist, MAX(FinishedAt) AS lastFinishedAt
         FROM dbo.IngestRun
+        WHERE FinishedAt >= DATEADD(day, -7, SYSUTCDATETIME())
       `);
       const r = recordset[0] || {};
       return {

@@ -51,12 +51,15 @@ test("durations are optional, because a rejected file never got as far as persis
 });
 
 test("a slow parse is warned about, because that is the signal worker threads were deferred on", async () => {
+  // fileName is passed straight to finish() -- every real caller (sqlStore.js)
+  // already has it in local scope, so this is what the repo actually receives,
+  // not something remembered from start() several statements ago.
   const warnings = [];
   const ex = scriptedExecutor({ "INSERT INTO dbo.IngestRun": [{ IngestRunId: 3 }] });
   const runs = ingestRunsRepo(ex, { logger: { error() {}, warn: (m) => warnings.push(m) } });
   const runId = await runs.start({ fileName: "huge.xlsx", trigger: "watcher" });
 
-  await runs.finish(runId, { outcome: "applied", parseMs: 6000, persistMs: 100 });
+  await runs.finish(runId, { outcome: "applied", parseMs: 6000, persistMs: 100, fileName: "huge.xlsx" });
 
   assert.equal(warnings.length, 1, "a six-second parse should have been noticed");
   assert.match(warnings[0], /huge\.xlsx/);

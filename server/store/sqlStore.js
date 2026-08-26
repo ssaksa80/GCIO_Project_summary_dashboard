@@ -204,6 +204,7 @@ export class SqlStore {
           outcome: "unchanged",
           projectsSeen: result.projects.length,
           sourceFileId: recorded.sourceFileId,
+          fileName: result.file,
         });
         this.log({ file: result.file, ok: true, unchanged: true });
         return 0;
@@ -233,6 +234,7 @@ export class SqlStore {
         sourceFileId: recorded.sourceFileId,
         parseMs: result.parseMs ?? null,
         persistMs,
+        fileName: result.file,
       });
       stage = "closed";
 
@@ -264,7 +266,7 @@ export class SqlStore {
       /* finish() may itself be what failed; if it fails again there is nothing
          further we can do, and the open run left behind is itself the signal. */
       try {
-        await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason });
+        await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: reason, fileName: result.file });
       } catch (closeErr) {
         this.logger.error?.(`[ingest] could not close run ${runId}: ${closeErr.message}`);
       }
@@ -289,7 +291,7 @@ export class SqlStore {
       await this.repos.posture.removeFile(sourceFile);
 
       if (runId !== null) {
-        await this.repos.ingestRuns.finish(runId, { outcome: "removed", projectsSeen: removed });
+        await this.repos.ingestRuns.finish(runId, { outcome: "removed", projectsSeen: removed, fileName: sourceFile });
         closed = true;
       }
 
@@ -314,7 +316,9 @@ export class SqlStore {
          workbook would be skipped as unchanged. */
       if (runId !== null) {
         try {
-          await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: `removal failed: ${err.message}` });
+          await this.repos.ingestRuns.finish(runId, {
+            outcome: "failed", error: `removal failed: ${err.message}`, fileName: sourceFile,
+          });
         } catch (closeErr) {
           this.logger.error?.(`[ingest] could not close run ${runId}: ${closeErr.message}`);
         }
@@ -341,7 +345,7 @@ export class SqlStore {
 
     try {
       const runId = await this.repos.ingestRuns.start({ fileName, trigger });
-      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: `could not parse: ${reason}` });
+      await this.repos.ingestRuns.finish(runId, { outcome: "failed", error: `could not parse: ${reason}`, fileName });
     } catch (err) {
       /* Recording the rejection must never be what stops the watcher; the
          console line is still there either way. */
