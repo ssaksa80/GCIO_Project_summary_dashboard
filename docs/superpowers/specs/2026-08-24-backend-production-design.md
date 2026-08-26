@@ -233,6 +233,7 @@ until GitHub Actions minutes are available.
 | **P1 — history foundation** | `SourceFile`, `IngestRun`, `ProjectVersion`, content-hash idempotency, the file vault; `STORE=memory` retained | **Met.** Re-ingesting an unchanged workbook records `unchanged` and manufactures no history; a changed project appends exactly one version; the in-memory store is untouched |
 | **P2 — history pays off** | "Changed since last week" in sections and exports, sourced from `ProjectVersion` | **Partly met.** The brief states what moved and where it cannot know. **Trend lines and question ageing are outstanding** — deferred because both need months of accumulated history to say anything true, not because they were forgotten |
 | **P3 — a survivable first deployment** | `/metrics`, ingest timing, a backup/restore drill that has been executed, an unelevated install preflight, the runbook | **Partly met.** The drill runs as the application login and its comparison is proven able to fail; the preflight names what is missing before anyone opens an elevated prompt. **The role split and lock election are deferred, and worker-thread parsing was replaced by measurement** — see below |
+| **P4 — testing the thing people actually look at** | A real-browser test suite for the client (`puppeteer-core` + `node:test`, gated behind `UI_LIVE=1 npm run test:ui`): the five report sections and KPI strip render with real content in the CIO's specified order, the four change-badge states and their computed colours, the sign-in gate, the project drawer, and the all-projects table filter; an `axe-core` accessibility pass against the sign-in page, the dashboard, and an open drawer; a written assessment (`docs/accessibility-assessment.md`) covering what automation cannot see too (keyboard operation, focus management, zoom); `README.md` documents how to run it and what it deliberately does not cover | **Partly met.** The suite runs and catches exactly the class of defect a server test cannot — rendering and computed colour. **One accessibility finding conflicts with a mandated brand colour and is deliberately left unresolved**: `--critical` (Pantone 192 C) fails WCAG text contrast on every dark theme's surface, carried in the suite as `todo` — visible on every run, not a silently dropped test or a red gate — pending a brand-owner decision (see Risks below). **Several ordinary accessibility defects are recorded but not fixed** — no `<main>` landmark, the drawer's missing focus trap and 99-tab-stop distance from its own trigger, the all-projects table's mouse-only sort and row-open — per this phase's explicit scope of assessing, not remediating |
 
 Each phase ships independently and leaves the product working.
 
@@ -287,6 +288,27 @@ belongs with the other things history makes possible.
 - **The corporate certificate and IIS access** gate the TLS work.
 - **Sample-data mode must not rot.** Every phase keeps `STORE=memory` in the
   test matrix, or the demo path quietly dies.
+- **The client had no automated tests at all until Phase 4.** Every rendering
+  defect this project has actually hit in production use — the PPTX cover
+  running two lines together, a badge painted the wrong colour because it had
+  four states and the code handled three, a colour rule scoped under the
+  wrong parent class doing nothing — was found by hand, after the fact,
+  because nothing exercised `client/src` before now. That is a fact about how
+  P0 through P3 were actually verified — entirely at the server boundary and
+  by eye, never in a browser — not just a historical note, and it belongs on
+  the record rather than left implicit.
+- **`--critical` (Pantone 192 C) fails text contrast on three of four
+  dashboard themes, and needs a brand-owner decision.** Used verbatim as
+  chip and inline text on the obsidian, sapphire, and emerald themes, it
+  measures as low as 2.58:1 against their surfaces where WCAG requires
+  4.5:1 (3:1 even for large text) — confirmed and reproduced in
+  `docs/accessibility-assessment.md`, Finding 1. No fix keeps the literal
+  mandated hex while reaching threshold on any of the dark grounds derived
+  from Pantone 281 C; platinum already sidesteps this with its own derived
+  red rather than the raw hex, which shows the fix exists but not without
+  moving off the fixed colour. `test/ui/accessibility.test.js` carries this
+  as an explicit `todo`, not a passing test and not a deleted one, so it
+  stays visible until whoever owns the palette decides.
 
 ## Open questions for the organisation
 
