@@ -88,6 +88,28 @@ test("timings appear when history is available and are simply absent when it is 
   assert.match(without, /^gcio_up 1$/m);
 });
 
+test("a partial ingestTiming shape omits the series rather than rendering 'undefined'", async () => {
+  /* A shape missing a field entirely (as opposed to explicitly null) must
+     not render as literal text `undefined` -- that is not valid exposition
+     and would break a scrape silently. */
+  const body = await renderMetrics({
+    store: store(), startedAt: Date.now(),
+    ingestTiming: { runs: 5, lastFinishedAt: "2026-08-26T09:00:02.000Z" },
+  });
+  assert.ok(!body.includes("gcio_ingest_parse_slowest_ms"), "an incomplete shape rendered a timing series anyway");
+  assert.ok(!body.includes("gcio_ingest_persist_slowest_ms"), "an incomplete shape rendered a timing series anyway");
+  assert.ok(!body.includes("undefined"), "the exposition must never contain the literal word 'undefined'");
+});
+
+test("gcio_last_ingest_timestamp_seconds is always present, 0 when nothing has ever been ingested", async () => {
+  /* Omitting this series when there is no data would make the natural alert
+     -- time() - gcio_last_ingest_timestamp_seconds > threshold -- match an
+     empty vector and never fire, in exactly the state most worth alerting
+     on. 0 reads as maximally stale under that same comparison. */
+  const body = await renderMetrics({ store: store({ lastIngestAt: null }), startedAt: Date.now() });
+  assert.match(body, /^gcio_last_ingest_timestamp_seconds 0$/m);
+});
+
 test("a store that is not ready says so rather than omitting the series", async () => {
   const body = await renderMetrics({ store: store({ ready: false }), startedAt: Date.now() });
   assert.match(body, /^gcio_ready 0$/m);
@@ -179,4 +201,33 @@ test("GET /metrics still renders the base series when there is no history backen
   assert.equal(res.status, 200);
   assert.match(res.text, /^gcio_up 1$/m);
   assert.ok(!res.text.includes("gcio_ingest_runs"));
+});
+
+test("GET /metrics still returns 200 and gcio_up 1 when the store itself throws", async () => {
+  /* An unreachable store is exactly when a scraper most needs to see the
+     process is still alive -- reading it must degrade the same way a failed
+     ingest-history read does, not turn into a 500 from the global handler. */
+  const brokenStore = {
+    get projectCount() { throw new Error("disk read failed"); },
+    fileCount: 0,
+    demoMode: false,
+    lastIngestAt: null,
+  };
+  const app = createApp({
+    store: brokenStore,
+    config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-admins": "admin" }),
+    audit: { append: async () => {} },
+    ingestRuns: null,
+    ldapAuthenticate: devAuthenticate("admin"),
+    dataDir: "data",
+    clientDist: "client/dist",
+  });
+
+  const res = await request(app).get("/metrics");
+
+  assert.equal(res.status, 200);
+  assert.match(res.text, /^gcio_up 1$/m);
+  assert.match(res.text, /^gcio_ready 0$/m);
 });

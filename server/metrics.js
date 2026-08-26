@@ -45,10 +45,16 @@ export async function renderMetrics({ store, startedAt, version = "unknown", ing
   series(out, "gcio_source_files", "Workbooks currently contributing to the portfolio.", "gauge",
     [line("gcio_source_files", store.fileCount ?? 0)]);
 
-  if (store.lastIngestAt) {
-    series(out, "gcio_last_ingest_timestamp_seconds", "When the portfolio last changed.", "gauge",
-      [line("gcio_last_ingest_timestamp_seconds", Math.round(Date.parse(store.lastIngestAt) / 1000))]);
-  }
+  /* Always emitted, unlike the timing series below: the natural alert is
+     `time() - gcio_last_ingest_timestamp_seconds > threshold`, and against a
+     missing series that comparison yields an empty vector rather than a firing
+     alert -- the standard Prometheus absent() trap, and exactly backwards for
+     the state most worth alerting on. 0 when nothing has ever been ingested
+     reads as maximally stale under that same comparison, which is the truth. */
+  series(out, "gcio_last_ingest_timestamp_seconds",
+    "When the portfolio last changed, or 0 if it never has.", "gauge",
+    [line("gcio_last_ingest_timestamp_seconds",
+      store.lastIngestAt ? Math.round(Date.parse(store.lastIngestAt) / 1000) : 0)]);
 
   if (runOutcomes) {
     /* All four, always — a missing series is a gap on a graph, a zero is
@@ -58,11 +64,17 @@ export async function renderMetrics({ store, startedAt, version = "unknown", ing
   }
 
   if (ingestTiming) {
-    if (ingestTiming.slowestParseMs !== null) {
+    /* Number.isFinite, not `!== null`: a partial shape (a field missing
+       rather than explicitly null) must omit the series too, not render
+       `gcio_ingest_parse_slowest_ms undefined` -- text that is not valid
+       exposition and would break a scrape silently. Today's only producer
+       already normalises with `?? null`, but this must be safe by
+       construction, not merely safe by whoever calls it being careful. */
+    if (Number.isFinite(ingestTiming.slowestParseMs)) {
       series(out, "gcio_ingest_parse_slowest_ms", "Slowest recorded workbook parse in the last 7 days.", "gauge",
         [line("gcio_ingest_parse_slowest_ms", ingestTiming.slowestParseMs)]);
     }
-    if (ingestTiming.slowestPersistMs !== null) {
+    if (Number.isFinite(ingestTiming.slowestPersistMs)) {
       series(out, "gcio_ingest_persist_slowest_ms", "Slowest recorded persist in the last 7 days.", "gauge",
         [line("gcio_ingest_persist_slowest_ms", ingestTiming.slowestPersistMs)]);
     }

@@ -104,7 +104,10 @@ export function createApp(deps) {
    */
   app.get("/metrics", wrap(async (req, res) => {
     /* Optional parts degrade rather than fail: monitoring that goes dark
-       exactly when the database does is worse than no monitoring. */
+       exactly when the database does is worse than no monitoring. An
+       unreachable store is exactly when a scraper most needs to see the
+       process is still alive, so reading it is guarded the same way as the
+       ingest-history reads below -- not just the two ingestRuns calls. */
     let ingestTiming = null;
     let runOutcomes = null;
     if (ingestRuns) {
@@ -121,14 +124,21 @@ export function createApp(deps) {
     /* "Ready" means the same thing /readyz above already means -- there is a
        portfolio to serve -- not SqlStore's own internal bootstrap flag, which
        the in-memory store does not have at all and would otherwise read as
-       permanently not-ready. */
-    const metricsStore = {
-      ready: Boolean(store.projectCount),
-      demoMode: Boolean(store.demoMode),
-      projectCount: store.projectCount,
-      fileCount: store.fileCount,
-      lastIngestAt: store.lastIngestAt,
-    };
+       permanently not-ready. Falls back to "nothing to report" rather than a
+       500 if the store itself is unwell: an unreadable store is not a reason
+       to stop saying gcio_up 1. */
+    let metricsStore = { ready: false, demoMode: false, projectCount: 0, fileCount: 0, lastIngestAt: null };
+    try {
+      metricsStore = {
+        ready: Boolean(store.projectCount),
+        demoMode: Boolean(store.demoMode),
+        projectCount: store.projectCount,
+        fileCount: store.fileCount,
+        lastIngestAt: store.lastIngestAt,
+      };
+    } catch (err) {
+      console.error(`[metrics] store unavailable: ${err.message}`);
+    }
 
     /* res.send(string) makes Express re-serialize Content-Type through the
        content-type package, which alphabetizes parameters -- charset before
