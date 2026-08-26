@@ -57,6 +57,7 @@ async function cleanup(ex) {
   await ex.query(`
     IF OBJECT_ID('dbo.ProjectVersion','U') IS NOT NULL
       DELETE FROM dbo.ProjectVersion WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'P2-%'
+         OR ProjectId LIKE 'TIMING-%'
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE @pattern)`,
     [pattern]);
   await ex.query(
@@ -915,6 +916,185 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     assert.equal(after["should-not-be-added"], undefined);
   });
 
+  /* --------------------------------------------------------------------
+   * Task 6 (Phase 3): the ingest timing surface. ParseMs/PersistMs on
+   * dbo.IngestRun (migration 10), the recent()/timingSummary()/
+   * countByOutcome() reads built on them, and the real ingest path that
+   * writes them. Every run here uses a livetest-timing- or
+   * livetest-outcome- prefixed filename, swept by cleanup()'s FileName
+   * LIKE 'livetest%'; the one subtest that writes dbo.Project/
+   * ProjectVersion rows tags its ids TIMING-, swept the same way as
+   * S1-6V/P2- above.
+   * -------------------------------------------------------------------- */
+
+  await t.test("dbo.IngestRun has ParseMs and PersistMs as nullable int columns (migration 10)", async () => {
+    /* sys.columns, not a successful insert: inferring "nullable" from "an
+       insert with NULL succeeded" would also pass if the column simply did
+       not exist and a typo'd column list silently dropped the value. The
+       schema itself is the only source that cannot be fooled that way. */
+    const { recordset } = await ex.query(`
+      SELECT c.name, ty.name AS typeName, c.is_nullable
+      FROM sys.columns c
+      JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+      WHERE c.object_id = OBJECT_ID('dbo.IngestRun') AND c.name IN ('ParseMs', 'PersistMs')
+    `);
+    const byName = Object.fromEntries(recordset.map((r) => [r.name, r]));
+
+    assert.ok(byName.ParseMs, "dbo.IngestRun.ParseMs is missing -- migration 10 did not apply");
+    assert.equal(byName.ParseMs.typeName, "int", "ParseMs is not an int column");
+    assert.equal(byName.ParseMs.is_nullable, true,
+      "ParseMs must be nullable -- a run that never parsed has no honest number to report");
+
+    assert.ok(byName.PersistMs, "dbo.IngestRun.PersistMs is missing -- migration 10 did not apply");
+    assert.equal(byName.PersistMs.typeName, "int", "PersistMs is not an int column");
+    assert.equal(byName.PersistMs.is_nullable, true,
+      "PersistMs must be nullable -- a run that died before persisting has no honest number to report");
+  });
+
+  await t.test("a run finished with durations reads them back through recent()", async () => {
+    const scenarioFile = "livetest-timing-recent.xlsx";
+    const ingestRuns = ingestRunsRepo(ex, { logger: quiet });
+
+    const runId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(runId, {
+      outcome: "applied", projectsSeen: 1, projectsChanged: 1,
+      parseMs: 42, persistMs: 77, fileName: scenarioFile,
+    });
+
+    /* limit: 500, the repo's own ceiling, rather than the default 200 -- a
+       run placed this late in the suite must not be pushed out of the
+       result by every scenario written above it. */
+    const runs = await ingestRuns.recent({ limit: 500 });
+    const mine = runs.find((r) => r.id === runId);
+    assert.ok(mine, "the finished run was not returned by recent()");
+    assert.equal(mine.parseMs, 42, "recent() did not read ParseMs back correctly");
+    assert.equal(mine.persistMs, 77, "recent() did not read PersistMs back correctly");
+  });
+
+  await t.test("timingSummary() is windowed to 7 days: real rows report true maxima, an empty window reports nulls, and a backdated row is excluded", async () => {
+    /* Every IngestRun row this suite has written so far is livetest%-tagged,
+       so this leaves the table genuinely empty -- the only honest way to
+       exercise the "nothing in the window" branch, same reasoning as the
+       historyStartedAt subtest above calling cleanup() mid-suite. */
+    await cleanup(ex);
+    const ingestRuns = ingestRunsRepo(ex, { logger: quiet });
+
+    const empty = await ingestRuns.timingSummary();
+    assert.deepEqual(empty, { runs: 0, slowestParseMs: null, slowestPersistMs: null, lastFinishedAt: null },
+      "an empty window must report null maxima and a null finish time -- MAX() over no rows is NULL, " +
+      "not 0, and a zero here would falsely claim a 0ms parse happened");
+
+    const scenarioFile = "livetest-timing-summary.xlsx";
+
+    const lowId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(lowId, { outcome: "applied", parseMs: 15, persistMs: 25, fileName: scenarioFile });
+
+    const highId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(highId, { outcome: "applied", parseMs: 30, persistMs: 50, fileName: scenarioFile });
+
+    const { recordset: highRow } = await ex.query(
+      "SELECT FinishedAt FROM dbo.IngestRun WHERE IngestRunId = @id",
+      [{ name: "id", type: sql.BigInt, value: highId }]
+    );
+    const expectedLastFinishedAt = highRow[0].FinishedAt;
+
+    /* Backdated a comfortable 10 days -- not 7-days-and-a-minute, which
+       would make this flaky at the boundary -- with durations bigger than
+       either in-window row above. If timingSummary() ever regressed to an
+       unwindowed MAX() over the whole table, this row's 999s would win both
+       maxima and the assertions below would catch it: a test that never
+       backdates anything cannot tell a windowed query from an unwindowed
+       one, and this is deliberately built so it can. */
+    const oldId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(oldId, { outcome: "applied", parseMs: 999, persistMs: 999, fileName: scenarioFile });
+    await ex.query(
+      "UPDATE dbo.IngestRun SET FinishedAt = DATEADD(day, -10, SYSUTCDATETIME()) WHERE IngestRunId = @id",
+      [{ name: "id", type: sql.BigInt, value: oldId }]
+    );
+
+    const summary = await ingestRuns.timingSummary();
+    assert.equal(summary.runs, 2, "the backdated run must not count toward the windowed runs total");
+    assert.equal(summary.slowestParseMs, 30, "the backdated row's larger ParseMs leaked into the windowed maximum");
+    assert.equal(summary.slowestPersistMs, 50, "the backdated row's larger PersistMs leaked into the windowed maximum");
+    assert.equal(new Date(summary.lastFinishedAt).getTime(), new Date(expectedLastFinishedAt).getTime(),
+      "lastFinishedAt did not match the latest in-window finish time");
+  });
+
+  await t.test("countByOutcome() reports all four keys and is not windowed -- a run backdated past 7 days still counts", async () => {
+    await cleanup(ex);
+    const ingestRuns = ingestRunsRepo(ex, { logger: quiet });
+
+    const emptyCounts = await ingestRuns.countByOutcome();
+    assert.deepEqual(emptyCounts, { applied: 0, unchanged: 0, failed: 0, removed: 0 },
+      "an empty table must still report all four outcome keys, zero-filled");
+
+    const scenarioFile = "livetest-outcome-count.xlsx";
+
+    const recentId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(recentId, { outcome: "applied", fileName: scenarioFile });
+
+    /* Backdated past timingSummary()'s 7-day window on purpose: this feeds a
+       Prometheus counter, and a counter that can go backwards is a
+       contradiction a scraper cannot represent, so countByOutcome() has no
+       window at all. If the two aggregates were ever accidentally unified
+       onto one windowed query, this row would silently stop being counted
+       here -- which is exactly the difference from timingSummary() above. */
+    const oldId = await ingestRuns.start({ fileName: scenarioFile, trigger: "replay" });
+    await ingestRuns.finish(oldId, { outcome: "applied", fileName: scenarioFile });
+    await ex.query(
+      "UPDATE dbo.IngestRun SET FinishedAt = DATEADD(day, -10, SYSUTCDATETIME()) WHERE IngestRunId = @id",
+      [{ name: "id", type: sql.BigInt, value: oldId }]
+    );
+
+    const counts = await ingestRuns.countByOutcome();
+    assert.deepEqual(counts, { applied: 2, unchanged: 0, failed: 0, removed: 0 },
+      "countByOutcome() must count a run backdated beyond 7 days, and must still zero-fill the outcomes " +
+      "that never occurred -- only 'applied' happened here, but all four keys must be present");
+  });
+
+  await t.test("a real ingest through SqlStore.applyFile records ParseMs and PersistMs -- read back from SQL, not the return value", async () => {
+    const scenarioFile = "livetest-timing-real.xlsx";
+    const repos = scenarioRepos(ex);
+    const { dir: vaultDir, vault } = scenarioVault();
+    try {
+      const base = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
+      assert.equal(base.ok, true, base.error);
+      assert.equal(typeof base.parseMs, "number",
+        "ingestFile must report parseMs for applyFile to have anything to record");
+
+      /* Namespaced ids, same reasoning as every scenario above: dbo.Project's
+         primary key is ProjectId alone, so carrying the fixture's real ids
+         into a new filename would silently re-parent rows an earlier
+         subtest already wrote instead of proving anything about this
+         ingest's timing. Built by hand rather than via scenarioParsed(),
+         which does not carry parseMs through -- and parseMs is the one
+         field this subtest exists to prove gets recorded. */
+      const parsed = {
+        ok: true, file: scenarioFile, parseMs: base.parseMs,
+        projects: base.projects.slice(0, 5).map((p) => ({ ...p, id: `TIMING-${p.id}` })),
+        posture: base.posture, bytes: base.bytes,
+      };
+
+      const store = new SqlStore(repos, { vault, logger: quiet });
+      await store.applyFile(parsed, { trigger: "replay" });
+
+      const { recordset } = await ex.query(
+        "SELECT TOP (1) ParseMs, PersistMs FROM dbo.IngestRun WHERE FileName = @f ORDER BY StartedAt DESC, IngestRunId DESC",
+        [{ name: "f", type: sql.NVarChar(260), value: scenarioFile }]
+      );
+      assert.equal(recordset.length, 1, "the ingest did not leave a run behind");
+      const { ParseMs, PersistMs } = recordset[0];
+
+      for (const [label, value] of [["ParseMs", ParseMs], ["PersistMs", PersistMs]]) {
+        assert.equal(typeof value, "number", `${label} was not recorded as a number in dbo.IngestRun -- read ${value}`);
+        assert.ok(value > 0, `${label} must be greater than zero for a real parse and persist, was ${value}`);
+        assert.ok(value < 60_000, `${label} must be less than a minute for this fixture, was ${value}`);
+      }
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+  });
+
   await t.test("the suite leaves nothing behind", async () => {
     /* Every scenario writes under a livetest% filename and is responsible for
        its own rows. A cold run was once seen to finish 21/21 green while
@@ -942,12 +1122,14 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
     /* ProjectVersion has neither column: it is identified by the ProjectId
        markers this suite's scenarios use (S1-.. through S6-.. and SV-.. tag
-       prefixes, the Task 8 P2-.. markers, plus the literal PRJ-HIST-TEST) or,
-       for the given-block history that goes through a real ingest, by the
-       IngestRunId of whichever livetest% run wrote it. */
+       prefixes, the Task 8 P2-.. markers, the Task 6 TIMING-.. marker, plus
+       the literal PRJ-HIST-TEST) or, for the given-block history that goes
+       through a real ingest, by the IngestRunId of whichever livetest% run
+       wrote it. */
     const { recordset: versions } = await ex.query(`
       SELECT COUNT(*) AS n FROM dbo.ProjectVersion
       WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'S[1-6V]-%' OR ProjectId LIKE 'P2-%'
+         OR ProjectId LIKE 'TIMING-%'
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE 'livetest%')
     `);
     assert.equal(versions[0].n, 0, "dbo.ProjectVersion still holds rows this suite created");
