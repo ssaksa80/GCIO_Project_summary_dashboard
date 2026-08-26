@@ -900,6 +900,14 @@ something is wrong. Sections:
 2. **First deployment** — in order, with every command. Mark each step
    **[verified]** or **[needs an elevated prompt — not executed]**. The preflight
    from Task 4 is step one, and installing NSSM is step zero.
+
+   Two things the preflight cannot tell you, which the runbook must:
+   **every check must pass on the target server** — do not compare its failure
+   list against the development machine's, where `AUTH_MODE=dev`, a busy port
+   and a missing NSSM are permanent fixtures. And the preflight checks paths as
+   the interactive user, not as the service account, so a service account that
+   cannot read the env file or write the vault will pass preflight and fail at
+   first start. Verify those two by hand as the service account.
 3. **Upgrading** — the install script is re-runnable; say so and say what it
    preserves.
 4. **The dashboard is stale** — the diagnosis path, in the order an operator
@@ -913,6 +921,36 @@ something is wrong. Sections:
    it, and the manual restore procedure for a real recovery, which is not the
    same thing as the drill: a real restore goes over the top of the source
    database and needs the vault restored alongside it.
+
+   **Three facts the drill discovered by being run. Carry all of them verbatim.**
+
+   - `gcio_app` is **not** a member of `dbcreator` and has no `CREATE ANY
+     DATABASE` permission, contrary to what this project's notes assumed. It has
+     `db_owner` on `GCIO`, which is enough to back up, but not enough to restore
+     to a database that does not already exist — `RESTORE FILELISTONLY` fails
+     with error 262 even though it reads nothing and creates nothing. The drill
+     therefore needs a **one-time provisioning step**, run once by an
+     administrator:
+
+     ```sql
+     CREATE DATABASE [GCIO_DrillRestore];
+     ALTER AUTHORIZATION ON DATABASE::[GCIO_DrillRestore] TO [gcio_app];
+     ```
+
+     After that the drill is repeatable unattended as the application login,
+     which is why it leaves the scratch database in place by default and only
+     tears it down when passed `--drop`. Dropping it every run would make the
+     next run need an administrator again.
+   - **The drill cannot delete its own backup files.** They are written by the
+     SQL Server service account into its backup directory, and neither
+     `gcio_app` nor an ordinary interactive user can delete — or even `stat` —
+     what it wrote there. The script reports this as a warning rather than
+     failing. Stale `.bak` files need a periodic purge by a sysadmin, e.g. with
+     `xp_delete_file`.
+   - For the same reason the script reads the backup's size from
+     `msdb.dbo.backupset` rather than from the filesystem. A drill that
+     `stat`s the file it just wrote fails on any Windows deployment where the
+     backup directory belongs to the service account, which is the default.
 7. **What the metrics mean** — each series, and the two or three that are worth
    alerting on. Say plainly which alert would have caught each failure this
    project has actually had: a stale portfolio, a failed ingest, a demo-mode
