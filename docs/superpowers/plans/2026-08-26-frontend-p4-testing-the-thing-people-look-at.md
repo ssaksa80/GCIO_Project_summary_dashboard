@@ -52,6 +52,10 @@ The cost is honest: browser tests are slower and easier to write flakily. The mi
 | `package.json` | **modify** — `axe-core`, and a `test:ui` script |
 | `README.md` | **modify** — how to run it |
 
+**Rebuild after touching `client/src`.** The harness serves `client/dist`, so a
+component edit that is not rebuilt silently tests the previous bundle and you
+chase a ghost. `npm run build` before any run that follows a component change.
+
 **Commands are bash.** Run them in Git Bash. The PowerShell form of `VAR=1 cmd` is `$env:VAR = "1"; cmd`.
 
 ---
@@ -316,7 +320,11 @@ test("the dashboard renders what the CIO asked for", { skip: !ui }, async (t) =>
     /* An empty section renders as a heading and nothing else, which reads as
        "nothing to report" rather than "the builder threw". */
     for (const name of ["successes", "qri", "priorities", "roadmap", "posture"]) {
-      const count = await page.$$eval(`[data-section="${name}"] li, [data-section="${name}"] tr`,
+      /* li, tr AND [data-row]: Successes and Priorities render their repeating
+         content as plain divs, so a li/tr-only selector reported them empty
+         however much data they held. */
+      const count = await page.$$eval(
+        `[data-section="${name}"] li, [data-section="${name}"] tr, [data-section="${name}"] [data-row]`,
         (els) => els.length).catch(() => 0);
       assert.ok(count > 0, `section ${name} rendered no rows`);
     }
