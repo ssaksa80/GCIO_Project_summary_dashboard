@@ -138,11 +138,14 @@ test("a slow parse is warned about, because that is the signal worker threads we
   const runs = ingestRunsRepo(ex, { logger: { error() {}, warn: (m) => warnings.push(m) } });
   const runId = await runs.start({ fileName: "huge.xlsx", trigger: "watcher" });
 
-  await runs.finish(runId, { outcome: "applied", parseMs: 6000, persistMs: 100 });
+  await runs.finish(runId, { outcome: "applied", fileName: "huge.xlsx", parseMs: 6000, persistMs: 100 });
 
   assert.equal(warnings.length, 1, "a six-second parse should have been noticed");
   assert.match(warnings[0], /huge\.xlsx/);
   assert.match(warnings[0], /6000/);
+  /* The filename is passed in, not remembered: every finish() call site already
+     has it in scope, and a Map keyed by run id would be state in what is
+     otherwise a pure factory over an executor. */
 });
 
 test("a fast parse is not warned about", async () => {
@@ -227,10 +230,14 @@ and a zero would be a lie.
 Add a threshold constant beside `ERROR_MAX`:
 
 ```js
-/* Past this, parsing is slow enough that a request served during an ingest
-   would notice. It is the number that would justify revisiting the decision to
-   defer worker-thread parsing. */
-const SLOW_PARSE_MS = 5000;
+/* An event-loop stall becomes visible to a concurrent request at somewhere
+   around 50-100ms, and this runs behind a proxy whose request timeout is
+   shorter than a second's stall is comfortable with. 500ms is an order of
+   magnitude above what today's 14-27 kB workbooks take, and well below the
+   point where a request served during an ingest would fail rather than merely
+   feel slow. If this starts firing, the decision to defer worker-thread
+   parsing has stopped being justified. */
+const SLOW_PARSE_MS = 500;
 ```
 
 Extend `finish`'s options with `parseMs` and `persistMs`, add both to the
