@@ -4,8 +4,9 @@ node_modules/
 # Build output — regenerate with: npm run build
 client/dist/
 
-# Generated export artifacts (decks, workbooks, briefs, smoke-test output)
-exports/
+# Generated export artifacts (decks, workbooks, briefs, smoke-test output).
+# Anchored: an unanchored "exports/" would also swallow any test/exports/.
+/exports/
 
 # The CIO briefing is generated from docs/screenshots by its builder, and is
 # ~1.9MB per version. Rebuild on demand instead of carrying every re-shoot in
@@ -19,10 +20,14 @@ data/*
 
 # Runtime audit output. In production this holds real user principals and
 # must never be committed; the SQL store writes to dbo.AuditEvent instead.
-audit/
+# Anchored to the root: unanchored, this also matched test/audit/, which is
+# why test/audit/fileAudit.test.js sat untracked and invisible for three
+# phases while still running locally.
+/audit/
 
 # Ingested workbooks, kept for replay and audit. Real portfolio data.
-vault/
+# Anchored for the same reason as audit/ above.
+/vault/
 
 # Local environment
 .env
