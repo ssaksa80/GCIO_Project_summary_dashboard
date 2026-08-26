@@ -14,6 +14,7 @@ import multer from "multer";
 import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
+import { renderMetrics } from "./metrics.js";
 import { buildSummary, loadChanges, loadHistoryStart, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
 import { buildExcel } from "./exporters/excel.js";
@@ -93,6 +94,50 @@ export function createApp(deps) {
     }
     res.json({ ready: true, projects: store.projectCount, lastIngestAt: store.lastIngestAt });
   });
+
+  /**
+   * Operational numbers for a scraper. Open like the health endpoints above,
+   * because a scraper cannot authenticate — and safe to be open only because
+   * it holds nothing read from a workbook: no project name, no person, no
+   * filename, no error text. Blocked at the proxy instead; see
+   * deploy/iis-site.md.
+   */
+  app.get("/metrics", wrap(async (req, res) => {
+    /* Optional parts degrade rather than fail: monitoring that goes dark
+       exactly when the database does is worse than no monitoring. */
+    let ingestTiming = null;
+    let runOutcomes = null;
+    if (ingestRuns) {
+      try {
+        [ingestTiming, runOutcomes] = await Promise.all([
+          ingestRuns.timingSummary(),
+          ingestRuns.countByOutcome(),
+        ]);
+      } catch (err) {
+        console.error(`[metrics] history unavailable: ${err.message}`);
+      }
+    }
+
+    /* "Ready" means the same thing /readyz above already means -- there is a
+       portfolio to serve -- not SqlStore's own internal bootstrap flag, which
+       the in-memory store does not have at all and would otherwise read as
+       permanently not-ready. */
+    const metricsStore = {
+      ready: Boolean(store.projectCount),
+      demoMode: Boolean(store.demoMode),
+      projectCount: store.projectCount,
+      fileCount: store.fileCount,
+      lastIngestAt: store.lastIngestAt,
+    };
+
+    /* res.send(string) makes Express re-serialize Content-Type through the
+       content-type package, which alphabetizes parameters -- charset before
+       version -- undoing the literal header a scraper expects. A Buffer
+       skips that step, so the header set above survives byte-for-byte. */
+    const body = await renderMetrics({ store: metricsStore, startedAt, version: config.version, ingestTiming, runOutcomes });
+    res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    res.send(Buffer.from(body, "utf-8"));
+  }));
 
   /* Identity, then the gate. /api/me answers for signed-out callers too, so
      the client can tell "not signed in" from "server is broken". */

@@ -192,5 +192,32 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         lastFinishedAt: r.lastFinishedAt instanceof Date ? r.lastFinishedAt.toISOString() : null,
       };
     },
+
+    /**
+     * Ingest attempts grouped by outcome, all-time -- this feeds a Prometheus
+     * counter, and a counter that is windowed can go backwards, which is a
+     * contradiction a scraper has no way to represent. (Contrast
+     * timingSummary() above, which is a gauge and is windowed on purpose.)
+     *
+     * All four INGEST_OUTCOMES keys are always present, zero-filled: a
+     * missing series reads as a gap on a graph, and a real zero must not look
+     * like one. A run that was started but never finished has Outcome NULL
+     * and belongs to none of the four buckets, so it is excluded rather than
+     * silently forming a fifth, unlabelled group.
+     * @returns {Promise<{applied: number, unchanged: number, failed: number, removed: number}>}
+     */
+    async countByOutcome() {
+      const { recordset } = await ex.query(`
+        SELECT Outcome, COUNT(*) AS n
+        FROM dbo.IngestRun
+        WHERE Outcome IS NOT NULL
+        GROUP BY Outcome
+      `);
+      const counts = Object.fromEntries(INGEST_OUTCOMES.map((o) => [o, 0]));
+      for (const row of recordset) {
+        if (row.Outcome in counts) counts[row.Outcome] = Number(row.n) || 0;
+      }
+      return counts;
+    },
   };
 }
