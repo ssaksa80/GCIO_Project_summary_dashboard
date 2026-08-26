@@ -52,6 +52,26 @@ The cost is honest: browser tests are slower and easier to write flakily. The mi
 | `package.json` | **modify** — `axe-core`, and a `test:ui` script |
 | `README.md` | **modify** — how to run it |
 
+**Teardown must hang off `node:test`'s `after()`, never `process.on("exit")`.**
+This plan originally prescribed the latter and it cannot work: an open CDP
+connection to a live browser blocks Node's event loop from draining, and
+`process.on("exit")` only fires once it has. Proven with a bare
+`puppeteer.launch()` and no harness code involved. `after()` is awaited by the
+test runner independent of loop state, which is why it reaps correctly.
+
+**Two teardown callers can race.** A test's own `t.after(close)` and a
+file-level sweep can both be live for the same dashboard; `node:test` does not
+serialise them. The idempotency guard has to be shared between them, not held
+in a closure only one of them reaches.
+
+**Windows does not remove a process from the table the instant `taskkill /F`
+returns.** A leak check with no grace period reports false positives. Poll for a
+few seconds before concluding anything survived.
+
+**The suite is load-sensitive.** Running two Chrome-driving suites at once
+produces genuine navigation and sign-in timeouts — not leaks, but real
+failures. Run UI suites one at a time.
+
 **Rebuild after touching `client/src`.** The harness serves `client/dist`, so a
 component edit that is not rebuilt silently tests the previous bundle and you
 chase a ghost. `npm run build` before any run that follows a component change.
