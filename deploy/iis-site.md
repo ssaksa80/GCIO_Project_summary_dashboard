@@ -35,8 +35,9 @@ port 80 binding, or keep it only to redirect to HTTPS.
 ## 4. Add `web.config`
 
 Put this in the site root. It proxies everything to the Node process, raises the
-upload limit to match the application's own (20 workbooks at 25 MB), and removes
-a header that advertises the stack.
+upload limit to match the application's own (20 workbooks at 25 MB), removes
+a header that advertises the stack, and blocks `/metrics` from anywhere but the
+monitoring host.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -50,6 +51,13 @@ a header that advertises the stack.
             <add input="{HTTPS}" pattern="off" />
           </conditions>
           <action type="Redirect" url="https://{HTTP_HOST}/{R:1}" redirectType="Permanent" />
+        </rule>
+        <rule name="Block metrics from outside" stopProcessing="true">
+          <match url="^metrics$" />
+          <conditions>
+            <add input="{REMOTE_ADDR}" pattern="^10\.|^127\.0\.0\.1$" negate="true" />
+          </conditions>
+          <action type="CustomResponse" statusCode="404" statusReason="Not Found" />
         </rule>
         <rule name="Proxy to GCIO" stopProcessing="true">
           <match url="(.*)" />
@@ -78,6 +86,18 @@ a header that advertises the stack.
 Note: the application sets its own security headers, including HSTS when
 `NODE_ENV=production`. Do not add a second set in IIS — duplicated headers are
 how a CSP quietly stops being enforced.
+
+`/metrics` is open at the application, the same way `/healthz` and `/readyz`
+are — a Prometheus-style scraper cannot sign in, and it is safe to leave open
+only because the endpoint holds nothing but counts, timings, timestamps, an up
+flag and a build version; never a project name, a filename, or an error
+message. The "Block metrics from outside" rule above is what keeps it from
+being reachable by the whole organisation rather than just the monitoring
+host. **`^10\.|^127\.0\.0\.1$` is a placeholder, not a real network range** —
+replace it with the actual monitoring subnet or host before this site goes
+live. Leaving the placeholder in place either blocks the real monitoring host
+(if it is not on `10.0.0.0/8`) or, worse, quietly under-restricts the rule on
+a network where `10.x` is not in fact private to monitoring.
 
 ## 5. Server-sent events
 
@@ -114,6 +134,12 @@ curl.exe -I http://127.0.0.1:8123/healthz               # 200
 
 # anonymous access is refused, proving auth survives the proxy
 curl.exe -i https://dashboard.<domain>/api/summary      # 401
+
+# from off the monitoring network, /metrics must not be reachable
+curl.exe -i https://dashboard.<domain>/metrics           # 404
+
+# from the monitoring host itself (after the placeholder above is replaced)
+curl.exe -i https://dashboard.<domain>/metrics           # 200, text/plain
 ```
 
 From **another machine**, this must fail to connect:

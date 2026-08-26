@@ -166,6 +166,9 @@ The dashboard runs unauthenticated with an in-memory store for demonstrations,
 and behind directory sign-in with SQL Server for real use. The difference is
 configuration, not a different build.
 
+For deployment, upgrades, diagnosing a stale or down dashboard, and backup and
+restore, see [`docs/runbook.md`](docs/runbook.md).
+
 ### Deploying
 
 1. **Configure.** Copy `.env.example` to `.env` and fill it in. Keep it outside

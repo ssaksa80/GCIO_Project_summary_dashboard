@@ -1,6 +1,6 @@
 {
   "name": "gcio-project-summary-dashboard",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "GCIO Project Intelligence — 24x7 live executive portfolio dashboard with Excel ingestion, C-suite summarization, drill-down, and rich Excel/Word/HTML briefing exports.",
   "type": "module",
   "private": true,

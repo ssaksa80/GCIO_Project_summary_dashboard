@@ -6,8 +6,31 @@
  * sign-in. Mirrors the shape DEDB uses: everything the app needs, resolved and
  * frozen before anything else starts.
  */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
+
 const STORES = ["memory", "mssql"];
 const AUTH_MODES = ["ldap", "dev"];
+
+/**
+ * The running build's version, for /metrics' gcio_build_info and nothing
+ * else -- it is not load-bearing, so a missing or unreadable package.json
+ * (an unusual layout, a trimmed deployment) must not stop the process the way
+ * a missing secret does.
+ * @returns {string}
+ */
+function readVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    return pkg.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * @param {NodeJS.ProcessEnv} env
@@ -72,6 +95,7 @@ export function loadConfig(env = process.env) {
   return Object.freeze({
     nodeEnv,
     isProd,
+    version: readVersion(),
     port: Number(env.PORT || 8123),
     host: env.HOST || (isProd ? "127.0.0.1" : "0.0.0.0"),
     store,
