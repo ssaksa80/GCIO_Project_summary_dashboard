@@ -41,6 +41,20 @@ const FILE = "livetest.xlsx";
    can sweep all of them -- including the per-scenario names Task 8 adds below
    -- with one LIKE rather than an ever-growing list of exact values. */
 const FILE_PREFIX = "livetest";
+/* Every ProjectId this suite ever writes starts with this prefix, for the same
+   reason FILE_PREFIX exists: cleanup() sweeps them with one LIKE that no real
+   project id can match. The markers this replaced -- 'P2-%', 'TIMING-%',
+   'S[1-6V]-%' -- were shapes a real portfolio could plausibly use, so a stray
+   DB_LIVE=1 against a populated database would have deleted real history.
+   Upper case because projectVersions.appendChanged() normalises every
+   ProjectId with .toUpperCase() before inserting it. Lower case would still
+   sweep correctly -- the collation is case-insensitive -- but the ids read
+   back would not equal the ids the tests hold, and assertions of the form
+   !changes.has(id) would pass on a lookup miss rather than on the behaviour
+   they mean to check. */
+const ID_PREFIX = "LIVETEST-";
+/** The one project whose history this suite writes by hand, not via ingest. */
+const HIST_ID = `${ID_PREFIX}HIST`;
 const quiet = { info() {}, error() {}, warn() {} };
 
 /**
@@ -53,13 +67,13 @@ const quiet = { info() {}, error() {}, warn() {} };
  */
 async function cleanup(ex) {
   const pattern = { name: "pattern", type: sql.NVarChar(260), value: `${FILE_PREFIX}%` };
+  const idPattern = { name: "idPattern", type: sql.NVarChar(60), value: `${ID_PREFIX}%` };
 
   await ex.query(`
     IF OBJECT_ID('dbo.ProjectVersion','U') IS NOT NULL
-      DELETE FROM dbo.ProjectVersion WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'P2-%'
-         OR ProjectId LIKE 'TIMING-%'
+      DELETE FROM dbo.ProjectVersion WHERE ProjectId LIKE @idPattern
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE @pattern)`,
-    [pattern]);
+    [pattern, idPattern]);
   await ex.query(
     "IF OBJECT_ID('dbo.IngestRun','U') IS NOT NULL DELETE FROM dbo.IngestRun WHERE FileName LIKE @pattern",
     [pattern]);
@@ -111,7 +125,7 @@ function scenarioParsed(fileName, tag, { count = 5 } = {}) {
   return {
     ok: true,
     file: fileName,
-    projects: base.projects.slice(0, count).map((p) => ({ ...p, id: `${tag}-${p.id}` })),
+    projects: base.projects.slice(0, count).map((p) => ({ ...p, id: `${ID_PREFIX}${tag}-${p.id}` })),
     posture: base.posture,
     bytes: base.bytes,
   };
@@ -375,7 +389,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const versions = projectVersionsRepo(ex);
 
     const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
-    const subject = { ...parsed.projects[0], id: "PRJ-HIST-TEST" };
+    const subject = { ...parsed.projects[0], id: HIST_ID };
 
     const before = await versions.historyFor(subject.id);
     await versions.appendChanged([{ project: subject, hash: hashProject(subject) }], { ingestRunId: null });
@@ -393,12 +407,12 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     assert.equal(afterChange[0].health, changed.health, "history is not newest-first");
 
     await ex.query("DELETE FROM dbo.ProjectVersion WHERE ProjectId = @id",
-      [{ name: "id", type: sql.NVarChar(60), value: "PRJ-HIST-TEST" }]);
+      [{ name: "id", type: sql.NVarChar(60), value: HIST_ID }]);
   });
 
   /* --------------------------------------------------------------------
    * Task 8 (Phase 2): changedSince against real rows. Every marker here uses
-   * a ProjectId prefixed "P2-", swept by cleanup()'s ProjectId LIKE 'P2-%'.
+   * a ProjectId prefixed ID_PREFIX, swept by cleanup()'s one ProjectId LIKE.
    * -------------------------------------------------------------------- */
 
   await t.test("changedSince reports the baseline and the current version of what moved", async () => {
@@ -406,8 +420,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const { hashProject } = await import("../../server/ingest/hash.js");
     const versions = projectVersionsRepo(ex);
 
-    const moved = "P2-MOVED";
-    const still = "P2-STILL";
+    const moved = `${ID_PREFIX}P2-MOVED`;
+    const still = `${ID_PREFIX}P2-STILL`;
     const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
 
     /* Two versions of one project a week apart, and one that never moves.
@@ -445,10 +459,10 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const { hashProject } = await import("../../server/ingest/hash.js");
     const versions = projectVersionsRepo(ex);
 
-    const fresh = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: "P2-FRESH" };
+    const fresh = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: `${ID_PREFIX}P2-FRESH` };
     await versions.appendChanged([{ project: fresh, hash: hashProject(fresh) }], { ingestRunId: null });
 
-    const entry = (await versions.changedSince("2026-08-01")).get("P2-FRESH");
+    const entry = (await versions.changedSince("2026-08-01")).get(`${ID_PREFIX}P2-FRESH`);
     assert.ok(entry, "a newly tracked project was dropped entirely");
     assert.equal(entry.baseline, null, "a baseline was invented for a project we have only just met");
     assert.ok(entry.trackedSince, "trackedSince must say when we first saw it");
@@ -461,15 +475,15 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const { hashProject } = await import("../../server/ingest/hash.js");
     const versions = projectVersionsRepo(ex);
 
-    const edge = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: "P2-EDGE" };
+    const edge = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0], id: `${ID_PREFIX}P2-EDGE` };
     await versions.appendChanged([{ project: edge, hash: hashProject(edge) }], { ingestRunId: null });
     await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
       { name: "at", type: sql.DateTime2, value: new Date("2026-08-18T00:00:00Z") },
-      { name: "id", type: sql.NVarChar(60), value: "P2-EDGE" },
+      { name: "id", type: sql.NVarChar(60), value: `${ID_PREFIX}P2-EDGE` },
     ]);
 
     const changes = await versions.changedSince("2026-08-18");
-    assert.ok(!changes.has("P2-EDGE"),
+    assert.ok(!changes.has(`${ID_PREFIX}P2-EDGE`),
       "a version recorded exactly at the cutoff was treated as a change within the period");
   });
 
@@ -482,8 +496,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
        feed compareField correctly rather than as strings or NaN. */
     const versions = projectVersionsRepo(ex);
 
-    const moved = "P2-CHAIN-MOVED";
-    const untracked = "P2-CHAIN-UNTRACKED";
+    const moved = `${ID_PREFIX}P2-CHAIN-MOVED`;
+    const untracked = `${ID_PREFIX}P2-CHAIN-UNTRACKED`;
     const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
 
     const baseline = {
@@ -544,8 +558,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
   await t.test("historyStartedAt reflects the oldest recorded version, and null when nothing is recorded", async () => {
     /* Every row written by the suite so far is already covered by patterns
-       cleanup() knows about (livetest%-tied IngestRunId, PRJ-HIST-TEST, and
-       now P2-%), so calling it here -- mid-suite, not only in t.after --
+       cleanup() knows about (livetest%-tied IngestRunId, or an ID_PREFIX
+       ProjectId), so calling it here -- mid-suite, not only in t.after --
        leaves dbo.ProjectVersion genuinely empty rather than merely assumed
        to be. That is the only honest way to exercise the null branch: the
        hermetic tests only ever saw a scripted executor stand in for "empty". */
@@ -558,8 +572,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       "historyStartedAt reported a start date with nothing recorded anywhere");
 
     const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
-    const oldest = { ...base, id: "P2-OLDEST" };
-    const newer = { ...base, id: "P2-NEWER", health: "Amber" };
+    const oldest = { ...base, id: `${ID_PREFIX}P2-OLDEST` };
+    const newer = { ...base, id: `${ID_PREFIX}P2-NEWER`, health: "Amber" };
 
     await versions.appendChanged([
       { project: oldest, hash: hashProject(oldest) },
@@ -571,11 +585,11 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
        subtest running before or after any other scenario. */
     await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
       { name: "at", type: sql.DateTime2, value: new Date("2020-01-01T00:00:00Z") },
-      { name: "id", type: sql.NVarChar(60), value: "P2-OLDEST" },
+      { name: "id", type: sql.NVarChar(60), value: `${ID_PREFIX}P2-OLDEST` },
     ]);
     await ex.query("UPDATE dbo.ProjectVersion SET RecordedAt = @at WHERE ProjectId = @id", [
       { name: "at", type: sql.DateTime2, value: new Date("2020-06-01T00:00:00Z") },
-      { name: "id", type: sql.NVarChar(60), value: "P2-NEWER" },
+      { name: "id", type: sql.NVarChar(60), value: `${ID_PREFIX}P2-NEWER` },
     ]);
 
     const started = await store.historyStartedAt();
@@ -923,8 +937,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
    * writes them. Every run here uses a livetest-timing- or
    * livetest-outcome- prefixed filename, swept by cleanup()'s FileName
    * LIKE 'livetest%'; the one subtest that writes dbo.Project/
-   * ProjectVersion rows tags its ids TIMING-, swept the same way as
-   * S1-6V/P2- above.
+   * ProjectVersion rows tags its ids ID_PREFIX + TIMING-, swept by the same
+   * single prefix LIKE as every other id this suite writes.
    * -------------------------------------------------------------------- */
 
   await t.test("dbo.IngestRun has ParseMs and PersistMs as nullable int columns (migration 10)", async () => {
@@ -1071,7 +1085,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
          field this subtest exists to prove gets recorded. */
       const parsed = {
         ok: true, file: scenarioFile, parseMs: base.parseMs,
-        projects: base.projects.slice(0, 5).map((p) => ({ ...p, id: `TIMING-${p.id}` })),
+        projects: base.projects.slice(0, 5).map((p) => ({ ...p, id: `${ID_PREFIX}TIMING-${p.id}` })),
         posture: base.posture, bytes: base.bytes,
       };
 
@@ -1120,16 +1134,13 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
       assert.equal(recordset[0].n, 0, `dbo.${table} still holds rows this suite created`);
     }
 
-    /* ProjectVersion has neither column: it is identified by the ProjectId
-       markers this suite's scenarios use (S1-.. through S6-.. and SV-.. tag
-       prefixes, the Task 8 P2-.. markers, the Task 6 TIMING-.. marker, plus
-       the literal PRJ-HIST-TEST) or, for the given-block history that goes
-       through a real ingest, by the IngestRunId of whichever livetest% run
-       wrote it. */
+    /* ProjectVersion has neither column: it is identified by ID_PREFIX, which
+       every ProjectId this suite writes carries, or -- for the given-block
+       history that goes through a real ingest -- by the IngestRunId of
+       whichever livetest% run wrote it. */
     const { recordset: versions } = await ex.query(`
       SELECT COUNT(*) AS n FROM dbo.ProjectVersion
-      WHERE ProjectId = 'PRJ-HIST-TEST' OR ProjectId LIKE 'S[1-6V]-%' OR ProjectId LIKE 'P2-%'
-         OR ProjectId LIKE 'TIMING-%'
+      WHERE ProjectId LIKE '${ID_PREFIX}%'
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE 'livetest%')
     `);
     assert.equal(versions[0].n, 0, "dbo.ProjectVersion still holds rows this suite created");
