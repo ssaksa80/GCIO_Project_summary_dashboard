@@ -869,8 +869,14 @@ Expected: nothing. The service must not exist.
 - [ ] **Step 5: Parse-check the whole script**
 
 ```
-powershell -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('deploy/install-service.ps1', [ref]$null, [ref]$null) | Out-Null; 'parses'"
+powershell -NoProfile -Command "$e=$null; $t=$null; [System.Management.Automation.Language.Parser]::ParseFile('deploy/install-service.ps1', [ref]$t, [ref]$e) | Out-Null; \"errors: $($e.Count)\""
 ```
+
+**Do not run that through Git Bash**, and do not use the `[ref]$null, [ref]$null`
+form. Bash consumes `$null` before PowerShell ever sees it, and discarding the
+error collection means the command prints success for a syntactically broken
+script — verified by feeding it a deliberately malformed `.ps1` and watching it
+report `parses`. Collect the errors into a real variable and print the count.
 
 The install path is not executable here, so a syntax error in it would go
 unnoticed until the worst possible moment.
