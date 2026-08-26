@@ -68,9 +68,12 @@ in a closure only one of them reaches.
 returns.** A leak check with no grace period reports false positives. Poll for a
 few seconds before concluding anything survived.
 
-**The suite is load-sensitive.** Running two Chrome-driving suites at once
-produces genuine navigation and sign-in timeouts — not leaks, but real
-failures. Run UI suites one at a time.
+**`node --test` runs FILES concurrently by default on Node 24**, so passing it
+several UI test files launches several Chromes at once — which produces genuine
+navigation and sign-in timeouts, not leaks but real failures. Every UI run needs
+`--test-concurrency=1`. `npm run test:ui` carries it; any hand-rolled
+`node --test test/ui/a.js test/ui/b.js` must too, and the commands earlier in
+this plan that omit it were wrong.
 
 **Rebuild after touching `client/src`.** The harness serves `client/dist`, so a
 component edit that is not rebuilt silently tests the previous bundle and you
