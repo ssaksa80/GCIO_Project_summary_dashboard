@@ -21,7 +21,7 @@ export default function SectionPriorities({ data, onOpen }) {
   const { items, watchlist } = data;
 
   return (
-    <section className="sec" id="priorities" ref={ref}>
+    <section className="sec" id="priorities" data-section="priorities" ref={ref}>
       <header className="sec-head">
         <span className="sec-n">3</span>
         <h2 className="sec-title display">Priorities</h2>
@@ -31,7 +31,7 @@ export default function SectionPriorities({ data, onOpen }) {
       <article className="card" data-reveal>
         {items.length === 0 && <p className="empty-line">Nothing is active — the portfolio is fully closed out.</p>}
         {items.map((p, i) => (
-          <div className="prio" key={p.id}>
+          <div className="prio" data-row key={p.id}>
             <div className="prio-rank">
               <span className="rank-n">{i + 1}</span>
               <span className="rank-l">rank</span>
@@ -71,7 +71,7 @@ export default function SectionPriorities({ data, onOpen }) {
           <h3>Watch list — next in line</h3>
           <div className="watch-grid">
             {watchlist.map((w) => (
-              <div className="watch" key={w.id}>
+              <div className="watch" data-row key={w.id}>
                 <div className="row-top">
                   <button type="button" className="pname" onClick={() => onOpen(w.id)}>{w.name}</button>
                   <ChangeBadge change={w.change} />

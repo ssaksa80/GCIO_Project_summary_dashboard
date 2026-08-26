@@ -34,7 +34,7 @@ export default function SectionPosture({ data, onOpen }) {
 
   if (!data?.available) {
     return (
-      <section className="sec" id="posture" ref={ref}>
+      <section className="sec" id="posture" data-section="posture" ref={ref}>
         <header className="sec-head">
           <span className="sec-n">5</span>
           <h2 className="sec-title display">Security Posture</h2>
@@ -52,7 +52,7 @@ export default function SectionPosture({ data, onOpen }) {
   const { counts, domains, weakest, overdueReviews, remediation, overallScore, targetScore, headline } = data;
 
   return (
-    <section className="sec" id="posture" ref={ref}>
+    <section className="sec" id="posture" data-section="posture" ref={ref}>
       <header className="sec-head">
         <span className="sec-n">5</span>
         <h2 className="sec-title display">Security Posture</h2>

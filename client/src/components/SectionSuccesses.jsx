@@ -15,7 +15,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
   const { delivered, milestones, nearComplete, recovered, savings, headline } = data;
 
   return (
-    <section className="sec" id="successes" ref={ref}>
+    <section className="sec" id="successes" data-section="successes" ref={ref}>
       <header className="sec-head">
         <span className="sec-n">1</span>
         <h2 className="sec-title display">Successes</h2>
@@ -34,7 +34,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
           <h3>Delivered this period</h3>
           {delivered.length === 0 && <p className="empty-line">No projects closed inside this window.</p>}
           {delivered.map((d) => (
-            <div className="row-item" key={d.id}>
+            <div className="row-item" data-row key={d.id}>
               <div className="row-top">
                 <button type="button" className="pname" onClick={() => onOpen(d.id)}>{d.name}</button>
                 <ChangeBadge change={d.change} />
@@ -51,7 +51,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
           <h3>Milestones completed</h3>
           {milestones.length === 0 && <p className="empty-line">No milestones closed in this window.</p>}
           {milestones.map((m) => (
-            <div className="row-item tight" key={`${m.id}-${m.name}`}>
+            <div className="row-item tight" data-row key={`${m.id}-${m.name}`}>
               <div className="row-top">
                 <span className="strong">{m.name}</span>
                 <span className="micro push">{fmtDate(m.completedOn)}</span>
@@ -73,7 +73,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
           <h3>On final approach (≥90%)</h3>
           {nearComplete.length === 0 && <p className="empty-line">Nothing is inside the last 10% yet.</p>}
           {nearComplete.map((n) => (
-            <div className="row-item tight" key={n.id}>
+            <div className="row-item tight" data-row key={n.id}>
               <button type="button" className="pname" onClick={() => onOpen(n.id)}>{n.name}</button>
               <ChangeBadge change={n.change} />
               <p className="meta">{Math.round(n.percentComplete)}% complete — {n.note}</p>
@@ -84,7 +84,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
             <>
               <h3 className="sub-h">Ahead of plan</h3>
               {recovered.map((r) => (
-                <div className="row-item tight" key={r.id}>
+                <div className="row-item tight" data-row key={r.id}>
                   <button type="button" className="pname" onClick={() => onOpen(r.id)}>{r.name}</button>
                   <ChangeBadge change={r.change} />
                   <p className="meta">{r.note}</p>

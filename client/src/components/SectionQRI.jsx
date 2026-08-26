@@ -17,7 +17,7 @@ export default function SectionQRI({ data, charts, theme, onOpen }) {
   const { questions, risks, issues, counts } = data;
 
   return (
-    <section className="sec" id="questions" ref={ref}>
+    <section className="sec" id="questions" data-section="qri" ref={ref}>
       <header className="sec-head">
         <span className="sec-n">2</span>
         <h2 className="sec-title display">Questions, Risks &amp; Issues</h2>

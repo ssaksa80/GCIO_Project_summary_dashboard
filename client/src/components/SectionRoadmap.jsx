@@ -48,7 +48,7 @@ export default function SectionRoadmap({ data, theme, onOpen }) {
   }, [horizonStart, horizonEnd]);
 
   return (
-    <section className="sec" id="roadmap" ref={ref}>
+    <section className="sec" id="roadmap" data-section="roadmap" ref={ref}>
       <header className="sec-head">
         <span className="sec-n">4</span>
         <h2 className="sec-title display">Roadmap / Planned Projects</h2>
