@@ -15,16 +15,187 @@
  * not resolve until the spawned server process has actually exited -
  * killing it is not the same thing, and a leaked node process per test file
  * is how a suite ends up unable to bind a port.
+ *
+ * `close()` itself cannot be trusted to be quick or even to succeed on the
+ * happy path - a ten-run and a concurrent-load run both found a real,
+ * intermittent leak: under load, `browser.close()` can hang indefinitely,
+ * and `child.kill()` on Windows terminates only the process node spawned,
+ * not the renderer/GPU processes underneath it, so a hung close() left a
+ * full Chrome tree and a live server behind with the test reporting a clean
+ * pass. `close()` now bounds every wait with a timeout and escalates to a
+ * `taskkill /T /F` tree-kill rather than trusting a single polite attempt,
+ * and is idempotent.
+ *
+ * A test that throws before ever reaching its own close() needed a second
+ * mechanism, and the obvious one - a `process.on("exit")` handler - turned
+ * out not to be enough on its own: Node only fires "exit" once its event
+ * loop drains, and an open Puppeteer connection to a live browser blocks
+ * that drain indefinitely (confirmed directly: a bare `puppeteer.launch()`
+ * with no matching `close()` kept `node --test` from exiting at all). The
+ * exit handler below stays as a genuine last resort, but the real fix is
+ * registering `node:test`'s own `after()` hook the moment an app boots -
+ * that hook is awaited by the test runner itself before it considers a
+ * file done, independent of whatever else is keeping the process's event
+ * loop alive, so it reaps a crashed test's app before the process ever
+ * needs to drain naturally.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { after } from "node:test";
 import puppeteer from "puppeteer-core";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
+
+/**
+ * Every booted { browser, server } pair still open, so the after() hook and
+ * the exit handler below can reap anything a crashed test file would
+ * otherwise strand. Entries are removed once their own close() has run,
+ * successfully or not.
+ */
+const active = new Set();
+
+/**
+ * `node:test`'s own after() is registered at most once per process, the
+ * first time anything boots. It is the primary net for "a test threw
+ * before calling close()": node:test awaits this before it considers the
+ * file finished, which does not depend on the process's event loop
+ * draining the way process.on("exit") does.
+ *
+ * This sweep calls `entry.close` - the same idempotent close() the app
+ * itself returned - never `teardown(entry)` directly. A test's own
+ * `t.after(() => app.close())` and this file-level sweep can both still be
+ * live at once (node:test does not guarantee one fully finishes before the
+ * other starts), and calling teardown() twice concurrently on the same
+ * entry is exactly how two browser.close() attempts raced each other and
+ * produced an unreliable result. Routing both callers through the same
+ * `closed` guard is what makes the second caller a true no-op.
+ */
+let afterHookRegistered = false;
+function ensureAfterHook() {
+  if (afterHookRegistered) return;
+  afterHookRegistered = true;
+  after(async () => {
+    for (const entry of [...active]) {
+      await (entry.close ? entry.close() : teardown(entry)).catch(() => {});
+      active.delete(entry);
+    }
+  });
+}
+
+/* Opt-in diagnostics, HARNESS_DEBUG=1. This is what actually found the
+   double-teardown race below: a test's own t.after(close) and the
+   after()-hook sweep can both be live for the same entry at once, and the
+   two interleaved close() attempts produced inconsistent, hard-to-read
+   results until this traced each one. Cheap enough, and useful enough
+   under load, to leave in rather than pull back out. */
+const DEBUG = process.env.HARNESS_DEBUG === "1";
+function dlog(...args) {
+  if (DEBUG) console.error(`[harness ${new Date().toISOString()}]`, ...args);
+}
+
+/**
+ * Force-kill a process and everything under it. `child.kill()` on Windows
+ * is not a tree kill - it terminates the process node spawned but not its
+ * descendants, which is exactly what let a headless Chrome's renderer
+ * processes survive a "successful" close(). `taskkill /T` is the standard
+ * escalation. Silently a no-op if the pid is already gone.
+ */
+function killProcessTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === "win32") {
+      const out = execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8" });
+      dlog(`taskkill /PID ${pid} /T /F ->`, out.trim());
+    } else {
+      process.kill(pid, "SIGKILL");
+    }
+  } catch (err) {
+    dlog(`taskkill /PID ${pid} /T /F threw:`, err.stdout?.toString?.() || err.message);
+    // Already exited, or never existed. Either way, nothing left to do.
+  }
+}
+
+/** Race a promise against a timeout. The original promise is always given a
+ *  handler, win or lose, so an abandoned rejection never surfaces later as
+ *  an unhandled rejection. */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+/** Resolve once `child` has exited, or reject after `ms`. Resolves
+ *  immediately if the child has already exited. */
+function waitForExit(child, ms, label) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return withTimeout(new Promise((resolve) => child.once("exit", resolve)), ms, label);
+}
+
+/**
+ * Last resort: if a test file throws (or the whole process is killed)
+ * before a booted app's own close() runs, nothing has torn down the server
+ * or the browser. This fires on every normal and abnormal exit of this
+ * process and force-kills whatever is still tracked. Exit handlers must be
+ * synchronous, which is exactly what killProcessTree is.
+ */
+process.on("exit", () => {
+  for (const entry of active) {
+    killProcessTree(entry.browser?.process()?.pid);
+    killProcessTree(entry.server.pid);
+  }
+});
+
+/**
+ * Tear down one { server, browser } entry, bounded so this can never hang -
+ * the shared implementation behind both the app's own close() and the
+ * early-failure cleanup in boot() below.
+ *
+ * Each half gets one polite attempt with a timeout, then a tree-kill by pid
+ * if the polite attempt did not land. `browser.close()` hanging under load,
+ * and `child.kill()` not being a tree kill on Windows, are exactly the two
+ * ways this leaked a full Chrome tree and a live server behind a test that
+ * had already reported a clean pass.
+ */
+async function teardown(entry) {
+  const { server, browser } = entry;
+
+  if (browser) {
+    const browserPid = browser.process()?.pid;
+    const t0 = Date.now();
+    try {
+      await withTimeout(browser.close(), 5_000, "browser.close()");
+      dlog(`browser.close() resolved normally for pid ${browserPid} after ${Date.now() - t0}ms`);
+    } catch (err) {
+      dlog(`browser.close() for pid ${browserPid} did not land after ${Date.now() - t0}ms:`, err.message);
+      killProcessTree(browserPid);
+    }
+  }
+
+  if (server.exitCode === null && server.signalCode === null) {
+    dlog(`server.kill() pid ${server.pid}`);
+    server.kill();
+    try {
+      await waitForExit(server, 5_000, "server exit after kill()");
+      dlog(`server pid ${server.pid} exited after kill()`);
+    } catch (err) {
+      dlog(`server pid ${server.pid} did not exit after kill():`, err.message);
+      killProcessTree(server.pid);
+      await waitForExit(server, 3_000, "server exit after taskkill").catch((err2) => {
+        dlog(`server pid ${server.pid} did not exit even after taskkill:`, err2.message);
+        /* Nothing further to try from here. If this process itself is about
+           to end, the exit handler above is the true last resort. */
+      });
+    }
+  }
+}
 
 /**
  * Where Chrome is. puppeteer-core does not download one, so this has to say.
@@ -194,7 +365,15 @@ async function signIn(page, { username = "pat", password = "whatever" } = {}) {
 }
 
 /** Boot the server and browser, land on the sign-in screen. Shared by both
- *  start functions below. */
+ *  start functions below.
+ *
+ * The server is tracked in `active` from the moment it is spawned - before
+ * the browser even exists - and the whole body runs under a try/catch that
+ * tears down whatever was created so far before rethrowing. Without that, a
+ * failure partway through boot (the server never printing "listening on",
+ * the browser failing to launch, sign-in never finding its selector) would
+ * leave that partial state behind forever: nobody holds a `close()` for an
+ * app that never finished booting. */
 async function boot({ role = "admin", stubs = null } = {}) {
   const port = await freePort();
   const server = spawn(process.execPath, ["server/index.js"], {
@@ -211,58 +390,81 @@ async function boot({ role = "admin", stubs = null } = {}) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  let output = "";
-  const onOut = (chunk) => { output += String(chunk); };
-  const onErr = (chunk) => { output += String(chunk); };
-  server.stdout.on("data", onOut);
-  server.stderr.on("data", onErr);
+  const entry = { server, browser: null };
+  active.add(entry);
+  ensureAfterHook();
 
-  /* Wait for the line the server actually prints, not a fixed delay. A sleep
-     long enough to be safe on a slow machine is long enough to waste minutes
-     across a suite. */
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`server did not start within 30s. Output so far:\n${output}`));
-    }, 30_000);
-    const onData = (chunk) => {
-      if (String(chunk).includes("listening on")) {
+  try {
+    let output = "";
+    const onOut = (chunk) => { output += String(chunk); };
+    const onErr = (chunk) => { output += String(chunk); };
+    server.stdout.on("data", onOut);
+    server.stderr.on("data", onErr);
+
+    /* Wait for the line the server actually prints, not a fixed delay. A
+       sleep long enough to be safe on a slow machine is long enough to
+       waste minutes across a suite. */
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`server did not start within 30s. Output so far:\n${output}`));
+      }, 30_000);
+      const onData = (chunk) => {
+        if (String(chunk).includes("listening on")) {
+          clearTimeout(timer);
+          server.stdout.off("data", onData);
+          resolve();
+        }
+      };
+      server.stdout.on("data", onData);
+      server.once("exit", (code) => {
         clearTimeout(timer);
-        server.stdout.off("data", onData);
-        resolve();
-      }
-    };
-    server.stdout.on("data", onData);
-    server.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`server exited early with code ${code}. Output so far:\n${output}`));
+        reject(new Error(`server exited early with code ${code}. Output so far:\n${output}`));
+      });
     });
-  });
 
-  const browser = await puppeteer.launch({
-    executablePath: findBrowser(),
-    headless: "new",
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1600, height: 1000 });
+    const browser = await puppeteer.launch({
+      executablePath: findBrowser(),
+      headless: "new",
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    entry.browser = browser;
 
-  if (stubs) await applyStubs(page, stubs);
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1600, height: 1000 });
 
-  const baseUrl = `http://127.0.0.1:${port}`;
-  await page.goto(baseUrl, { waitUntil: "networkidle0" });
+    if (stubs) await applyStubs(page, stubs);
 
-  return {
-    page,
-    baseUrl,
-    async close() {
-      await browser.close();
-      const exited = new Promise((resolve) => server.once("exit", resolve));
-      server.kill();
-      /* Killing is not the same as having exited; a leaked node process per
-         test file is how a suite ends up unable to bind a port. */
-      await exited;
-    },
-  };
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await page.goto(baseUrl, { waitUntil: "networkidle0" });
+
+    let closed = false;
+
+    /**
+     * Tear down the browser and the server, bounded so this can never hang
+     * the suite - and idempotent, so a test that calls it via both t.after
+     * and the file-level after() sweep does not double up. Stored on
+     * `entry` too, so that sweep calls this exact function rather than
+     * teardown() directly - see ensureAfterHook() for why that matters.
+     */
+    async function close() {
+      if (closed) return;
+      closed = true;
+      try {
+        await teardown(entry);
+      } finally {
+        active.delete(entry);
+      }
+    }
+    entry.close = close;
+
+    return { page, baseUrl, close };
+  } catch (err) {
+    /* Boot did not finish, so nobody will ever receive a close() to call.
+       Tear down whatever got created before letting the failure propagate. */
+    await teardown(entry).catch(() => {});
+    active.delete(entry);
+    throw err;
+  }
 }
 
 /**
@@ -274,7 +476,16 @@ async function boot({ role = "admin", stubs = null } = {}) {
  */
 export async function startDashboard({ role = "admin", stubs = null } = {}) {
   const app = await boot({ role, stubs });
-  await signIn(app.page);
+  try {
+    await signIn(app.page);
+  } catch (err) {
+    /* boot() already succeeded and handed back a real close() - if sign-in
+       then fails, this is the only place that close() will ever be called
+       from, since the caller never receives `app` to register its own
+       cleanup. */
+    await app.close().catch(() => {});
+    throw err;
+  }
   return app;
 }
 
@@ -286,6 +497,11 @@ export async function startDashboard({ role = "admin", stubs = null } = {}) {
  */
 export async function startDashboardSignedOut({ role = "admin" } = {}) {
   const app = await boot({ role, stubs: null });
-  await app.page.waitForSelector(".signin input");
+  try {
+    await app.page.waitForSelector(".signin input");
+  } catch (err) {
+    await app.close().catch(() => {});
+    throw err;
+  }
   return app;
 }
