@@ -250,6 +250,22 @@ git commit -m "test(ui): a harness that drives the real client in a real browser
 
 ### Task 2: The sections render
 
+**The harness API Task 1 settled on**, which Tasks 2 to 5 are written against:
+
+- `startDashboard({ role, stubs })` and `startDashboardSignedOut({ role })`, both
+  returning `{ page, baseUrl, close }`. `close()` waits for the server to exit.
+- `stubs` is deep-merged over the REAL `/api/summary` response, so a test gets
+  genuine sample data plus whatever it needs on top. Objects merge recursively;
+  arrays and scalars are replaced wholesale.
+- `changeForFirstProject` is a special key: the harness finds the first project
+  id in the real response using the same `node.projectId || node.id` convention
+  `annotateChanges` uses, and attaches the given change to every node carrying
+  it. Never hardcode a project id — the sample data can change.
+- A broken stub responds 599 with the error in the body, so it fails loudly
+  rather than hanging.
+- Sign-in uses `.signin button[type="submit"]`. Do NOT use `.signin-submit` —
+  the SSO button carries that class too.
+
 **Files:**
 - Create: `test/ui/render.test.js`
 
@@ -351,21 +367,21 @@ const ui = process.env.UI_LIVE === "1";
 /* The sample portfolio has no history, so these states have to be stubbed in.
    The stub is merged over the real response, so everything except `changes`
    and `sections.historyAvailable` is genuine. */
-const withHistory = (projectId) => ({
+const withHistory = {
   sections: { historyAvailable: true },
   historyStartedAt: "2026-08-01T00:00:00.000Z",
-  changeFor: {
-    [projectId]: { headline: "health Green to Red", worst: "worse", since: "2026-08-18T00:00:00.000Z",
-                   fields: { health: { from: "Green", to: "Red", direction: "worse" } } },
+  changeForFirstProject: {
+    headline: "health Green to Red", worst: "worse", since: "2026-08-18T00:00:00.000Z",
+    fields: { health: { from: "Green", to: "Red", direction: "worse" } },
   },
-});
+};
 
 test("what changed is shown, and shown honestly", { skip: !ui }, async (t) => {
   await t.test("a worsening move is red and points up", async () => {
     /* Pantone 192 C. The exact value matters: the brand palette is fixed and a
        badge that drifts to a generic red is a brand defect nobody would catch
        by reading code. */
-    const app = await startDashboard({ stubs: withHistory("FIRST_PROJECT_ID") });
+    const app = await startDashboard({ stubs: withHistory });
     try {
       await app.page.waitForSelector(".change-worse");
       const colour = await app.page.$eval(".change-worse", (el) => getComputedStyle(el).color);
