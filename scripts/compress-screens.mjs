@@ -2,12 +2,13 @@
 import puppeteer from "puppeteer-core";
 import fs from "node:fs";
 import path from "node:path";
+import { findBrowser } from "../test/ui/harness.mjs";
 
 const DIR = process.argv[2];
 const files = fs.readdirSync(DIR).filter((f) => f.endsWith(".png"));
 
 const browser = await puppeteer.launch({
-  executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  executablePath: findBrowser(),
   headless: "new",
 });
 const page = await browser.newPage();

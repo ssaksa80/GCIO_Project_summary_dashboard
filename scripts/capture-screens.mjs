@@ -1,6 +1,7 @@
 /** Capture GCIO dashboard screenshots for QA + the CIO theme demo. */
 import puppeteer from "puppeteer-core";
 import fs from "node:fs";
+import { findBrowser } from "../test/ui/harness.mjs";
 
 const OUT = process.argv[2] || "./screens";
 fs.mkdirSync(OUT, { recursive: true });
@@ -9,7 +10,7 @@ const THEMES = ["obsidian", "platinum", "sapphire", "emerald"];
 const BASE = "http://localhost:8123";
 
 const browser = await puppeteer.launch({
-  executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  executablePath: findBrowser(),
   headless: "new",
   args: ["--hide-scrollbars", "--force-device-scale-factor=2"],
 });

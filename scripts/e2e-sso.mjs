@@ -6,9 +6,10 @@
  * needed.
  */
 import puppeteer from "puppeteer-core";
+import { findBrowser } from "../test/ui/harness.mjs";
 
 const browser = await puppeteer.launch({
-  executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  executablePath: findBrowser(),
   headless: "new",
   args: ["--no-sandbox", "--force-prefers-reduced-motion"],
 });
