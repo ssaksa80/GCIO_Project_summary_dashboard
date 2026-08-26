@@ -399,14 +399,6 @@ export function createApp(deps) {
     res.status(503).send("GCIO dashboard client is not built yet. Run: npm run build");
   });
 
-
-  app.use(express.static(clientDist, { index: "index.html", maxAge: "1h" }));
-  app.get(/^\/(?!api\/).*/, (req, res) => {
-    const index = path.join(clientDist, "index.html");
-    if (fs.existsSync(index)) return res.sendFile(index);
-    res.status(503).send("GCIO dashboard client is not built yet. Run: npm run build");
-  });
-
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     const status = err.status || 500;
     if (status >= 500) console.error(`[gcio] ${req.method} ${req.path} failed: ${err.stack || err.message}`);
