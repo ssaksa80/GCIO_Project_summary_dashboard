@@ -105,10 +105,14 @@ test("a signed-in viewer reads the portfolio and the four sections", async () =>
 
   const summary = await agent.get("/api/summary?period=weekly&date=2026-08-24");
   assert.equal(summary.status, 200);
-  assert.deepEqual(
-    Object.keys(summary.body.sections),
-    ["successes", "qri", "priorities", "roadmap", "posture"]
-  );
+  /* The five sections the CIO asked for, in order. Not an exact key list:
+     annotateChanges also records historyAvailable here, and pinning the whole
+     shape means every future addition breaks a test about section order. */
+  const sectionKeys = Object.keys(summary.body.sections);
+  assert.deepEqual(sectionKeys.filter((k) => k !== "historyAvailable"),
+    ["successes", "qri", "priorities", "roadmap", "posture"]);
+  assert.equal(typeof summary.body.sections.historyAvailable, "boolean",
+    "the summary must always say whether history was available");
 
   const projects = await agent.get("/api/projects");
   assert.equal(projects.status, 200);
@@ -410,6 +414,133 @@ test("reading ingest runs does not write to the audit trail", async () => {
   await admin.get("/api/ingest/runs");
   assert.equal(written.length, 0,
     "reading ingest runs was audited, which reverses the deliberate decision not to");
+});
+
+/* ------------------------------------------------------------ changed-since */
+
+test("the summary reports whether history is available", async () => {
+  const { app } = makeApp({ role: "viewer" });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200);
+  /* The in-memory store keeps no history, and must say so rather than
+     implying a stable week. */
+  assert.equal(res.body.sections.historyAvailable, false);
+  assert.equal(res.body.changes, null);
+});
+
+test("a store that knows what changed puts it on the summary", async () => {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  const first = store.all()[0];
+  store.changesSince = async () => new Map([
+    [first.id, { headline: "health Green to Red", worst: "worse",
+                 fields: { health: { from: "Green", to: "Red", direction: "worse" } },
+                 since: "2026-08-18T00:00:00.000Z" }],
+  ]);
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.body.sections.historyAvailable, true);
+  assert.equal(res.body.changes.wentRed, 1);
+
+  /* successes has no flat "items" list in this codebase's section shape --
+     "delivered" is its per-project array and carries `id` the same way. */
+  const annotated = [
+    ...res.body.sections.priorities.items,
+    ...res.body.sections.priorities.watchlist,
+    ...res.body.sections.successes.delivered,
+  ].find((item) => item.id === first.id);
+  assert.ok(annotated, "expected the changed project to appear in a section");
+  assert.equal(annotated.change.worst, "worse");
+});
+
+test("a history query that fails does not take down the briefing", async () => {
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => { throw new Error("database is down"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200, "a history failure blanked the dashboard");
+  assert.equal(res.body.sections.historyAvailable, false);
+  assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
+});
+
+test("a failure reading when history begins does not blank the dashboard", async () => {
+  /* The in-memory store's historyStartedAt can never throw, so nothing in the
+     rest of the suite covers this path -- and it is the same 500 that a
+     failing changesSince would have caused before it was guarded. */
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => new Map();
+  store.historyStartedAt = async () => { throw new Error("history table is unreachable"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.get("/api/summary?period=weekly&date=2026-08-25");
+
+  assert.equal(res.status, 200, "a history failure blanked the dashboard");
+  assert.equal(res.body.historyStartedAt, null);
+  assert.ok(res.body.sections.priorities.items.length > 0, "the portfolio itself did not survive");
+  /* changesSince still worked, so history is available -- just not its start. */
+  assert.equal(res.body.sections.historyAvailable, true);
+});
+
+test("the export route's history guards are exercised too, not just /api/summary", async () => {
+  /* /api/export/:format carries the identical loadChanges/loadHistoryStart
+     wiring as /api/summary. Every other test in this file hits /api/summary,
+     so without this one a future edit that broke only the export handler
+     would pass the whole suite while reintroducing the exact 500 the guard
+     fix was for. */
+  const store = new Store();
+  ingestDirectory(store, "sample-data");
+  store.changesSince = async () => new Map();
+  store.historyStartedAt = async () => { throw new Error("history table is unreachable"); };
+
+  const app = createApp({
+    store, config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ "gcio-dashboard-viewers": "viewer" }),
+    audit: { append: async () => {} },
+    ldapAuthenticate: devAuthenticate("viewer"),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  const agent = await signedIn(app);
+  const res = await agent.post("/api/export/html").send({ period: "weekly", date: "2026-08-25" });
+
+  assert.equal(res.status, 200, "a history failure blanked the export");
+  assert.match(res.headers["content-type"], /text\/html/);
 });
 
 /* ------------------------------------------------------------- SSO config */

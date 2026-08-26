@@ -2,6 +2,7 @@
 import { fmtDate, fmtMoney } from "../lib/format.js";
 import { CountUp, useGrow, useReveal } from "../lib/motion.jsx";
 import { DeliveryTrend, useTokens } from "./charts.jsx";
+import ChangeBadge from "./ChangeBadge.jsx";
 
 function Progress({ pct }) {
   const ref = useGrow(pct);
@@ -36,6 +37,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
             <div className="row-item" key={d.id}>
               <div className="row-top">
                 <button type="button" className="pname" onClick={() => onOpen(d.id)}>{d.name}</button>
+                <ChangeBadge change={d.change} />
                 <span className="chip good solid">Delivered</span>
                 {d.onTime && <span className="chip info">On time</span>}
                 <span className="micro push">{d.department}</span>
@@ -55,6 +57,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
                 <span className="micro push">{fmtDate(m.completedOn)}</span>
               </div>
               <button type="button" className="meta linkish" onClick={() => onOpen(m.id)}>{m.project}</button>
+              <ChangeBadge change={m.change} />
             </div>
           ))}
         </article>
@@ -72,6 +75,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
           {nearComplete.map((n) => (
             <div className="row-item tight" key={n.id}>
               <button type="button" className="pname" onClick={() => onOpen(n.id)}>{n.name}</button>
+              <ChangeBadge change={n.change} />
               <p className="meta">{Math.round(n.percentComplete)}% complete — {n.note}</p>
               <Progress pct={n.percentComplete} />
             </div>
@@ -82,6 +86,7 @@ export default function SectionSuccesses({ data, charts, theme, onOpen }) {
               {recovered.map((r) => (
                 <div className="row-item tight" key={r.id}>
                   <button type="button" className="pname" onClick={() => onOpen(r.id)}>{r.name}</button>
+                  <ChangeBadge change={r.change} />
                   <p className="meta">{r.note}</p>
                 </div>
               ))}

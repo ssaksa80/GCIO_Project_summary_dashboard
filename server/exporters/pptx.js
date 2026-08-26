@@ -20,6 +20,40 @@ const range = (s) => (s.rangeStart === s.rangeEnd ? fmtDate(s.rangeStart) : `${f
 const clip = (text, n = 150) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
 /**
+ * Compact change marker. The writer re-measures whatever text it is given, so
+ * appending to a bullet is safe on its own — the real reason to stay short
+ * here is that the deck is already dense. The web page can afford the full
+ * headline ("▲ health Green to Red"); the deck says "▲ Red" instead. Never
+ * mutate `change` itself — the same object is shared across every section
+ * that names this project.
+ */
+function changeMark(change) {
+  if (!change) return "";
+  if (change.trackedSince) return "";
+  const arrow = change.worst === "worse" ? "▲" : change.worst === "better" ? "▼" : "•";
+  const f = change.fields || {};
+  if (f.health) return ` ${arrow} ${f.health.to}`;
+  if (f.status) return ` ${arrow} ${f.status.to}`;
+  if (f.targetEndDate?.days !== undefined) return ` ${arrow} ${f.targetEndDate.days > 0 ? "+" : ""}${f.targetEndDate.days}d`;
+  return ` ${arrow} ${clip(change.headline, 22)}`;
+}
+
+/**
+ * The client's honest-cold-start line: a deck with no change markers must say
+ * why, because it gets emailed onward and read with nobody present to explain
+ * the absence — without this a reader infers a stable portfolio, which is
+ * exactly the wrong inference when the truth is "we cannot know". Suppressed
+ * outright when history IS available: a period where nothing moved is a real
+ * answer and gets no apology.
+ */
+function noHistoryLine(summary) {
+  if (summary?.sections?.historyAvailable) return null;
+  return summary?.historyStartedAt
+    ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+    : "No change history yet — it begins with the next upload.";
+}
+
+/**
  * @param {{summary: object, meta: object}} payload
  * @returns {Uint8Array} .pptx bytes
  */
@@ -30,11 +64,14 @@ export function buildPptxDeck(payload) {
 
   const slides = [];
 
+  const coverSubtitle = `${range(summary)} · ${kpis.totalProjects} projects · ${fmtMoney(kpis.budgetTotal)} committed${meta.demoMode ? " · demonstration portfolio" : ""}`;
+  const noHistory = noHistoryLine(summary);
+
   slides.push({
     cover: true,
     eyebrow: "GCIO · PROJECT INTELLIGENCE",
     title: PERIOD_TITLE[summary.period] || "Executive Summary",
-    subtitle: `${range(summary)} · ${kpis.totalProjects} projects · ${fmtMoney(kpis.budgetTotal)} committed${meta.demoMode ? " · demonstration portfolio" : ""}`,
+    subtitle: noHistory ? `${coverSubtitle}\n${noHistory}` : coverSubtitle,
     kpis: [
       { lab: "Portfolio", val: String(kpis.totalProjects), sub: `${kpis.active} active` },
       { lab: "Healthy", val: `${kpis.totalProjects ? Math.round((kpis.health.green / kpis.totalProjects) * 100) : 0}%`, sub: `${kpis.health.green} green · ${kpis.health.red} red` },
@@ -46,7 +83,7 @@ export function buildPptxDeck(payload) {
   /* 1 — Successes */
   const successBullets = [
     ...successes.delivered.slice(0, 5).map((d) => ({
-      tag: "Delivered", tone: "good", text: clip(d.name), sub: `${fmtDate(d.completedOn)} · ${d.note}`,
+      tag: "Delivered", tone: "good", text: clip(d.name) + changeMark(d.change), sub: `${fmtDate(d.completedOn)} · ${d.note}`,
     })),
     ...successes.milestones.slice(0, 3).map((m) => ({
       tag: "Milestone", tone: "info", text: clip(m.name), sub: `${clip(m.project, 70)} · ${fmtDate(m.completedOn)}`,
@@ -81,7 +118,7 @@ export function buildPptxDeck(payload) {
       tag: q.severity === "critical" ? "Decision now" : "Decision soon",
       tone: q.severity === "critical" ? "bad" : "warn",
       text: clip(q.text, 190),
-      sub: `${clip(q.project, 52)} · ${q.source === "workbook" ? `raised by ${q.askedBy || "the PM"}` : "derived from portfolio state"}${q.neededBy ? ` · needed by ${fmtDate(q.neededBy)}` : ""}`,
+      sub: `${clip(q.project, 52)}${changeMark(q.change)} · ${q.source === "workbook" ? `raised by ${q.askedBy || "the PM"}` : "derived from portfolio state"}${q.neededBy ? ` · needed by ${fmtDate(q.neededBy)}` : ""}`,
     })),
     note: qri.counts.questions > 6 ? `${qri.counts.questions - 6} further questions in the dashboard.` : "",
   });
@@ -98,7 +135,7 @@ export function buildPptxDeck(payload) {
     bullets: [
       ...qri.risks.slice(0, 4).map((r) => ({
         tag: r.severity, tone: r.severity === "Critical" ? "bad" : r.severity === "High" ? "warn" : "neutral",
-        text: clip(r.title), sub: `${clip(r.project, 60)}${r.owner ? ` · ${r.owner}` : ""} · ${r.status}`,
+        text: clip(r.title), sub: `${clip(r.project, 60)}${changeMark(r.change)}${r.owner ? ` · ${r.owner}` : ""} · ${r.status}`,
       })),
       ...qri.issues.slice(0, 4).map((i) => ({
         tag: i.type, tone: i.health === "Red" ? "bad" : "warn",
@@ -115,7 +152,7 @@ export function buildPptxDeck(payload) {
     bullets: priorities.items.slice(0, 6).map((p, i) => ({
       tag: `#${i + 1} · ${p.score}`,
       tone: p.score > 85 ? "bad" : p.score > 70 ? "warn" : "good",
-      text: clip(p.name, 80),
+      text: clip(p.name, 80) + changeMark(p.change),
       sub: `${clip(p.why, 190)}\nNeeded: ${clip(p.ask, 190)}`,
     })),
     note: "Score = priority + health + schedule + risk + financial + dependency weight.",
@@ -135,12 +172,12 @@ export function buildPptxDeck(payload) {
       ...roadmap.inFlight.slice(0, 4).map((p) => ({
         tag: p.slipDays > 0 ? `+${p.slipDays}d` : "On plan",
         tone: p.slipDays > 0 ? "warn" : "good",
-        text: clip(p.name, 80),
+        text: clip(p.name, 80) + changeMark(p.change),
         sub: `${Math.round(p.percentComplete)}% · target ${fmtDate(p.targetEndDate)}${p.slipDays > 0 ? ` · forecast ${fmtDate(p.forecastEnd)}` : ""}`,
       })),
       ...roadmap.pipeline.slice(0, 4).map((p) => ({
         tag: p.status, tone: p.status === "Approved" ? "good" : "neutral",
-        text: clip(p.name, 80),
+        text: clip(p.name, 80) + changeMark(p.change),
         sub: `${p.pillar} · ${p.startDate ? `starts ${fmtDate(p.startDate)}` : "no start date"} · ${fmtMoney(p.budget)} · ${p.readiness}`,
       })),
     ],
@@ -165,7 +202,7 @@ export function buildPptxDeck(payload) {
       bullets: posture.weakest.slice(0, 6).map((d) => ({
         tag: d.status,
         tone: tone(d.status),
-        text: clip(d.control ? `${d.domain} — ${d.control}` : d.domain, 90),
+        text: clip(d.control ? `${d.domain} — ${d.control}` : d.domain, 90) + changeMark(d.change),
         sub: `${Math.round(d.score)}% against a ${Math.round(d.target)}% target`
           + (d.gap > 0 ? `, ${Math.round(d.gap)} points short` : "")
           + (d.criticalFindings ? ` · ${d.criticalFindings} critical finding${d.criticalFindings === 1 ? "" : "s"}` : "")

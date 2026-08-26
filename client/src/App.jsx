@@ -181,6 +181,14 @@ export default function App() {
             </span>
           </div>
 
+          {!sections.historyAvailable && (
+            <p className="empty-line no-history">
+              {summary.historyStartedAt
+                ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+                : "No change history yet — it begins with the next upload."}
+            </p>
+          )}
+
           <KpiStrip
             kpis={summary.kpis}
             questionCount={sections.qri.counts.questions}

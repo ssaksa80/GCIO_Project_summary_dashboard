@@ -6,7 +6,8 @@
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek.js";
 import { fmtMoney, fmtDate, round1 } from "./format.js";
-import { buildSections } from "./sections.js";
+import { buildSections, annotateChanges } from "./sections.js";
+import { summariseChanges } from "./changes.js";
 
 dayjs.extend(isoWeek);
 
@@ -64,12 +65,57 @@ function trendBuckets(period, anchor) {
 const sum = (arr, fn) => arr.reduce((acc, x) => acc + (fn(x) || 0), 0);
 
 /**
+ * Fetch what changed during a period. The one asynchronous step in an
+ * otherwise synchronous pipeline, kept at the edge on purpose: making the
+ * section engine async to reach a database would ripple through every builder
+ * and every test for no benefit.
+ *
+ * @returns {Promise<Map<string, object>|null>} null when the store keeps no history
+ */
+export async function loadChanges(store, period, dateISO) {
+  if (typeof store.changesSince !== "function") return null;
+  const { start } = periodWindow(period, dateISO);
+  try {
+    return await store.changesSince(start.format("YYYY-MM-DD"));
+  } catch (err) {
+    /* A history query failing must not take down the briefing. The dashboard
+       is still correct without it; it just cannot say what moved. */
+    console.error(`[changes] could not load history: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * When history begins, or null if we cannot say.
+ *
+ * Guarded for the same reason loadChanges is: this runs a query against the
+ * history table, and the portfolio is still perfectly serveable when that
+ * table is unreachable. Blanking a working dashboard because we could not
+ * answer "since when" would be the wrong trade.
+ */
+export async function loadHistoryStart(store) {
+  if (typeof store.historyStartedAt !== "function") return null;
+  try {
+    return await store.historyStartedAt();
+  } catch (err) {
+    console.error(`[changes] could not read when history begins: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Build the full summary payload for a period (SPEC §5 shape).
  * @param {import('./store.js').Store} store
  * @param {"daily"|"weekly"|"monthly"|"yearly"} period
  * @param {string} dateISO anchor date (yyyy-mm-dd)
+ * @param {{changes?: Map<string, object>|null, historyStartedAt?: string|null}} [opts]
+ *        changes computed by loadChanges and historyStartedAt computed by
+ *        loadHistoryStart, both already resolved by the caller and passed
+ *        straight through onto the returned payload. Both default to null so
+ *        every existing three-argument caller keeps working unchanged and
+ *        sees nothing annotated and no history start date.
  */
-export function buildSummary(store, period, dateISO) {
+export function buildSummary(store, period, dateISO, { changes = null, historyStartedAt = null } = {}) {
   const anchor = dayjs(dateISO);
   const { start, end } = periodWindow(period, dateISO);
   const todayISO = dayjs().format("YYYY-MM-DD");
@@ -127,7 +173,12 @@ export function buildSummary(store, period, dateISO) {
     generatedAt: new Date().toISOString(),
     currency: "AED",
     kpis,
-    sections: buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
+    changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
+    historyStartedAt,
+    sections: annotateChanges(
+      buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
+      changes
+    ),
     narrative: buildNarrative({ period, anchor, end, projects, active, kpis, completedIn, approvedIn, overdue, criticalRisks, allMilestones, todayISO }),
     charts: buildCharts({ period, anchor, projects, active }),
     attention: buildAttention(projects, criticalRisks, todayISO),

@@ -261,6 +261,26 @@ export const MIGRATIONS = [
           CHECK (Outcome IS NULL OR Outcome IN ('applied', 'unchanged', 'failed', 'removed'));
     `,
   },
+  {
+    id: 9,
+    name: "cover_changed_since",
+    sql: `
+      /* changedSince ranks every version of every project on each request, and
+         selects eight columns beyond the key. Without them in the index the
+         optimiser goes to the clustered index -- dragging the ~1.8 kB in-row
+         Payload along on every page -- and then has to sort, because clustered
+         order is by identity, not by (ProjectId, RecordedAt DESC).
+
+         DROP_EXISTING replaces the index atomically. A guarded DROP followed by
+         a guarded CREATE lets a second booting instance drop what the first has
+         just built, leaving the table with no index of that name and no error
+         anywhere -- see migration 8. */
+      CREATE INDEX IX_ProjectVersion_Project ON dbo.ProjectVersion (ProjectId, RecordedAt DESC)
+        INCLUDE (ContentHash, Status, Health, PercentComplete, Budget, Spent,
+                 OpenRisks, OpenQuestions, TargetEndDate)
+        WITH (DROP_EXISTING = ON);
+    `,
+  },
 ];
 
 const LEDGER = `

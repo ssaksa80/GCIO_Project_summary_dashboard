@@ -1,7 +1,7 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** Phase 1 delivered, tagged `v1.2.0-p1`. The SQL Server path is now
+**Status:** Phase 2 delivered, tagged `v1.3.0-p2`. The SQL Server path is now
 proven against a live instance (SQL Server 2025): migrations apply and re-apply
 cleanly, a real workbook persists and reads back, the section engine runs over
 SQL data unchanged, and dropping a workbook into the watched folder reaches the
@@ -231,7 +231,7 @@ until GitHub Actions minutes are available.
 | --- | --- | --- |
 | **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 102 hermetic tests plus 10 live SQL tests | **Met.** An unauthenticated request gets 401 and a Viewer's upload 403; the SQL path is verified end to end against SQL Server 2025 |
 | **P1 — history foundation** | `SourceFile`, `IngestRun`, `ProjectVersion`, content-hash idempotency, the file vault; `STORE=memory` retained | **Met.** Re-ingesting an unchanged workbook records `unchanged` and manufactures no history; a changed project appends exactly one version; the in-memory store is untouched |
-| **P2 — history pays off** | Real trends, "changed since last week" in sections and exports, question ageing | The weekly brief states what changed, sourced from versions rather than file dates |
+| **P2 — history pays off** | "Changed since last week" in sections and exports, sourced from `ProjectVersion` | **Partly met.** The brief states what moved and where it cannot know. **Trend lines and question ageing are outstanding** — deferred because both need months of accumulated history to say anything true, not because they were forgotten |
 | **P3 — scale and ops** | Role split, advisory-lock election, worker-thread parsing, metrics, backup/restore drill, runbook | Two instances started together: exactly one ingests; a restore drill passes |
 
 Each phase ships independently and leaves the product working.

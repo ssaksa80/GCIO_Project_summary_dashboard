@@ -100,6 +100,29 @@ Clicking any project name anywhere opens the full record: owner, sponsor, approv
 delivery dates, budget burn, forecast finish, milestone timeline, risk register, update
 feed, and the parent/child project chain.
 
+### What changed since last week
+
+Every row carries a marker when the project moved during the period: `▲` in red for a
+move the wrong way, `▼` in green for a recovery, and a grey `•` for a move that is
+neither — an ordinary status transition, or a budget that changed for reasons the data
+cannot read. A project first recorded inside the period says `new since 24 Aug` instead,
+because "we have only known about this since Tuesday" is a different statement from
+"nothing changed" and the dashboard will not conflate them.
+
+**History begins when the database does.** Nothing is backfilled — a project shows
+`new since` until it has been ingested twice, and a fresh deployment shows no markers at
+all and says so, on screen and in every export. That is deliberate: inventing history
+from file dates would make a project that has been Red for months look one day old, and
+nobody could later tell the invented rows from the real ones.
+
+**One limitation worth knowing.** This compares two endpoints — where a project stood at
+the start of the period and where it stands now — not the path between them. A project
+that was Red at the start, recovered, and slid back to Red by the end shows as no change,
+because both endpoints are Red. The dashboard is not claiming it was stable; it is
+reporting that it ends the period where it began, and the standing Red count in the KPI
+strip shows it as Red throughout. Answering "how long has this been Red" properly needs
+trend work that is deliberately not in this phase.
+
 ### Exports
 
 One click from the top bar. **PPT** builds the deck immediately; the **Export brief**

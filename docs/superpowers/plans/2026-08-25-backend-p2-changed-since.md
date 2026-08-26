@@ -33,6 +33,7 @@ If a task in this plan seems to require making a section builder async, stop and
 | File | Responsibility |
 | --- | --- |
 | `server/repos/projectVersions.js` | **modify** — add `changedSince(sinceISO)`: the baseline and current version of every project that moved |
+| `server/db/migrations.js` | **modify** — migration 9 widens `IX_ProjectVersion_Project` to cover what `changedSince` selects |
 | `server/store/sqlStore.js` | **modify** — `changesSince(sinceISO)` returning the annotation Map; `historyStartedAt()` |
 | `server/store.js` | **modify** — the in-memory store answers "no history" honestly rather than not answering |
 | `server/changes.js` | **create** — the comparison itself: which fields moved, and how to describe the move |
@@ -273,6 +274,31 @@ git add server/changes.js test/domain/changes.test.js
 git commit -m "feat(changes): decide what a change is and how to say it"
 ```
 
+**Amended after review.** Six defects in the vocabulary above, all mine, all
+found by reading it rather than running it:
+
+1. `targetEndDate` null on ONE side fell through to `dayjs(null).diff(...)` and
+   printed `target date pulled in NaN days`. The column is `DATE NULL` and
+   ingest leaves it unset routinely, so this was guaranteed the first time a
+   Proposed project acquired a date. Acquiring or losing a commitment is now its
+   own neutral case with its own sentence.
+2. `worst` had two values, so a project whose only move was a neutral status
+   transition came back `better` and Task 7 would have painted a green
+   improvement arrow on it. `worst` is now `worse | better | neutral`.
+3. The headline's up/down word read the ROUNDED delta while `direction` read the
+   unrounded one, so a four-fils spend rise printed `spend down 0` beside a red
+   badge. Both now read the same number, and a sub-rounding move says "slightly".
+4. Money and percentages went out unformatted — `budget up 250000`, where every
+   other number in the product goes through `fmtMoney`/`fmtPct`. The local
+   `round1` duplicate is deleted in favour of the shared one, which has the
+   `Number.isFinite` guard the copy lacked.
+5. `budget` rising was "better" purely by omission from `RISING_IS_WORSE`. A
+   budget increase is either secured funding or an overrun being formalised, and
+   this module cannot tell which — the same position `status` is in. Now neutral.
+6. `crossedBudget` fired when the budget was CUT underneath flat spend, which
+   Task 5 would have counted as overspending. It now also requires the budget
+   not to have fallen.
+
 ---
 
 ### Task 2: Read the baseline and the current version in one query
@@ -484,6 +510,29 @@ Expected: PASS — the new 6 plus the existing 28.
 git add server/repos/projectVersions.js test/db/changedSince.test.js
 git commit -m "feat(db): read the baseline and current version of everything that moved"
 ```
+
+**Amended after review — migration 9, and one cost we are choosing to live with.**
+
+A real execution plan showed this query doing a clustered-index scan, dragging
+the in-row `Payload` (~1.8 kB a row) across every page on every call, and then
+sorting. Migration 9 widens `IX_ProjectVersion_Project` to include the eight
+columns the CTE selects beyond the key, which moves it to a narrow index scan —
+`EstimateIO` fell from 0.046 to 0.003 on the empty table.
+
+The explicit `Sort` remains, and reordering the index key does NOT remove it.
+That was tested rather than assumed: a probe index keyed
+`(ProjectId, RecordedAt DESC, ProjectVersionId DESC)` was built by hand and the
+plan pulled twice — once empty, once with 300 rows across ten projects and fresh
+statistics. Both kept the `Sort`, with `EstimateRows` rising to 300 so the
+optimiser was demonstrably seeing real cardinality rather than taking a
+trivial-cost shortcut. The likely reason is that the window partitions on a
+computed `CASE WHEN RecordedAt <= @since` expression, and the optimiser does not
+match that against the physical leaf order.
+
+Removing it would mean redesigning the query — two separately ranked queries,
+one per bucket, unioned, each with a plain non-computed partition key. That is a
+larger change than the cost justifies today. Recorded here so the next person
+does not repeat the experiment.
 
 ---
 
@@ -817,8 +866,10 @@ importing `annotateChanges` alongside `buildSections`.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `node --test test/domain/annotate.test.js test/domain/sections.test.js`
-Expected: PASS. Every existing section test must still pass untouched — they
+Run: `node --test test/domain/annotate.test.js test/domain/posture.test.js`
+Expected: PASS. Every existing test that exercises the section engine must still pass
+untouched — `test/domain/posture.test.js` and `test/db/history.test.js` both
+import it, and they
 call `buildSummary` with three arguments and get `changes: null`, so nothing is
 annotated and `historyAvailable` is false.
 
@@ -828,6 +879,24 @@ annotated and `historyAvailable` is false.
 git add server/sections.js server/summarize.js test/domain/annotate.test.js
 git commit -m "feat(sections): annotate what moved without rewriting a single builder"
 ```
+
+**Amended after review — two things this step does that the plan did not say.**
+
+`annotateChanges` adds a `historyAvailable` key to the `sections` object, so
+`summary.sections` is no longer exactly the five sections. That broke a pinned
+`deepEqual` on `Object.keys(sections)` in `test/api/app.test.js`. Nothing in
+production iterates those keys — checked across `server/` and `client/src/` —
+so the key stays where it is, and the assertion was rewritten to check the five
+sections are present rather than pinning the whole shape, which would break
+again the next time anything is added. Task 6 inherits a green suite; do not be
+surprised to find `test/api/app.test.js` already touched.
+
+The plan's idempotency test could not fail. Its fixture built a fresh object
+literal for each mention of a project, so there was no structural sharing for
+the `seen` set to deduplicate, and removing the guard entirely left the test
+green. Replaced by two that exercise the real hazards: one project object
+genuinely referenced from two sections, and a parent/child cycle that recurses
+until the stack dies without the guard.
 
 ---
 
@@ -863,6 +932,19 @@ test("the digest counts what a CIO would ask about first", () => {
   assert.equal(digest.newlyTracked, 1);
 });
 
+test("a project that no longer exists is not counted", () => {
+  /* ProjectVersion has no foreign key to dbo.Project, so a removed workbook's
+     history survives. It must not keep inflating this week's numbers. */
+  const changes = new Map([
+    ["GONE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+    ["HERE", { worst: "worse", fields: { health: { from: "Green", to: "Red", direction: "worse" } } }],
+  ]);
+
+  const digest = summariseChanges(changes, new Set(["HERE"]));
+  assert.equal(digest.changed, 1);
+  assert.equal(digest.wentRed, 1);
+});
+
 test("the digest is null when history is unavailable, not a row of zeroes", () => {
   /* Zeroes would read as "nothing changed this week", which is a claim we
      cannot make without history. */
@@ -887,16 +969,23 @@ Expected: FAIL — `summariseChanges is not exported`.
  * Portfolio-level counts, for the narrative and the KPI strip.
  *
  * @param {Map<string, object>|null} changes
+ * @param {Set<string>|null} liveProjectIds when given, only these are counted
  * @returns {null|{changed: number, wentRed: number, recovered: number,
  *                 slipped: number, overspent: number, newlyTracked: number}}
  *          null when there is no history to count
  */
-export function summariseChanges(changes) {
+export function summariseChanges(changes, liveProjectIds = null) {
   if (!changes) return null;
 
   const digest = { changed: 0, wentRed: 0, recovered: 0, slipped: 0, overspent: 0, newlyTracked: 0 };
 
-  for (const entry of changes.values()) {
+  for (const [projectId, entry] of changes) {
+    /* History outlives the portfolio on purpose: ProjectVersion has no foreign
+       key to dbo.Project, so a workbook removed last month still has rows here.
+       That is right for an audit view and wrong for a digest — "3 projects went
+       Red" must mean three projects that still exist. Nothing ever revisits a
+       removed project, so without this the number never self-corrects. */
+    if (liveProjectIds && !liveProjectIds.has(projectId)) continue;
     if (entry.trackedSince) { digest.newlyTracked += 1; continue; }
     digest.changed += 1;
 
@@ -904,6 +993,8 @@ export function summariseChanges(changes) {
     if (health?.to === "Red" && health.from !== "Red") digest.wentRed += 1;
     if (health?.from === "Red" && health.to !== "Red") digest.recovered += 1;
     if (entry.fields?.targetEndDate?.days > 0) digest.slipped += 1;
+    /* crossedBudget already refuses to fire when the budget was cut underneath
+       flat spend, so this counts overspending rather than re-baselining. */
     if (entry.crossedBudget) digest.overspent += 1;
   }
   return digest;
@@ -916,12 +1007,12 @@ In `server/summarize.js`, import `summariseChanges` and add to the returned
 object, beside `kpis`:
 
 ```js
-    changes: summariseChanges(changes),
+    changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
 ```
 
 - [ ] **Step 5: Run the tests**
 
-Run: `node --test test/domain/changes.test.js test/domain/sections.test.js`
+Run: `node --test test/domain/changes.test.js test/domain/posture.test.js`
 Expected: PASS — 12 in the changes suite.
 
 - [ ] **Step 6: Commit**
@@ -1047,6 +1138,37 @@ git commit -m "feat(api): the summary carries what changed, or says it cannot kn
 
 ### Task 7: Show it — client and exports
 
+**Three rules for this task. The first two come from the Task 4 review, the
+third from Task 5's.**
+
+**Never write to `item.change`.** `annotateChanges` stores the SAME object
+reference on every item sharing a project id — the same change object is on the
+Successes row, the Priorities row and the Roadmap row. Nothing mutates it today,
+and the first temptation to do so is right here: this task says the slide can
+say `▲ Red` where the web says `▲ health Green to Red`, and `pptx.js` measures
+text, so memoising a shortened label onto `change` would look sensible. It would
+leak that label into every other section and every other exporter. Build display
+strings locally and pass them down; treat `item.change` as read-only.
+
+**While you are in `server/sections.js`, add one line to `annotateChanges`'s
+docblock** recording the convention it depends on: an `id` or `projectId` on a
+section item always means the project's id. That is true of every builder today
+— checked against all five — but nothing enforces it, so a future builder that
+surfaced a milestone's or risk's own id under the same field name would be
+silently misannotated with its parent project's change.
+
+**Do not present the digest counters as if they add up, and never let `changed`
+stand alone as a risk number.** They are not additive: one project that went
+Red, slipped its date and crossed its budget in the same period increments four
+counters. And `changed` counts every project that moved at all, including ones
+whose only movement was neutral — a status advancing from Approved to In
+Progress, or a budget re-baselined. "5 changed" next to "1 went Red" invites a
+reader to do arithmetic that does not work, and reads as more alarming than it
+is. Show the movement counters beside the standing state the CIO already has —
+`kpis.health.red` — so the sentence is "3 Red, 1 of them new this week" rather
+than a row of chips that imply a total.
+
+
 **Files:**
 - Create: `client/src/components/ChangeBadge.jsx`
 - Modify: `client/src/components/Section{Successes,QRI,Priorities,Roadmap,Posture}.jsx`
@@ -1071,9 +1193,15 @@ export default function ChangeBadge({ change }) {
     return <span className="change change-new" title={`First recorded ${since}`}>new since {since}</span>;
   }
 
+  /* Three states, not two. A neutral move — an ordinary status transition, a
+     budget that changed for reasons we cannot read — is neither an improvement
+     nor a regression, and painting it green would tell the CIO something the
+     data does not support. */
+  const mark = change.worst === "worse" ? "▲" : change.worst === "better" ? "▼" : "•";
+
   return (
     <span className={`change change-${change.worst}`} title={describe(change)}>
-      {change.worst === "worse" ? "▲" : "▼"} {change.headline}
+      {mark} {change.headline}
     </span>
   );
 }
@@ -1086,8 +1214,9 @@ function describe(change) {
 ```
 
 Colours come from the brand palette already in the stylesheet — `worse` uses
-Pantone 192 C (`#E40046`), `better` uses Pantone 354 C (`#00B140`), and
-`change-new` uses the grey (`#414141`). Read the existing `.rag` rules and match
+Pantone 192 C (`#E40046`), `better` uses Pantone 354 C (`#00B140`), and both
+`change-neutral` and `change-new` use the grey (`#414141`). Four states, not
+three: neutral must not borrow the green. Read the existing `.rag` rules and match
 how they are scoped; note the earlier defect where `.rag` styles scoped under
 `.kpi` silently failed elsewhere.
 
@@ -1113,12 +1242,35 @@ renders domains whose change comes from `projectId`, not `id`. Match whatever
 element each component already uses for its title rather than introducing
 `item-title` where it does not exist.
 
-- [ ] **Step 3: Say when history is thin**
+- [ ] **Step 3: Say when history is thin, and since when**
 
 Where the period is shown, when `sections.historyAvailable` is false, add a
-quiet line: `No change history for this period yet.` This is the honest-cold-
-start decision made visible — do not hide the feature, and do not imply
-stability.
+quiet line. This is the honest-cold-start decision made visible — do not hide
+the feature, and do not imply stability.
+
+Say *since when* rather than just "not yet", because those answer different
+questions. `store.historyStartedAt()` returns the oldest recorded version, or
+null if nothing has been recorded at all:
+
+- history has never been recorded → `No change history yet — it begins with the next upload.`
+- history exists but starts after the period being viewed →
+  `No change history before 25 Aug.`
+
+`/api/summary` carries `historyStartedAt`, loaded at the route in Task 6 — one
+await per request, not one per section.
+
+**It must be guarded, and the snippet this plan originally showed was not.**
+`await store.historyStartedAt()` runs a query against the history table through
+the same executor everything else uses, and a dead connection there is rethrown
+as a 503. Unguarded, that blanks a dashboard whose portfolio is perfectly
+serveable — the exact failure `loadChanges` exists to prevent, reached through
+the other query. It is invisible to any test using the in-memory store, whose
+`historyStartedAt` returns null unconditionally and can never throw. Task 6 now
+provides `loadHistoryStart(store)` beside `loadChanges`, which catches and
+returns null; use that, never the bare call.
+
+`buildSummary` cannot fetch it itself, being synchronous. The rule from the plan
+header still holds: the engine stays synchronous and history arrives as data.
 
 - [ ] **Step 4: The exporters**
 
@@ -1134,6 +1286,25 @@ node scripts/pptx-audit.mjs
 Expected: 0 collisions. If the badge text pushes a row into a collision, shorten
 the exported form (the slide can say `▲ Red` where the web says
 `▲ health Green to Red`) rather than loosening the audit.
+
+- [ ] **Step 4b: The exports must say when history is thin, too**
+
+A deck that shows no change markers and does not explain why reads as a stable
+portfolio. That is the same inference the web version was changed to prevent,
+and a deck is the artefact that gets forwarded and read without anyone present
+to explain it — so it needs the line more, not less.
+
+Each of `pptx.js`, `word.js` and `excel.js` should carry one line when
+`summary.sections.historyAvailable` is false, in whatever the natural place is
+for that format — under the title on the first slide, in the header paragraph,
+on the summary sheet. Same two sentences the client uses, chosen the same way
+from `summary.historyStartedAt`:
+
+- nothing recorded at all → `No change history yet — it begins with the next upload.`
+- history begins after this period → `No change history before 25 Aug.`
+
+This is also what justifies the export route loading `historyStartedAt` at all;
+without it that query is plumbing nobody reads.
 
 - [ ] **Step 5: Verify by eye**
 
@@ -1151,6 +1322,32 @@ the feature is invisible rather than broken.
 git add client server/exporters
 git commit -m "feat(ui): show what moved, and say so when we cannot know"
 ```
+
+**Amended after review — the audit could not see the defect it was there for.**
+
+The "no change history" line was added to the pptx cover by appending `
+` to
+the subtitle. `shared/pptx-lite.mjs` passed the whole subtitle through a single
+`para()` call — one paragraph, one run, one `<a:t>` — and OOXML does not treat a
+line feed inside `<a:t>` as a break. So every deck exported while history was
+thin, which is the default state, rendered
+`... demonstration portfolioNo change history yet ...` run together.
+
+`scripts/pptx-audit.mjs` reported 0 collisions throughout, honestly: the
+writer's `lineCount()` does split on `
+`, but only to size the text box. The
+box was tall enough, nothing overlapped, and the text still never broke. The
+audit measures geometry; it could not see text integrity.
+
+Two fixes, both kept. The renderer now splits a cover subtitle into separate
+paragraphs, matching what bullet `.sub` text already did seven lines below — so
+a multi-line subtitle is a supported thing rather than a trap. And the audit
+gained a `LINEFEED` check that flags any run holding a raw line feed, proven to
+fire on a deliberately re-broken deck and stay silent once fixed.
+
+The lesson worth keeping: this was found by exporting a real deck and reading
+the slide XML, not by the audit passing. For anything that renders, look at what
+it renders.
 
 ---
 
@@ -1279,6 +1476,16 @@ node scripts/pptx-audit.mjs
 In `README.md`, under what the CIO sees, state plainly what the markers mean and
 that history begins when the database does — a project shows "new since" until
 it has been ingested twice.
+
+State one limitation too, because it is the kind a reader would otherwise
+discover by being misled. This compares two endpoints — where a project stood at
+the start of the period and where it stands now — not the path between them. A
+project that was Red at the start, recovered, and slid back to Red by the end
+shows as no change at all, because both endpoints are Red. The dashboard is not
+claiming it was stable; it is reporting that it ends the period where it began.
+The standing Red count in the KPI strip still shows it as Red throughout.
+Answering "how long has this been Red" properly needs the trend work deferred to
+a later phase.
 
 - [ ] **Step 3: Mark the spec**
 

@@ -269,3 +269,98 @@ test("history is optional, so the store still works without it", async () => {
   await store.applyFile(parsed(), { trigger: "boot" });
   assert.equal(store.projectCount, 0);
 });
+
+test("the store turns recorded versions into comparisons", async () => {
+  const { store } = harness();
+  let calledWith;
+  store.repos.projectVersions.changedSince = async (sinceISO) => {
+    calledWith = sinceISO;
+    return new Map([
+      ["PRJ-1", {
+        baseline: { health: "Green", status: "In Progress", percentComplete: 40, budget: 1000, spent: 300,
+                    openRisks: 1, openQuestions: 0, targetEndDate: "2026-06-30", recordedAt: "2026-08-18T09:00:00.000Z" },
+        current: { health: "Red", status: "In Progress", percentComplete: 45, budget: 1000, spent: 300,
+                   openRisks: 1, openQuestions: 0, targetEndDate: "2026-06-30", recordedAt: "2026-08-25T09:00:00.000Z" },
+        trackedSince: null,
+      }],
+    ]);
+  };
+
+  const changes = await store.changesSince("2026-08-18");
+  assert.equal(calledWith, "2026-08-18", "the date passed to changesSince must reach the repository unchanged");
+  assert.equal(changes.get("PRJ-1").headline, "health Green to Red");
+  assert.equal(changes.get("PRJ-1").worst, "worse");
+});
+
+test("a project with no baseline is reported as newly tracked, not as unchanged", async () => {
+  const { store } = harness();
+  store.repos.projectVersions.changedSince = async () => new Map([
+    ["PRJ-2", { baseline: null, current: { health: "Amber" }, trackedSince: "2026-08-25T09:00:00.000Z" }],
+  ]);
+
+  const entry = (await store.changesSince("2026-08-18")).get("PRJ-2");
+  assert.equal(entry.trackedSince, "2026-08-25T09:00:00.000Z");
+  assert.equal(entry.fields, undefined, "a comparison was invented against a baseline that does not exist");
+});
+
+test("a pair whose hash differs only in an untracked field is dropped, not reported as a change", async () => {
+  /* changedSince finds this pair because ContentHash differs, but every
+     TRACKED_FIELDS value is identical -- compareVersions correctly says
+     "nothing tracked moved" and returns null. The project must not appear in
+     the result at all; inventing an entry for it would tell the briefing
+     something happened when it did not. */
+  const { store } = harness();
+  store.repos.projectVersions.changedSince = async () => new Map([
+    ["PRJ-3", {
+      baseline: { health: "Green", status: "In Progress", percentComplete: 40, budget: 1000, spent: 300,
+                  openRisks: 1, openQuestions: 0, targetEndDate: "2026-06-30", recordedAt: "2026-08-18T09:00:00.000Z" },
+      current: { health: "Green", status: "In Progress", percentComplete: 40, budget: 1000, spent: 300,
+                 openRisks: 1, openQuestions: 0, targetEndDate: "2026-06-30", recordedAt: "2026-08-25T09:00:00.000Z" },
+      trackedSince: null,
+    }],
+  ]);
+
+  const changes = await store.changesSince("2026-08-18");
+  assert.equal(changes.has("PRJ-3"), false);
+});
+
+test("a store without history says so rather than returning an empty map", async () => {
+  /* Empty means "nothing moved". Null means "we cannot know". The briefing
+     renders those two very differently and must be able to tell them apart. */
+  const repos = {
+    projects: { async all() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+    posture: { async list() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+  };
+  const store = new SqlStore(repos, { logger: quiet });
+  assert.equal(await store.changesSince("2026-08-18"), null);
+});
+
+/* The in-memory store has no dedicated unit-test file of its own — it is
+   otherwise exercised only through test/api/app.test.js at the route level.
+   Task 4's test/domain/annotate.test.js does not exist yet, and creating it
+   is that task's job, not this one's, so this lives here: the only test file
+   Task 3 owns, next to the SqlStore half of the same "null vs empty" contract. */
+test("the in-memory store never claims to know what changed", async () => {
+  const { Store } = await import("../../server/store.js");
+  assert.equal(await new Store().changesSince("2026-08-18"), null);
+});
+
+test("historyStartedAt is null when the store keeps no history", async () => {
+  const repos = {
+    projects: { async all() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+    posture: { async list() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+  };
+  const store = new SqlStore(repos, { logger: quiet });
+  assert.equal(await store.historyStartedAt(), null);
+});
+
+test("historyStartedAt delegates to the repository when history is tracked", async () => {
+  const { store } = harness();
+  store.repos.projectVersions.oldestRecordedAt = async () => "2026-08-18T09:00:00.000Z";
+  assert.equal(await store.historyStartedAt(), "2026-08-18T09:00:00.000Z");
+});
+
+test("the in-memory store never claims to know when history began", async () => {
+  const { Store } = await import("../../server/store.js");
+  assert.equal(await new Store().historyStartedAt(), null);
+});

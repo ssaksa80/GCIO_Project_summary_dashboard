@@ -14,7 +14,7 @@ import multer from "multer";
 import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
-import { buildSummary, toRow, computeDetail } from "./summarize.js";
+import { buildSummary, loadChanges, loadHistoryStart, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
 import { buildExcel } from "./exporters/excel.js";
 import { buildWord } from "./exporters/word.js";
@@ -65,6 +65,23 @@ export function createApp(deps) {
   const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
   const auditFrom = (req, event) =>
     audit.append({ ...event, ip: req.ip, userAgent: req.get?.("user-agent"), requestId: req.id });
+
+  /**
+   * Both /api/summary and /api/export/:format need the same summary, built
+   * the same way: history and its start date loaded concurrently -- each
+   * already swallows its own failure, so there is nothing here for Promise.all
+   * to obscure -- then handed to buildSummary. Concurrency (not two sequential
+   * awaits) matters most exactly when the database is degraded: that is when
+   * both guards are doing their job, and sequential awaits would make the
+   * request sit out two connection timeouts back to back before answering.
+   */
+  const summarize = async (period, dateISO) => {
+    const [changes, historyStartedAt] = await Promise.all([
+      loadChanges(store, period, dateISO),
+      loadHistoryStart(store),
+    ]);
+    return buildSummary(store, period, dateISO, { changes, historyStartedAt });
+  };
 
   /* Monitoring must not need a session. */
   app.get("/healthz", (req, res) => {
@@ -127,11 +144,11 @@ export function createApp(deps) {
     });
   });
   
-  app.get("/api/summary", (req, res) => {
+  app.get("/api/summary", wrap(async (req, res) => {
     const period = PERIODS.has(req.query.period) ? req.query.period : "monthly";
     const date = dayjs(req.query.date || undefined).isValid() ? dayjs(req.query.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    res.json(buildSummary(store, period, date));
-  });
+    res.json(await summarize(period, date));
+  }));
   
   app.get("/api/projects", (req, res) => {
     const { department, pillar, status, health, q, sort } = req.query;
@@ -258,8 +275,8 @@ export function createApp(deps) {
     const body = req.body || {};
     const period = PERIODS.has(body.period) ? body.period : "monthly";
     const date = dayjs(body.date || undefined).isValid() ? dayjs(body.date || undefined).format("YYYY-MM-DD") : dayjs().format("YYYY-MM-DD");
-    const summary = buildSummary(store, period, date);
-  
+    const summary = await summarize(period, date);
+
     const scopeIds = Array.isArray(body.projectIds) && body.projectIds.length
       ? body.projectIds.map((id) => String(id).toUpperCase())
       : null;

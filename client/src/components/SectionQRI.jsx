@@ -6,6 +6,7 @@
 import { fmtDate } from "../lib/format.js";
 import { CountUp, useReveal } from "../lib/motion.jsx";
 import { HealthByDepartment, useTokens } from "./charts.jsx";
+import ChangeBadge from "./ChangeBadge.jsx";
 
 const HEALTH_CHIP = { Green: "good", Amber: "warn", Red: "critical" };
 const SEV_CHIP = { Critical: "critical", High: "warn", Medium: "info", Low: "muted" };
@@ -49,6 +50,7 @@ export default function SectionQRI({ data, charts, theme, onOpen }) {
             <p className="q-text">{q.text}</p>
             <p className="meta">
               <button type="button" className="linkish" onClick={() => onOpen(q.id)}>{q.project}</button>
+              <ChangeBadge change={q.change} />
               {" · "}{q.because}
               {q.decisionOwner ? ` · with ${q.decisionOwner}` : ""}
             </p>
@@ -72,7 +74,10 @@ export default function SectionQRI({ data, charts, theme, onOpen }) {
                   <tr key={`${r.id}-${i}`}>
                     <td><span className={`chip solid ${SEV_CHIP[r.severity] || "muted"}`}>{r.severity}</span></td>
                     <td className="strong">{r.title}</td>
-                    <td><button type="button" className="linkish" onClick={() => onOpen(r.id)}>{r.project}</button></td>
+                    <td>
+                      <button type="button" className="linkish" onClick={() => onOpen(r.id)}>{r.project}</button>
+                      <ChangeBadge change={r.change} />
+                    </td>
                     <td className="micro">{r.owner || "—"}</td>
                     <td className="micro">{r.status}</td>
                   </tr>

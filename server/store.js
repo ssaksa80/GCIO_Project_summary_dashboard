@@ -71,6 +71,12 @@ export class Store {
     return this.fileIndex.size;
   }
 
+  /** No database, so no history. Null, not empty — see SqlStore.changesSince. */
+  async changesSince() { return null; }
+
+  /** @returns {Promise<null>} */
+  async historyStartedAt() { return null; }
+
   /**
    * Upsert one file's normalized projects, honoring the duplicate-id merge
    * rule (later lastUpdated wins, child arrays merged) and removing projects
