@@ -8,6 +8,11 @@ import { sql } from "../db/executor.js";
 
 const ERROR_MAX = 1000;
 
+/* Past this, parsing is slow enough that a request served during an ingest
+   would notice. It is the number that would justify revisiting the decision to
+   defer worker-thread parsing. */
+const SLOW_PARSE_MS = 5000;
+
 /* Enforced in SQL by CK_IngestRun_TriggerSource / CK_IngestRun_Outcome, which
    fail at runtime with error 547. There is no type checking in this project
    to catch a typo at a call site before then, so it is checked here too — a
@@ -30,6 +35,15 @@ function truncate(text) {
 }
 
 export function ingestRunsRepo(ex, { logger = console } = {}) {
+  /* finish() needs the filename to name it in the slow-parse warning, but only
+     start() is ever given one, and this repo is a single instance held for
+     the app's lifetime (see server/index.js), so a run's own start() and
+     finish() calls land on the same instance -- no second SELECT, and no
+     extra parameter every caller of finish() would otherwise have to thread
+     through just for a warning message. Entries are removed as each run
+     closes, so this holds at most one per ingest genuinely in flight. */
+  const pendingFileNames = new Map();
+
   return {
     /**
      * @param {{fileName: string, trigger: "watcher"|"upload"|"boot"|"replay", sourceFileId?: number|null}} run
@@ -48,28 +62,37 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         { name: "name", type: sql.NVarChar(260), value: fileName },
         { name: "trigger", type: sql.VarChar(16), value: trigger },
       ]);
-      return Number(recordset[0].IngestRunId);
+      const runId = Number(recordset[0].IngestRunId);
+      pendingFileNames.set(runId, fileName);
+      return runId;
     },
 
     /**
      * @param {number} runId
      * @param {{outcome: "applied"|"unchanged"|"failed"|"removed", projectsSeen?: number,
      *          projectsChanged?: number, postureRows?: number, error?: string|null,
-     *          sourceFileId?: number|null}} result sourceFileId is optional: omit it
-     *          (leave undefined) to leave the column untouched — Task 6 opens the run
-     *          before the workbook is vaulted, so the id is not always known yet.
+     *          sourceFileId?: number|null, parseMs?: number|null, persistMs?: number|null}} result
+     *          sourceFileId is optional: omit it (leave undefined) to leave the column
+     *          untouched — Task 6 opens the run before the workbook is vaulted, so the id
+     *          is not always known yet. parseMs/persistMs are nullable on purpose: a run
+     *          rejected before parsing, or one that died before persisting, has no honest
+     *          number to report, and a zero would be a lie.
      */
     async finish(runId, { outcome, projectsSeen = 0, projectsChanged = 0, postureRows = 0,
-                          error = null, sourceFileId } = {}) {
+                          error = null, sourceFileId, parseMs = null, persistMs = null } = {}) {
       if (!INGEST_OUTCOMES.includes(outcome)) {
         throw new Error(`unknown ingest outcome '${outcome}' — expected one of ${INGEST_OUTCOMES.join(", ")}`);
       }
+      const fileName = pendingFileNames.get(runId);
+      pendingFileNames.delete(runId);
+
       const { rowsAffected } = await ex.query(`
         UPDATE dbo.IngestRun
            SET FinishedAt = SYSUTCDATETIME(), Outcome = @outcome,
                ProjectsSeen = @seen, ProjectsChanged = @changed,
                PostureRows = @posture, Error = @error,
-               SourceFileId = COALESCE(@sourceFileId, SourceFileId)
+               SourceFileId = COALESCE(@sourceFileId, SourceFileId),
+               ParseMs = @parseMs, PersistMs = @persistMs
          WHERE IngestRunId = @id
       `, [
         { name: "id", type: sql.BigInt, value: runId },
@@ -81,6 +104,8 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
            5,000-character parser message must not be what stops that. */
         { name: "error", type: sql.NVarChar(ERROR_MAX), value: error ? truncate(error) : null },
         { name: "sourceFileId", type: sql.BigInt, value: sourceFileId ?? null },
+        { name: "parseMs", type: sql.Int, value: Number.isFinite(parseMs) ? Math.round(parseMs) : null },
+        { name: "persistMs", type: sql.Int, value: Number.isFinite(persistMs) ? Math.round(persistMs) : null },
       ]);
 
       if (!rowsAffected[0]) {
@@ -88,6 +113,11 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
            must not be blocked by ours. But a run that never closed is exactly
            what this table exists to make visible, so it cannot be silent. */
         logger.error?.(`[ingest] run ${runId} was not closed — no such row`);
+      }
+
+      if (Number.isFinite(parseMs) && parseMs >= SLOW_PARSE_MS) {
+        logger.warn?.(`[ingest] ${fileName ?? `run ${runId}`} took ${parseMs}ms to parse — ` +
+          `slow enough to block the event loop; if this becomes normal, revisit the deferred worker-thread parsing`);
       }
     },
 
@@ -121,7 +151,7 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
     async recent({ limit = 200 } = {}) {
       const { recordset } = await ex.query(`
         SELECT TOP (@limit) IngestRunId, FileName, TriggerSource, StartedAt, FinishedAt,
-               Outcome, ProjectsSeen, ProjectsChanged, PostureRows, Error
+               Outcome, ProjectsSeen, ProjectsChanged, PostureRows, Error, ParseMs, PersistMs
         FROM dbo.IngestRun ORDER BY StartedAt DESC
       `, [{ name: "limit", type: sql.Int, value: Math.min(500, Math.max(1, Number(limit) || 200)) }]);
 
@@ -136,7 +166,29 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         projectsChanged: r.ProjectsChanged,
         postureRows: r.PostureRows,
         error: r.Error || null,
+        parseMs: r.ParseMs ?? null,
+        persistMs: r.PersistMs ?? null,
       }));
+    },
+
+    /**
+     * What the metrics endpoint needs, in one query.
+     * @returns {Promise<{runs: number, slowestParseMs: number|null,
+     *                    slowestPersistMs: number|null, lastFinishedAt: string|null}>}
+     */
+    async timingSummary() {
+      const { recordset } = await ex.query(`
+        SELECT COUNT(*) AS runs, MAX(ParseMs) AS slowestParse,
+               MAX(PersistMs) AS slowestPersist, MAX(FinishedAt) AS lastFinishedAt
+        FROM dbo.IngestRun
+      `);
+      const r = recordset[0] || {};
+      return {
+        runs: Number(r.runs) || 0,
+        slowestParseMs: r.slowestParse ?? null,
+        slowestPersistMs: r.slowestPersist ?? null,
+        lastFinishedAt: r.lastFinishedAt instanceof Date ? r.lastFinishedAt.toISOString() : null,
+      };
     },
   };
 }

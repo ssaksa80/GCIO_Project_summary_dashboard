@@ -209,6 +209,11 @@ export class SqlStore {
         return 0;
       }
 
+      /* Starts after the vault write and stops before refresh(): refreshing the
+         in-memory read model is not part of persisting, and including it would
+         make this number mean something different from what the metric claims. */
+      const persistStartedAt = performance.now();
+
       await this.repos.projects.replaceForFile(result.file, result.projects);
       await this.repos.posture.replaceForFile(result.file, result.posture || []);
       stage = "snapshot";
@@ -218,6 +223,7 @@ export class SqlStore {
         { ingestRunId: runId }
       );
       stage = "history";
+      const persistMs = Math.round(performance.now() - persistStartedAt);
 
       await this.repos.ingestRuns.finish(runId, {
         outcome: "applied",
@@ -225,6 +231,8 @@ export class SqlStore {
         projectsChanged: changed,
         postureRows: (result.posture || []).length,
         sourceFileId: recorded.sourceFileId,
+        parseMs: result.parseMs ?? null,
+        persistMs,
       });
       stage = "closed";
 

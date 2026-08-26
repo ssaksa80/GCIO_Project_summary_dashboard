@@ -281,6 +281,20 @@ export const MIGRATIONS = [
         WITH (DROP_EXISTING = ON);
     `,
   },
+  {
+    id: 10,
+    name: "ingest_durations",
+    sql: `
+      /* Worker-thread parsing was deferred on the grounds that the workbooks
+         are tiny. That is a measurement, and measurements expire — so record
+         the measurement rather than the conclusion. When ParseMs starts
+         climbing, the deferral stops being justified. */
+      IF COL_LENGTH('dbo.IngestRun', 'ParseMs') IS NULL
+        ALTER TABLE dbo.IngestRun ADD ParseMs INT NULL;
+      IF COL_LENGTH('dbo.IngestRun', 'PersistMs') IS NULL
+        ALTER TABLE dbo.IngestRun ADD PersistMs INT NULL;
+    `,
+  },
 ];
 
 const LEDGER = `

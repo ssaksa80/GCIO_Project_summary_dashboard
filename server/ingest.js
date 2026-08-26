@@ -386,10 +386,11 @@ function readPostureSheet(sheet) {
 /**
  * Parse a workbook buffer into normalized projects.
  * Never throws on malformed content — returns {ok:false, error} instead.
- * @returns {{ok: boolean, file: string, projects?: object[], error?: string}}
+ * @returns {{ok: boolean, file: string, projects?: object[], error?: string, parseMs?: number}}
  */
 export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
   const file = path.basename(filename);
+  const startedAt = performance.now();
   try {
     const workbook = XLSX.read(buffer, { cellDates: true });
     const childData = { milestones: new Map(), updates: new Map(), risks: new Map(), questions: new Map() };
@@ -453,7 +454,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
         project.lastUpdated = project.updates[0]?.date || fileMtimeISO || null;
       }
     }
-    return { ok: true, file, projects, posture };
+    return { ok: true, file, projects, posture, parseMs: Math.round(performance.now() - startedAt) };
   } catch (err) {
     return { ok: false, file, error: err.message || "unreadable workbook" };
   }
