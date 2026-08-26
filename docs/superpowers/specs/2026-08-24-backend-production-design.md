@@ -1,7 +1,7 @@
 # Backend for production — design
 
 **Date:** 2026-08-24
-**Status:** Phase 2 delivered, tagged `v1.3.0-p2`. The SQL Server path is now
+**Status:** Phase 3 delivered, tagged `v1.4.0-p3`. The SQL Server path is now
 proven against a live instance (SQL Server 2025): migrations apply and re-apply
 cleanly, a real workbook persists and reads back, the section engine runs over
 SQL data unchanged, and dropping a workbook into the watched folder reaches the
@@ -232,9 +232,24 @@ until GitHub Actions minutes are available.
 | **P0 — safe pilot** | LDAP + Entra SSO, roles, audit and audit reader, security headers and throttles, upload sniffing, IIS + service packaging, health endpoints, 102 hermetic tests plus 10 live SQL tests | **Met.** An unauthenticated request gets 401 and a Viewer's upload 403; the SQL path is verified end to end against SQL Server 2025 |
 | **P1 — history foundation** | `SourceFile`, `IngestRun`, `ProjectVersion`, content-hash idempotency, the file vault; `STORE=memory` retained | **Met.** Re-ingesting an unchanged workbook records `unchanged` and manufactures no history; a changed project appends exactly one version; the in-memory store is untouched |
 | **P2 — history pays off** | "Changed since last week" in sections and exports, sourced from `ProjectVersion` | **Partly met.** The brief states what moved and where it cannot know. **Trend lines and question ageing are outstanding** — deferred because both need months of accumulated history to say anything true, not because they were forgotten |
-| **P3 — scale and ops** | Role split, advisory-lock election, worker-thread parsing, metrics, backup/restore drill, runbook | Two instances started together: exactly one ingests; a restore drill passes |
+| **P3 — a survivable first deployment** | `/metrics`, ingest timing, a backup/restore drill that has been executed, an unelevated install preflight, the runbook | **Partly met.** The drill runs as the application login and its comparison is proven able to fail; the preflight names what is missing before anyone opens an elevated prompt. **The role split and lock election are deferred, and worker-thread parsing was replaced by measurement** — see below |
 
 Each phase ships independently and leaves the product working.
+
+**P3's three departures, all decisions rather than omissions.** The ingest/web
+role split and the `sp_getapplock` election guard a failure that requires two
+running instances, and there is one — an election that has never elected
+anything, cannot be meaningfully tested, and protects a configuration nobody has
+deployed is motion rather than progress. When a second instance is genuinely
+planned this becomes the first thing to build, and `gcio_ingest_runs` plus the
+last-ingest timestamp are what would reveal a double ingest in the meantime.
+Worker-thread parsing was replaced by measurement: the workbooks are 14-27 kB and
+parse in 8-65 ms, measured across all four, so a worker pool would add real
+complexity to the ingest path for a load that does not exist. `ParseMs` is now
+recorded per ingest and warned on past 500 ms, which is an order of magnitude
+above steady state and below the point where a request served during an ingest
+would fail rather than merely feel slow — so the deferral gets revisited on
+evidence rather than on anyone's say-so.
 
 Two notes on the table above, both written before decisions that outlived the
 wording. The store is **SQL Server**, not Postgres — the P1 row said Postgres
@@ -253,6 +268,17 @@ belongs with the other things history makes possible.
 - **Entra app registration is not ours to create.** P0 cannot finish without a
   client id, tenant id, redirect URI and the three group names. Everything else
   in P0 can proceed in parallel.
+- **The service has still never been installed.** Until it is, "deployed" means
+  a process someone started by hand. NSSM is not on the build machine and the
+  install needs an elevated prompt, so Phase 3 delivered a preflight that runs
+  unelevated and names everything missing rather than a deployment. The
+  remaining step is genuinely one command, but it has not been run.
+- **`gcio_app` is not in `dbcreator`**, contrary to what this document
+  previously assumed. It has `db_owner` on `GCIO` — enough to back up, not enough
+  to restore to a database that does not already exist. The backup drill
+  therefore needs a one-time `CREATE DATABASE` and `ALTER AUTHORIZATION` by an
+  administrator, and it cannot delete its own backup files, which the SQL Server
+  service account owns. Both are recorded in `docs/runbook.md`.
 - **SQL Server access is the live blocker.** The instance on the build machine
   has `sa` disabled and no other sysadmin, so the database cannot be created
   without recovering administrative access. Everything else in Phase 0 is done;
