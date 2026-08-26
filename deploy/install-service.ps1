@@ -190,7 +190,11 @@ function Invoke-Preflight {
             if (-not $envMap['STORE']) { $missing += 'STORE' }
             if (-not $envMap['AUTH_MODE']) { $missing += 'AUTH_MODE' }
             if ($envMap['STORE'] -eq 'mssql') {
-                $windowsAuth = if ($envMap.ContainsKey('DB_WINDOWS_AUTH')) { $envMap['DB_WINDOWS_AUTH'] -eq 'true' } else { $true }
+                # Mirrors pool.js exactly: String(env.DB_WINDOWS_AUTH || "true") === "true" -
+                # an unset or empty value defaults to Windows auth; anything else is
+                # compared case-sensitively.
+                $windowsAuthRaw = $envMap['DB_WINDOWS_AUTH']
+                $windowsAuth = if ([string]::IsNullOrEmpty($windowsAuthRaw)) { $true } else { $windowsAuthRaw -ceq 'true' }
                 if (-not $windowsAuth) {
                     if (-not $envMap['DB_USER']) { $missing += 'DB_USER' }
                     if (-not $envMap['DB_PASSWORD']) { $missing += 'DB_PASSWORD' }
