@@ -213,6 +213,135 @@ test("a removal whose refresh() fails still leaves the run closed as removed, no
   assert.equal(finishes[0][2], "removed", "the true outcome must not be overwritten with failed");
 });
 
+/* ---------------------------------------------------------------------
+ * Concurrency: chokidar fires `add` and `change` independently and does not
+ * await one handler before the next, so a single file copy can put two
+ * applyFile calls for the same workbook in flight together. Unserialised,
+ * they interleave around projects.replaceForFile's delete-then-insert and
+ * collide on dbo.Project's primary key — this is the PRJ-1001 defect from
+ * the real deployment (IngestRun rows 931/932).
+ * ------------------------------------------------------------------- */
+
+test("two concurrent applyFile calls do not let replaceForFile interleave", async () => {
+  const { store } = harness();
+  const trace = [];
+  const originalReplace = store.repos.projects.replaceForFile;
+  store.repos.projects.replaceForFile = async (file, projects) => {
+    trace.push("enter");
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    trace.push("exit");
+    return originalReplace(file, projects);
+  };
+
+  await Promise.all([
+    store.applyFile(parsed(), { trigger: "watcher" }),
+    store.applyFile(parsed(), { trigger: "watcher" }),
+  ]);
+
+  assert.deepEqual(trace, ["enter", "exit", "enter", "exit"],
+    "a second applyFile entered replaceForFile before the first had exited — the two ingests interleaved");
+});
+
+test("the second of two concurrent identical ingests records unchanged, not a duplicate apply", async () => {
+  /* liveHashFor is not a constant here, unlike the shared harness: it must
+     reflect that the first ingest's run has actually closed before the
+     second is allowed to see its hash as live, exactly as the real
+     "last CLOSED run" query would. */
+  const calls = [];
+  let liveHash = null;
+  const repos = {
+    projects: {
+      async all() { return []; },
+      async replaceForFile(file, projects) { calls.push(["projects.replace", file, projects.length]); },
+      async removeFile() { return 0; },
+    },
+    posture: {
+      async list() { return []; },
+      async replaceForFile() {},
+      async removeFile() { return 0; },
+    },
+    sourceFiles: {
+      async record(file) { calls.push(["sourceFiles.record", file.fileName, file.sha256]); return { sourceFileId: 1 }; },
+    },
+    ingestRuns: {
+      async start(run) { calls.push(["runs.start", run.fileName]); return calls.filter((c) => c[0] === "runs.start").length; },
+      async liveHashFor() { return liveHash; },
+      async finish(id, result) {
+        calls.push(["runs.finish", id, result.outcome]);
+        if (result.outcome === "applied") liveHash = "deadbeef";
+      },
+    },
+    projectVersions: {
+      async appendChanged() { calls.push(["versions.append"]); return 1; },
+    },
+  };
+  const vault = { store(buffer, name) { return { hash: "deadbeef", vaultPath: "2026/08/x.xlsx", bytes: buffer.length }; } };
+  const store = new SqlStore(repos, { vault, logger: quiet });
+
+  await Promise.all([
+    store.applyFile(parsed(), { trigger: "watcher" }),
+    store.applyFile(parsed(), { trigger: "watcher" }),
+  ]);
+
+  const finishes = calls.filter((c) => c[0] === "runs.finish");
+  assert.equal(finishes.length, 2, "both runs must be opened and closed");
+  assert.equal(finishes[0][2], "applied", "the first of the two concurrent ingests must actually apply");
+  assert.equal(finishes[1][2], "unchanged",
+    "the second, serialised after the first closed, must see the hash it just wrote and record unchanged rather than colliding on dbo.Project");
+
+  const replaceCalls = calls.filter((c) => c[0] === "projects.replace");
+  assert.equal(replaceCalls.length, 1, "only the first ingest should have written to dbo.Project — the collision must become a no-op, not a second write");
+});
+
+test("a rejection in one queued applyFile does not poison a later one", async () => {
+  const { calls, store } = harness();
+  let attempts = 0;
+  const originalReplace = store.repos.projects.replaceForFile;
+  store.repos.projects.replaceForFile = async (file, projects) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("database is down");
+    return originalReplace(file, projects);
+  };
+
+  const first = store.applyFile(parsed(), { trigger: "watcher" });
+  const second = store.applyFile(parsed(), { trigger: "watcher" });
+
+  await assert.rejects(first, /database is down/);
+  await assert.doesNotReject(second, "a failure in the first queued ingest broke the chain for the second");
+
+  const finishes = calls.filter((c) => c[0] === "runs.finish");
+  assert.equal(finishes.length, 2);
+  assert.equal(finishes[0][2], "failed");
+  assert.equal(finishes[1][2], "applied");
+});
+
+test("removeFile is serialised against applyFile, in call order", async () => {
+  const { store } = harness();
+  const trace = [];
+  const originalReplace = store.repos.projects.replaceForFile;
+  store.repos.projects.replaceForFile = async (file, projects) => {
+    trace.push("apply-enter");
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    trace.push("apply-exit");
+    return originalReplace(file, projects);
+  };
+  const originalRemove = store.repos.projects.removeFile;
+  store.repos.projects.removeFile = async (file) => {
+    trace.push("remove-enter");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    trace.push("remove-exit");
+    return originalRemove(file);
+  };
+
+  await Promise.all([
+    store.applyFile(parsed(), { trigger: "watcher" }),
+    store.removeFile("master.xlsx"),
+  ]);
+
+  assert.deepEqual(trace, ["apply-enter", "apply-exit", "remove-enter", "remove-exit"],
+    "removeFile must wait for the in-flight applyFile to finish rather than interleaving with it");
+});
+
 test("a rejected file opens and closes a run with outcome failed and a specific reason", async () => {
   const { calls, store } = harness();
   await store.recordRejectedFile("bad.xlsx", "no recognisable Projects sheet", { trigger: "watcher" });

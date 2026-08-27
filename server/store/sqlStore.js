@@ -43,6 +43,20 @@ export class SqlStore {
     this.ready = false;
   }
 
+  /* One ingest at a time. chokidar fires add and change independently and does
+     not await a handler before the next, so a single file copy can put two
+     applyFile calls in flight; they collide on dbo.Project's primary key and
+     leave the read model reflecting whichever refresh() finished last. */
+  #queue = Promise.resolve();
+
+  #serialise(work) {
+    const run = this.#queue.then(work, work);
+    /* The chain must not break on a rejection, or every later ingest is
+       rejected with the first failure. Swallow here; the caller still sees it. */
+    this.#queue = run.then(() => {}, () => {});
+    return run;
+  }
+
   /** True when the database has the Phase 1 history tables wired in. */
   get tracksHistory() {
     return Boolean(this.repos.sourceFiles && this.repos.ingestRuns && this.repos.projectVersions);
@@ -153,7 +167,12 @@ export class SqlStore {
    * @param {{file: string, projects: object[], posture?: object[], bytes?: Buffer}} result
    * @param {{trigger?: "watcher"|"upload"|"boot"|"replay", actor?: string}} [context]
    */
-  async applyFile(result, { trigger = "watcher", actor = null } = {}) {
+  async applyFile(result, context = {}) {
+    return this.#serialise(() => this.#applyFile(result, context));
+  }
+
+  /** The body of applyFile, run only ever one at a time — see #serialise. */
+  async #applyFile(result, { trigger = "watcher", actor = null } = {}) {
     if (!this.tracksHistory) return this.#applyWithoutHistory(result);
 
     /* The run is opened before anything else can fail. Vaulting the bytes and
@@ -277,6 +296,11 @@ export class SqlStore {
 
   /** Forget a workbook that was deleted from the drop folder. */
   async removeFile(sourceFile) {
+    return this.#serialise(() => this.#removeFile(sourceFile));
+  }
+
+  /** The body of removeFile, run only ever one at a time — see #serialise. */
+  async #removeFile(sourceFile) {
     const runId = this.tracksHistory
       ? await this.repos.ingestRuns.start({ fileName: sourceFile, trigger: "watcher" })
       : null;
