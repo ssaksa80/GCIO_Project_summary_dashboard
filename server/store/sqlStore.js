@@ -224,6 +224,7 @@ export class SqlStore {
           projectsSeen: result.projects.length,
           sourceFileId: recorded.sourceFileId,
           fileName: result.file,
+          coldStart: Boolean(result.coldStart),
         });
         this.log({ file: result.file, ok: true, unchanged: true });
         return 0;
@@ -254,6 +255,7 @@ export class SqlStore {
         parseMs: result.parseMs ?? null,
         persistMs,
         fileName: result.file,
+        coldStart: Boolean(result.coldStart),
       });
       stage = "closed";
 

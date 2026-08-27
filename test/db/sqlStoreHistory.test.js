@@ -72,6 +72,30 @@ test("an ingest vaults the bytes, records the file, and closes the run", async (
   assert.deepEqual(finish, ["runs.finish", 99, "applied", 2]);   // no error, so the count
 });
 
+test("a parse result's coldStart flag reaches ingestRuns.finish() -- the flag ingest.js sets must not get lost on the way to the database", async () => {
+  // Not routed through harness()'s shared "runs.finish" push, which only
+  // records outcome/error/projectsChanged: that shape is already asserted by
+  // deepEqual elsewhere in this file, and adding a field to it would break
+  // those exact-shape assertions. This test needs the full result object.
+  let seenColdStart;
+  const repos = {
+    projects: { async all() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+    posture: { async list() { return []; }, async replaceForFile() {}, async removeFile() { return 0; } },
+    sourceFiles: { async record() { return { sourceFileId: 1 }; } },
+    ingestRuns: {
+      async start() { return 5; },
+      async liveHashFor() { return null; },
+      async finish(id, result) { seenColdStart = result.coldStart; },
+    },
+    projectVersions: { async appendChanged() { return 1; } },
+  };
+  const vault = { store: (buf) => ({ hash: "abc123", vaultPath: "2026/08/x.xlsx", bytes: buf.length }) };
+  const store = new SqlStore(repos, { vault, logger: quiet });
+
+  await store.applyFile(parsed({ coldStart: true }), { trigger: "boot" });
+  assert.equal(seenColdStart, true, "a cold-start parse result did not reach ingestRuns.finish() as coldStart:true");
+});
+
 test("a file whose hash has not changed is recorded as unchanged and not rewritten", async () => {
   const { calls, store } = harness({ liveHash: "deadbeef" });
   await store.applyFile(parsed(), { trigger: "watcher" });

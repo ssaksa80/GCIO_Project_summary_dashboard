@@ -295,6 +295,27 @@ export const MIGRATIONS = [
         ALTER TABLE dbo.IngestRun ADD PersistMs INT NULL;
     `,
   },
+  {
+    id: 11,
+    name: "ingest_run_cold_start",
+    sql: `
+      /* The first parse in a process runs through XLSX-parsing code nothing
+         has JIT-compiled or paged in yet, so it is measured but must not be
+         judged against the same threshold as every later parse -- see
+         COLD_START_SLOW_PARSE_MS in repos/ingestRuns.js. This flag is how
+         timingSummary() tells a genuine cold start apart from a slow warm
+         parse, so a week of restarts does not pin gcio_ingest_parse_slowest_ms
+         (or the persist equivalent) to a warm-up artefact.
+
+         DEFAULT 0 rather than NULL: every row written before this migration
+         was, by definition, not something ingest.js ever flagged as a cold
+         start, so it must read as "no" rather than "unknown" -- an unfiltered
+         NULL would silently opt every historical row back into the maxima
+         the exclusion exists to protect. */
+      IF COL_LENGTH('dbo.IngestRun', 'IsColdStart') IS NULL
+        ALTER TABLE dbo.IngestRun ADD IsColdStart BIT NOT NULL CONSTRAINT DF_IngestRun_ColdStart DEFAULT (0);
+    `,
+  },
 ];
 
 const LEDGER = `

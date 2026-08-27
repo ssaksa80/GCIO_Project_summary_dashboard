@@ -17,6 +17,21 @@ const ERROR_MAX = 1000;
    parsing has stopped being justified. */
 const SLOW_PARSE_MS = 500;
 
+/* The first parse in a process is not a slow parse -- it is a cold one.
+   Measured on a live deployment: 1903ms for the first parse after a restart
+   vs 128ms for the identical workbook parsed warm later in the same process
+   (~15x), because nothing has JIT-compiled or paged in the XLSX-parsing code
+   yet. Warning on that every single restart is exactly the "cries wolf"
+   problem this threshold exists to avoid.
+
+   5000ms is roughly 2.6x that measured 1903ms baseline -- comfortable
+   headroom for a slower box or a heavier workbook than the one measured,
+   while still catching a first parse that is a genuine regression rather
+   than warm-up. It is also well under the point where a first parse would
+   still need to be visible: if the first workbook after a restart took a
+   full 60 seconds, that is 12x this threshold and would still trip it. */
+const COLD_START_SLOW_PARSE_MS = 5000;
+
 /* Enforced in SQL by CK_IngestRun_TriggerSource / CK_IngestRun_Outcome, which
    fail at runtime with error 547. There is no type checking in this project
    to catch a typo at a call site before then, so it is checked here too — a
@@ -73,10 +88,15 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
      *          number to report, and a zero would be a lie. fileName only names the run in
      *          the slow-parse warning below — every real caller already has it in scope
      *          (it is what it passed to start()), so this is not a second source of truth.
+     *          coldStart defaults false: every real caller either passes what ingest.js's
+     *          module-level flag decided (the first parse in the process), or is a run with
+     *          no ParseMs at all (rejected/removed), for which the flag has no effect either
+     *          way. It is never left NULL in the database — a restart-of-a-restart still
+     *          needs an unambiguous "no" for timingSummary() to exclude the right rows.
      */
     async finish(runId, { outcome, projectsSeen = 0, projectsChanged = 0, postureRows = 0,
                           error = null, sourceFileId, parseMs = null, persistMs = null,
-                          fileName = null } = {}) {
+                          fileName = null, coldStart = false } = {}) {
       if (!INGEST_OUTCOMES.includes(outcome)) {
         throw new Error(`unknown ingest outcome '${outcome}' — expected one of ${INGEST_OUTCOMES.join(", ")}`);
       }
@@ -87,7 +107,8 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
                ProjectsSeen = @seen, ProjectsChanged = @changed,
                PostureRows = @posture, Error = @error,
                SourceFileId = COALESCE(@sourceFileId, SourceFileId),
-               ParseMs = @parseMs, PersistMs = @persistMs
+               ParseMs = @parseMs, PersistMs = @persistMs,
+               IsColdStart = @coldStart
          WHERE IngestRunId = @id
       `, [
         { name: "id", type: sql.BigInt, value: runId },
@@ -101,6 +122,7 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         { name: "sourceFileId", type: sql.BigInt, value: sourceFileId ?? null },
         { name: "parseMs", type: sql.Int, value: Number.isFinite(parseMs) ? Math.round(parseMs) : null },
         { name: "persistMs", type: sql.Int, value: Number.isFinite(persistMs) ? Math.round(persistMs) : null },
+        { name: "coldStart", type: sql.Bit, value: Boolean(coldStart) },
       ]);
 
       if (!rowsAffected[0]) {
@@ -110,9 +132,19 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         logger.error?.(`[ingest] run ${runId} was not closed — no such row`);
       }
 
-      if (Number.isFinite(parseMs) && parseMs >= SLOW_PARSE_MS) {
-        logger.warn?.(`[ingest] ${fileName ?? `run ${runId}`} took ${parseMs}ms to parse — ` +
-          `slow enough to block the event loop; if this becomes normal, revisit the deferred worker-thread parsing`);
+      if (Number.isFinite(parseMs)) {
+        const threshold = coldStart ? COLD_START_SLOW_PARSE_MS : SLOW_PARSE_MS;
+        if (parseMs >= threshold) {
+          const subject = fileName ?? `run ${runId}`;
+          /* Different wording, not just a different number, so a reader can tell
+             at a glance which kind of "slow" this is without doing threshold
+             arithmetic in their head. */
+          const what = coldStart
+            ? `${subject} took ${parseMs}ms for its first parse since this process started`
+            : `${subject} took ${parseMs}ms to parse`;
+          logger.warn?.(`[ingest] ${what} — slow enough to block the event loop; ` +
+            `if this becomes normal, revisit the deferred worker-thread parsing`);
+        }
       }
     },
 
@@ -146,7 +178,8 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
     async recent({ limit = 200 } = {}) {
       const { recordset } = await ex.query(`
         SELECT TOP (@limit) IngestRunId, FileName, TriggerSource, StartedAt, FinishedAt,
-               Outcome, ProjectsSeen, ProjectsChanged, PostureRows, Error, ParseMs, PersistMs
+               Outcome, ProjectsSeen, ProjectsChanged, PostureRows, Error, ParseMs, PersistMs,
+               IsColdStart
         FROM dbo.IngestRun ORDER BY StartedAt DESC
       `, [{ name: "limit", type: sql.Int, value: Math.min(500, Math.max(1, Number(limit) || 200)) }]);
 
@@ -163,6 +196,7 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
         error: r.Error || null,
         parseMs: r.ParseMs ?? null,
         persistMs: r.PersistMs ?? null,
+        coldStart: Boolean(r.IsColdStart),
       }));
     },
 
@@ -174,13 +208,28 @@ export function ingestRunsRepo(ex, { logger = console } = {}) {
      * too, since it is the denominator that makes the maxima interpretable.
      * A window with nothing in it returns nulls, not zeroes: a quiet week is
      * not the same claim as "parsing took 0ms".
+     *
+     * Both maxima exclude cold-start rows (IsColdStart = 1). A cold start is a
+     * warm-up artefact, not a data point about how the parser or the database
+     * perform under normal operation — measured at 1903ms parse / 8068ms
+     * persist on a live deployment vs 128ms / 2016ms warm for the identical
+     * workbook, both roughly 4-15x. Without this exclusion, one restart pins
+     * gcio_ingest_parse_slowest_ms (and gcio_ingest_persist_slowest_ms) to that
+     * inflated number for the full 7-day window, which is the same class of
+     * defect as reporting the cold parse as a plain "slow parse" warning:
+     * a once-per-restart artefact crowding out what a warm system actually
+     * does. `runs` is deliberately NOT filtered the same way — it is the
+     * denominator that makes the maxima interpretable, and a cold-start run
+     * genuinely happened, so it still counts as a run.
      * @returns {Promise<{runs: number, slowestParseMs: number|null,
      *                    slowestPersistMs: number|null, lastFinishedAt: string|null}>}
      */
     async timingSummary() {
       const { recordset } = await ex.query(`
-        SELECT COUNT(*) AS runs, MAX(ParseMs) AS slowestParse,
-               MAX(PersistMs) AS slowestPersist, MAX(FinishedAt) AS lastFinishedAt
+        SELECT COUNT(*) AS runs,
+               MAX(CASE WHEN IsColdStart = 0 THEN ParseMs END) AS slowestParse,
+               MAX(CASE WHEN IsColdStart = 0 THEN PersistMs END) AS slowestPersist,
+               MAX(FinishedAt) AS lastFinishedAt
         FROM dbo.IngestRun
         WHERE FinishedAt >= DATEADD(day, -7, SYSUTCDATETIME())
       `);

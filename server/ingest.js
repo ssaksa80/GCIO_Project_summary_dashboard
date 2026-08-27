@@ -384,12 +384,35 @@ function readPostureSheet(sheet) {
 }
 
 /**
+ * Whether a workbook has been parsed yet in this process.
+ *
+ * Measured on a live deployment: the first parse after a restart took
+ * 1903ms; the identical workbook parsed warm (a watcher-triggered re-ingest
+ * later in the same process) took 128ms — about 15x slower, because the
+ * first parse runs through XLSX-parsing code nothing has JIT-compiled or
+ * paged in yet. That is expected and is not the same thing as a slow parse,
+ * so it is judged against a different threshold (see COLD_START_SLOW_PARSE_MS
+ * in repos/ingestRuns.js) instead of warning on every single restart.
+ *
+ * Deliberately NOT derived from TriggerSource: the boot sweep usually runs
+ * first, but an empty drop folder at boot means the first real parse arrives
+ * from a watcher event instead, and TriggerSource would call that "watcher"
+ * exactly like every later one. This flag tracks what has actually happened
+ * in this process, not who asked for it.
+ */
+let hasParsedInThisProcess = false;
+
+/**
  * Parse a workbook buffer into normalized projects.
  * Never throws on malformed content — returns {ok:false, error} instead.
- * @returns {{ok: boolean, file: string, projects?: object[], error?: string, parseMs?: number}}
+ * @returns {{ok: boolean, file: string, projects?: object[], error?: string, parseMs?: number, coldStart: boolean}}
  */
 export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
   const file = path.basename(filename);
+  /* Consumed unconditionally, before parsing is attempted: the warm-up cost
+     this flags is paid by the attempt itself, whether or not it succeeds. */
+  const coldStart = !hasParsedInThisProcess;
+  hasParsedInThisProcess = true;
   const startedAt = performance.now();
   try {
     const workbook = XLSX.read(buffer, { cellDates: true });
@@ -428,7 +451,7 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
         .filter(Boolean);
     }
     if (projects.length === 0 && posture.length === 0) {
-      return { ok: false, file, error: "no recognizable projects sheet (need Project ID/Name plus 2+ known columns)" };
+      return { ok: false, file, error: "no recognizable projects sheet (need Project ID/Name plus 2+ known columns)", coldStart };
     }
 
     for (const project of projects) {
@@ -454,9 +477,9 @@ export function ingestBuffer(buffer, filename, fileMtimeISO = null) {
         project.lastUpdated = project.updates[0]?.date || fileMtimeISO || null;
       }
     }
-    return { ok: true, file, projects, posture, parseMs: Math.round(performance.now() - startedAt) };
+    return { ok: true, file, projects, posture, parseMs: Math.round(performance.now() - startedAt), coldStart };
   } catch (err) {
-    return { ok: false, file, error: err.message || "unreadable workbook" };
+    return { ok: false, file, error: err.message || "unreadable workbook", coldStart };
   }
 }
 
