@@ -25,6 +25,7 @@ import { makeExecutor } from "./db/executor.js";
 import { migrate } from "./db/migrations.js";
 import { electIngestLeader } from "./db/leaderElection.js";
 import { startIngestRole } from "./ingestRole.js";
+import { startFollowerRefresh } from "./readModelRefresh.js";
 import { projectsRepo } from "./repos/projects.js";
 import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
@@ -49,6 +50,14 @@ const log = (msg) => console.log(`[gcio ${dayjs().format("HH:mm:ss")}] ${msg}`);
 
 let store;
 let backends;
+
+/* Seconds-since-last-refresh feeds gcio_read_model_age_seconds. Only ever
+   meaningful for STORE=mssql: the leader bumps it after every ingest (that
+   is when SqlStore.refresh() runs for it), a follower bumps it after every
+   successful poll (server/readModelRefresh.js) -- both funnel through this
+   one variable so the metric means the same thing on either role. Stays
+   null for STORE=memory, which has no separate read model to date. */
+let lastRefreshAt = null;
 
 if (config.store === "mssql") {
   let live = null;
@@ -81,6 +90,7 @@ if (config.store === "mssql") {
        doubled path while the preflight had happily validated the real one. */
   }, { vault: createVault(path.resolve(ROOT, config.vaultDir)) });
   await store.refresh();
+  lastRefreshAt = Date.now();
   log(`loaded ${store.projectCount} projects from SQL`);
 
   /* A fresh database has no role mappings, and with none every sign-in folds
@@ -130,7 +140,9 @@ async function apply(result) {
       await store.recordRejectedFile(result.file, result.error, { trigger: "boot" });
       return 0;
     }
-    return store.applyFile(result, { trigger: "boot" });
+    const n = await store.applyFile(result, { trigger: "boot" });
+    lastRefreshAt = Date.now(); // applyFile just called store.refresh() internally
+    return n;
   }
   return applyResult(store, result);
 }
@@ -192,6 +204,7 @@ function startWatcher() {
       }
       if (store instanceof SqlStore) {
         await store.applyFile(parsed, { trigger: "watcher" });
+        lastRefreshAt = Date.now(); // applyFile just called store.refresh() internally
       } else {
         applyResult(store, parsed);
         if (store.demoMode) store.demoMode = false;
@@ -204,6 +217,7 @@ function startWatcher() {
          model; the in-memory one only deletes, so it is logged here. */
       if (store instanceof SqlStore) {
         await store.removeFile(fileName);
+        lastRefreshAt = Date.now(); // removeFile just called store.refresh() internally
         return;
       }
       const removed = store.removeFile(fileName);
@@ -244,6 +258,15 @@ const ingestRole = await startIngestRole({
   electLeader: () => electIngestLeader({ env: process.env, dataDir: DATA_DIR, logger: console }),
   sweep: sweepDisk,
   startWatcher,
+  /* Only ever called on the follower branch (see ingestRole.js): a follower
+     ingests nothing, so without this its read model is exactly what
+     store.refresh() returned at boot, forever, no matter how much the
+     leader ingests later. */
+  startFollowerRefresh: () => startFollowerRefresh({
+    store,
+    log,
+    onRefreshed: () => { lastRefreshAt = Date.now(); },
+  }),
   log,
 });
 
@@ -265,6 +288,11 @@ if (config.store === "mssql" && ingestRole.election?.isLeader) {
     watcher = null;
     Promise.resolve(dying?.close?.())
       .catch((closeErr) => log(`closing the watcher after losing the lock failed: ${closeErr.message}`));
+    /* From this instant this process IS a follower -- one that will never
+       re-elect itself -- and its read model would otherwise freeze at
+       whatever it last held, for exactly the same reason an ordinary
+       follower's would without server/readModelRefresh.js. */
+    startFollowerRefresh({ store, log, onRefreshed: () => { lastRefreshAt = Date.now(); } });
   });
 }
 
@@ -286,6 +314,9 @@ const app = createApp({
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),
   isIngestLeader: () => isIngestLeader,
+  readModelAgeSeconds: () => (
+    lastRefreshAt === null ? null : Math.round((Date.now() - lastRefreshAt) / 1000)
+  ),
 });
 
 process.on("unhandledRejection", (err) => console.error(`[gcio] unhandled rejection: ${err && err.stack}`));

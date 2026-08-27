@@ -24,10 +24,13 @@ function series(out, name, help, type, rows) {
 /**
  * @param {{store: object, startedAt: number, version?: string,
  *          ingestTiming?: object|null, runOutcomes?: object|null,
- *          ingestLeader?: boolean}} input
+ *          ingestLeader?: boolean, readModelAgeSeconds?: number|null}} input
  * @returns {Promise<string>} the exposition body
  */
-export async function renderMetrics({ store, startedAt, version = "unknown", ingestTiming = null, runOutcomes = null, ingestLeader = true }) {
+export async function renderMetrics({
+  store, startedAt, version = "unknown", ingestTiming = null, runOutcomes = null,
+  ingestLeader = true, readModelAgeSeconds = null,
+}) {
   const out = [];
 
   series(out, "gcio_up", "1 when the process is serving.", "gauge", [line("gcio_up", 1)]);
@@ -50,6 +53,27 @@ export async function renderMetrics({ store, startedAt, version = "unknown", ing
   series(out, "gcio_ingest_leader",
     "1 when this process holds the ingest lock and is watching for workbooks; 0 when another instance holds it.",
     "gauge", [line("gcio_ingest_leader", ingestLeader ? 1 : 0)]);
+
+  /* Omitted rather than defaulted, unlike gcio_ingest_leader above: STORE=memory
+     has no separate read model to go stale (there is no refresh cycle apart
+     from the ingest itself), so there is nothing true to report. Rendered only
+     when the caller (index.js, STORE=mssql) actually wires a value up.
+     Number.isFinite, not `!== null`, for the same reason as the timing series
+     below -- undefined must omit the series, not render literal "undefined". */
+  if (Number.isFinite(readModelAgeSeconds)) {
+    /* A large value here means different things on each role, which is why
+       the HELP text carries both readings rather than one generic sentence:
+       on a leader (which refreshes on every ingest) it is simply "nothing has
+       changed in a while" -- normal, even at a week, and not itself a fault.
+       On a follower (which refreshes only on this poll) a large and CLIMBING
+       value means the poll is failing or stalled -- see
+       server/readModelRefresh.js, which logs the failure this would explain. */
+    series(out, "gcio_read_model_age_seconds",
+      "Seconds since the read model last refreshed from SQL. Large and steady " +
+      "on an idle leader is normal (nothing has changed to refresh for). Large " +
+      "and climbing on a follower means its periodic poll is failing or stalled.",
+      "gauge", [line("gcio_read_model_age_seconds", Math.round(readModelAgeSeconds))]);
+  }
 
   series(out, "gcio_projects", "Projects currently served.", "gauge",
     [line("gcio_projects", store.projectCount ?? 0)]);

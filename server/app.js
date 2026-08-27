@@ -42,7 +42,8 @@ const VERSION = "1.0.0";
  *   dataDir?: string,
  *   clientDist?: string,
  *   startedAt?: number,
- *   isIngestLeader?: () => boolean
+ *   isIngestLeader?: () => boolean,
+ *   readModelAgeSeconds?: () => number|null
  * }} deps
  * @returns {import('express').Express}
  */
@@ -62,6 +63,13 @@ export function createApp(deps) {
      runs no election at all and is trivially its own ingester, and for any
      caller (existing tests included) that has not wired the election up. */
   const isIngestLeader = deps.isIngestLeader || (() => true);
+  /* Also a function, for the same reason: it changes over the process's
+     life (every ingest on a leader, every poll tick on a follower -- see
+     server/readModelRefresh.js). Defaults to a function returning null,
+     which renderMetrics reads as "not applicable" and omits the series --
+     true for STORE=memory, which has no separate read model to go stale,
+     and for any caller that has not wired this up. */
+  const readModelAgeSeconds = deps.readModelAgeSeconds || (() => null);
 
   const app = express();
   /* TLS terminates at IIS on the same box, so forwarded headers are trusted
@@ -155,6 +163,7 @@ export function createApp(deps) {
     const body = await renderMetrics({
       store: metricsStore, startedAt, version: config.version, ingestTiming, runOutcomes,
       ingestLeader: isIngestLeader(),
+      readModelAgeSeconds: readModelAgeSeconds(),
     });
     res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     res.send(Buffer.from(body, "utf-8"));

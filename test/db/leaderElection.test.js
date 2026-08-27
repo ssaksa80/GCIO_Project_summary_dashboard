@@ -26,6 +26,21 @@ import {
 
 const quiet = { error() {}, log() {} };
 
+/** Poll a condition until it is true, rather than sleep-a-fixed-amount then
+ *  assert -- a fixed short sleep is exactly what made this class of test
+ *  flaky under a loaded `node --test` run (many files' timers and real
+ *  chokidar watchers compete for one event loop, and a 5ms interval can be
+ *  delayed well past its nominal period). Polling tolerates that delay and
+ *  still fails fast and loud if the condition is truly never met. */
+async function waitUntil(conditionFn, { timeoutMs = 3000, stepMs = 10 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (conditionFn()) return;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`);
+}
+
 // ------------------------------------------------------------ resource name
 
 test("the resource name identifies the database + drop folder, not the machine", () => {
@@ -121,10 +136,14 @@ test("watchForConnectionLoss calls onLost exactly once when a heartbeat fails", 
   const lost = [];
   const stop = watchForConnectionLoss(ex, { intervalMs: 5, onLost: (err) => lost.push(err) });
 
-  await new Promise((r) => setTimeout(r, 60));
+  await waitUntil(() => lost.length >= 1);
+  // Give plenty more ticks a chance to fire (each would also throw) before
+  // deciding onLost really only ran once -- this is the assertion that
+  // matters, not how many ticks happened to land in some fixed window.
+  await new Promise((r) => setTimeout(r, 150));
   stop();
   const afterStop = ticks;
-  await new Promise((r) => setTimeout(r, 30));
+  await new Promise((r) => setTimeout(r, 50));
 
   assert.equal(lost.length, 1, "onLost should fire exactly once");
   assert.match(lost[0].message, /closed/);
@@ -214,7 +233,7 @@ test("losing the dedicated connection reports loss through watchForLoss", async 
 
   const lost = [];
   election.watchForLoss((err) => lost.push(err), { intervalMs: 5 });
-  await new Promise((r) => setTimeout(r, 60));
+  await waitUntil(() => lost.length >= 1);
 
   assert.equal(lost.length, 1, "watchForLoss must report the drop exactly once");
   await election.close();

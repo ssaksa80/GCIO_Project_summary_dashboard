@@ -135,6 +135,29 @@ test("gcio_ingest_leader defaults to 1 (memory mode, and any caller that has not
   assert.match(body, /^gcio_ingest_leader 1$/m);
 });
 
+test("gcio_read_model_age_seconds is omitted when not applicable (STORE=memory has no read-model concept)", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now() });
+  assert.ok(!body.includes("gcio_read_model_age_seconds"), "a series was emitted with no data behind it");
+});
+
+test("gcio_read_model_age_seconds renders seconds since the last successful refresh", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now(), readModelAgeSeconds: 42 });
+  assert.match(body, /^gcio_read_model_age_seconds 42$/m);
+});
+
+test("gcio_read_model_age_seconds' help text says a large value on an idle leader is normal", async () => {
+  /* Otherwise someone alerts on an idle leader that simply has had nothing
+     to ingest for a week -- a large number there is expected, not a fault. */
+  const body = await renderMetrics({ store: store(), startedAt: Date.now(), readModelAgeSeconds: 604_800 });
+  const help = body.match(/^# HELP gcio_read_model_age_seconds (.+)$/m)[1];
+  assert.match(help, /idle leader/i, `expected the HELP text to warn against alerting on an idle leader, got: ${help}`);
+});
+
+test("gcio_read_model_age_seconds rounds a fractional age to whole seconds", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now(), readModelAgeSeconds: 12.9 });
+  assert.match(body, /^gcio_read_model_age_seconds 13$/m);
+});
+
 test("uptime is seconds, not milliseconds", async () => {
   const body = await renderMetrics({ store: store(), startedAt: Date.now() - 90_000 });
   const uptime = Number(body.match(/^gcio_uptime_seconds ([0-9.]+)$/m)[1]);
@@ -145,7 +168,7 @@ test("uptime is seconds, not milliseconds", async () => {
 
 const config = loadConfig({ NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
 
-function makeApp({ storeOver = {}, ingestRuns = null, isIngestLeader } = {}) {
+function makeApp({ storeOver = {}, ingestRuns = null, isIngestLeader, readModelAgeSeconds } = {}) {
   return createApp({
     store: store(storeOver),
     config,
@@ -154,6 +177,7 @@ function makeApp({ storeOver = {}, ingestRuns = null, isIngestLeader } = {}) {
     audit: { append: async () => {} },
     ingestRuns,
     isIngestLeader,
+    readModelAgeSeconds,
     ldapAuthenticate: devAuthenticate("admin"),
     dataDir: "data",
     clientDist: "client/dist",
@@ -228,6 +252,24 @@ test("GET /metrics defaults gcio_ingest_leader to 1 when no election is wired (S
   const app = makeApp();
   const res = await request(app).get("/metrics");
   assert.match(res.text, /^gcio_ingest_leader 1$/m);
+});
+
+test("GET /metrics omits gcio_read_model_age_seconds when it is not wired (STORE=memory)", async () => {
+  const app = makeApp();
+  const res = await request(app).get("/metrics");
+  assert.ok(!res.text.includes("gcio_read_model_age_seconds"));
+});
+
+test("GET /metrics renders a live gcio_read_model_age_seconds when the election has wired one up", async () => {
+  let ageSeconds = 5;
+  const app = makeApp({ readModelAgeSeconds: () => ageSeconds });
+
+  const first = await request(app).get("/metrics");
+  assert.match(first.text, /^gcio_read_model_age_seconds 5$/m);
+
+  ageSeconds = 65;
+  const second = await request(app).get("/metrics");
+  assert.match(second.text, /^gcio_read_model_age_seconds 65$/m);
 });
 
 test("GET /metrics still renders the base series when there is no history backend at all", async () => {
