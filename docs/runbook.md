@@ -13,7 +13,9 @@ A runbook nobody has run is worse than no runbook, because it is trusted.
 
 ## 1. What this is and where it runs
 
-**GCIO Project Intelligence** is one Node.js process (`server/index.js`). It:
+**GCIO Project Intelligence** is a Node.js process (`server/index.js`). One
+instance is the norm; more than one may be run, in which case exactly one of
+them is elected to ingest. It:
 
 - serves the dashboard and its API on `127.0.0.1:<PORT>` (default `8123`) —
   loopback only in production; it never terminates TLS itself
@@ -23,6 +25,11 @@ A runbook nobody has run is worse than no runbook, because it is trusted.
 - watches a **drop folder**, `data/` by default, with `chokidar`; a workbook
   copied in is ingested within about a second and pushed to every open browser
   over server-sent events
+- elects **exactly one ingest leader** when `STORE=mssql`, using a SQL Server
+  session-scoped advisory lock, so running more than one instance cannot
+  produce two processes writing the same workbook. Followers never touch the
+  drop folder; they serve reads and refresh from SQL on a timer. If the leader
+  dies **nothing re-elects a replacement** — see section 8
 - copies every ingested workbook into the **vault** (`VAULT_DIR`, default
   `vault/`) before parsing it, named by content hash and filed by year/month —
   the vault is what makes "replay everything through a fixed parser" and "what
@@ -271,6 +278,25 @@ the elevated step does.
 Someone says the numbers look old, or a workbook they dropped an hour ago
 never showed up. Work through these **in this order** — each one either
 answers the question or narrows where to look next.
+
+**If more than one instance is running, first find out which one answered.**
+Only the leader ingests; followers refresh from SQL every 30 seconds
+(section 8), so a dashboard a few *seconds* behind is a follower waiting for
+its next poll and is working as designed. Scrape each instance directly:
+
+```bash
+curl -s http://127.0.0.1:8123/metrics | grep -E "gcio_ingest_leader|gcio_read_model_age_seconds"
+```
+
+- `gcio_ingest_leader 1` — this is the leader; carry on with the steps below.
+- `gcio_ingest_leader 0` with `gcio_read_model_age_seconds` climbing past 30
+  and never resetting — this follower's poll is failing, not the ingest. Look
+  in the log for `follower read-model refresh failed` and treat it as a
+  database-reachability problem (section 5, step 4). The leader may be ingesting
+  perfectly well while this instance shows nobody the result.
+- **no instance reports `gcio_ingest_leader 1`** — nothing is ingesting
+  anywhere. The leader process died and there is no automatic re-election.
+  Restart it; the rest of this section will not find anything until you do.
 
 ### 1. `/readyz`
 
@@ -606,13 +632,15 @@ those to compute are omitted, never the whole response.
 | `gcio_last_ingest_timestamp_seconds` | When the portfolio last changed — **always emitted**, `0` if it never has. Deliberately not omitted on a database with no history yet: the natural alert, `time() - gcio_last_ingest_timestamp_seconds > 86400`, evaluates to an empty result against a *missing* series (the standard Prometheus `absent()` trap) and would never fire for the one case most worth catching — a server that has never ingested anything. `0` reads as maximally stale under that same comparison, which is the truth. |
 | `gcio_ingest_runs{outcome="applied\|unchanged\|failed\|removed"}` | Ingest attempts by outcome, all-time, all four labels always present even at zero (`STORE=mssql` only — there is no history under `STORE=memory`). |
 | `gcio_ingest_parse_slowest_ms` / `gcio_ingest_persist_slowest_ms` | Slowest recorded parse/persist in the last 7 days. Omitted (not zeroed) when there is nothing to report yet. |
+| `gcio_ingest_leader` | `1` when this process holds the ingest lock and is watching the drop folder, `0` when another instance holds it (`STORE=mssql` only; always `1` under `STORE=memory`, which has nothing to contend over). Summed across every instance this should be exactly `1` — see the alerts below. |
+| `gcio_read_model_age_seconds` | Seconds since **this instance's** read model last refreshed from SQL. On a leader that is time since its last ingest, so **large and steady is normal on a quiet portfolio** — it means nothing has changed, not that anything is broken. On a follower it should reset roughly every 30 seconds; large and climbing there means its poll is failing. Do not alert on this without separating leaders from followers first, or every quiet weekend will page someone. Omitted entirely (not zeroed) under `STORE=memory`, which has no separate read model to go stale. |
 
 **[verified]** — started on a scratch port to avoid the instance already
 running on 8123 on this machine, then scraped:
 
 ```bash
-STORE=memory AUTH_MODE=dev DEV_ROLE=admin PORT=8199 node server/index.js &
-curl -s http://127.0.0.1:8199/metrics
+STORE=memory AUTH_MODE=dev DEV_ROLE=admin PORT=8196 node server/index.js &
+curl -s http://127.0.0.1:8196/metrics
 ```
 
 Actual reading (`# HELP`/`# TYPE` comment lines trimmed for length; every
@@ -620,20 +648,25 @@ value line is exact and in the order returned):
 
 ```
 gcio_up 1
-gcio_build_info{version="1.3.0"} 1
-gcio_uptime_seconds 17
+gcio_build_info{version="1.5.0"} 1
+gcio_uptime_seconds 2
 gcio_ready 1
 gcio_demo_mode 1
+gcio_ingest_leader 1
 gcio_projects 59
 gcio_source_files 4
-gcio_last_ingest_timestamp_seconds 1787723703
+gcio_last_ingest_timestamp_seconds 1787829237
 ```
 
-(`gcio_ingest_runs`/`gcio_ingest_parse_slowest_ms` are absent here because
-`STORE=memory` has no `ingestRuns` repository at all — expected, not a bug;
-under `STORE=mssql` both are present.)
+Three things are absent from that reading, all expected rather than bugs.
+`gcio_ingest_runs` and `gcio_ingest_parse_slowest_ms` need the `ingestRuns`
+repository, which `STORE=memory` does not have; `gcio_read_model_age_seconds`
+needs a read model that refreshes separately from ingest, which `STORE=memory`
+also does not have. All three are present under `STORE=mssql`.
+`gcio_ingest_leader` **is** present and reads `1`: a single in-memory process
+is trivially its own only possible ingester.
 
-### Alert on these two or three
+### Alert on these three or four
 
 1. **`time() - gcio_last_ingest_timestamp_seconds > 86400`** (adjust the
    threshold to how often real data is expected to change) — catches a
@@ -651,6 +684,16 @@ under `STORE=mssql` both are present.)
    real executives is a shipped-wrong-config failure, not a data problem,
    and this is the one series that says so directly.
 
+4. **`sum(gcio_ingest_leader) == 0`** (multi-instance deployments only) —
+   catches **nobody is ingesting**: the leader died and, because there is no
+   automatic re-election (section 8), no follower took over. This is distinct
+   from alert 1 and worth having alongside it: a stale portfolio may simply
+   mean nobody dropped a file, whereas this says the machinery to accept one
+   is not running anywhere. Its mirror, `sum(gcio_ingest_leader) > 1`, should
+   be impossible — if that ever fires, the lock is not doing its job and two
+   processes are racing on the same drop folder, which is the exact failure
+   the election exists to prevent.
+
 `gcio_up` absent from a scrape (rather than present and `0`, which never
 happens — the process either answers with `1` or does not answer) is the
 classic dead-man's-switch case: alert on the scrape itself going missing,
@@ -660,17 +703,34 @@ not on a value, since the process cannot report its own absence.
 
 ## 8. Known limitations
 
-- **One instance only, and why.** An advisory-lock election between multiple
-  instances, and splitting the ingest role from the web-serving role, are
-  both deferred — they exist to prevent a failure (two processes ingesting
-  the same drop folder at once) that cannot happen when there is only ever
-  one process. Building an election that has never elected anything guards
-  a configuration nobody has deployed. If a second instance is ever run
-  against the same database without this being built first, the metrics
-  already in place are what would show it: `gcio_ingest_runs` climbing
-  faster than workbooks are actually being dropped, or
-  `gcio_last_ingest_timestamp_seconds` moving on a cadence that does not
-  match anyone's activity.
+- **A dead ingest leader is not replaced until someone restarts it.** When
+  `STORE=mssql`, each instance tries at boot to take a SQL Server
+  session-scoped advisory lock (`sp_getapplock`, `server/db/leaderElection.js`)
+  named after the drop folder. Exactly one wins and watches the folder;
+  the rest log `follower: another instance holds the ingest lock` and serve
+  reads without ever ingesting. `gcio_ingest_leader` says which is which.
+  **There is no automatic re-election.** Kill the leader and no follower takes
+  over: the survivors keep serving reads, correctly and within the staleness
+  window below, but nothing new is ingested until a leader process is started
+  again. This was verified by killing a live leader and watching no failover
+  happen — it is not an untested assumption. It is also deliberate. Failover
+  that mis-fires and briefly elects two leaders reintroduces the exact
+  primary-key collision the election exists to prevent, and a portfolio that
+  is visibly an hour old is a better failure than one that is quietly wrong.
+  Alert on `sum(gcio_ingest_leader) == 0` (section 7); that, rather than a
+  stale-portfolio alert, is what distinguishes "nobody is ingesting" from
+  "nobody has dropped a file."
+- **A follower's portfolio can be up to 30 seconds behind the leader's.** A
+  follower never calls the ingest path, and that path is the only place the
+  read model is otherwise refreshed — so it re-reads from SQL on a timer
+  instead (`FOLLOWER_REFRESH_INTERVAL_MS`, `server/readModelRefresh.js`). Two
+  people on two instances can therefore see different numbers for up to that
+  long after a workbook lands. `gcio_read_model_age_seconds` is how far behind
+  each instance actually is. The interval is a constant, not configuration:
+  nobody has yet had a reason to change it, and a knob nobody tunes is not a
+  feature. A *leader* that loses its lock mid-run (a dropped connection, say)
+  demotes itself, starts this same poll from that moment, and stays a follower
+  — correct, but never a leader again without a restart.
 - **Parsing happens on the event loop, not in a worker thread — watch
   `gcio_ingest_parse_slowest_ms`.** Today's workbooks are 14–27 kB and parse
   in single-digit milliseconds, so moving parsing off the event loop was
