@@ -73,7 +73,11 @@ if (config.store === "mssql") {
     sourceFiles: repos.sourceFiles,
     ingestRuns: repos.ingestRuns,
     projectVersions: repos.projectVersions,
-  }, { vault: createVault(path.join(ROOT, config.vaultDir)) });
+    /* resolve, not join: VAULT_DIR may legitimately be absolute on a real
+       deployment, and path.join would then produce C:\gcio\C:\gcioault.
+       Found by actually deploying, where the ingest failed with ENOENT on a
+       doubled path while the preflight had happily validated the real one. */
+  }, { vault: createVault(path.resolve(ROOT, config.vaultDir)) });
   await store.refresh();
   log(`loaded ${store.projectCount} projects from SQL`);
 
@@ -97,7 +101,7 @@ if (config.store === "mssql") {
 } else {
   store = new Store();
   backends = {
-    audit: createFileAudit(path.join(ROOT, config.auditDir)),
+    audit: createFileAudit(path.resolve(ROOT, config.auditDir)),
     sessions: memorySessions(),
     /* All three, so switching DEV_ROLE works without also editing a map:
        devAuthenticate returns the matching group for whichever role is set. */
