@@ -23,6 +23,8 @@ import { ingestDirectory, ingestFile, applyResult, watchDataDir } from "./ingest
 import { getPool, resetPool } from "./db/pool.js";
 import { makeExecutor } from "./db/executor.js";
 import { migrate } from "./db/migrations.js";
+import { electIngestLeader } from "./db/leaderElection.js";
+import { startIngestRole } from "./ingestRole.js";
 import { projectsRepo } from "./repos/projects.js";
 import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
@@ -133,85 +135,138 @@ async function apply(result) {
   return applyResult(store, result);
 }
 
-if (config.store === "mssql") {
-  /* SQL already holds the portfolio; only ingest files whose contents are new
-     to it. A restart must not rewrite every row for no reason. */
-  const known = new Set([...store.sourceFiles]);
-  const onDisk = fs.readdirSync(DATA_DIR).filter((f) => !f.startsWith("."));
-  for (const file of onDisk) {
-    if (known.has(file)) continue;
-    const parsed = ingestFile(path.join(DATA_DIR, file));
-    await apply(parsed);
-  }
-  if (store.projectCount === 0) log("no data yet — drop workbooks into data/ or upload them");
-} else {
-  const fromData = ingestDirectory(store, DATA_DIR);
-  if (fromData.files > 0) {
-    log(`ingested ${store.projectCount} projects from ${fromData.files} workbook(s) in data/`);
-  } else {
-    const fromSample = ingestDirectory(store, SAMPLE_DIR);
-    if (fromSample.files > 0) {
-      store.demoMode = true;
-      log(`demo mode: ingested ${store.projectCount} projects from ${fromSample.files} sample workbook(s)`);
-    } else if (store.loadCache(DATA_DIR)) {
-      log(`restored ${store.projectCount} projects from cache snapshot`);
-    } else {
-      log("no data yet — waiting for workbooks in data/ or an upload");
+/** Sweep whatever is already on disk. Runs only for the ingest leader on
+ *  STORE=mssql; runs unconditionally on STORE=memory, unchanged from before
+ *  ingest election existed (see server/ingestRole.js). */
+async function sweepDisk() {
+  if (config.store === "mssql") {
+    /* SQL already holds the portfolio; only ingest files whose contents are new
+       to it. A restart must not rewrite every row for no reason. */
+    const known = new Set([...store.sourceFiles]);
+    const onDisk = fs.readdirSync(DATA_DIR).filter((f) => !f.startsWith("."));
+    for (const file of onDisk) {
+      if (known.has(file)) continue;
+      const parsed = ingestFile(path.join(DATA_DIR, file));
+      await apply(parsed);
     }
+    if (store.projectCount === 0) log("no data yet — drop workbooks into data/ or upload them");
+  } else {
+    const fromData = ingestDirectory(store, DATA_DIR);
+    if (fromData.files > 0) {
+      log(`ingested ${store.projectCount} projects from ${fromData.files} workbook(s) in data/`);
+    } else {
+      const fromSample = ingestDirectory(store, SAMPLE_DIR);
+      if (fromSample.files > 0) {
+        store.demoMode = true;
+        log(`demo mode: ingested ${store.projectCount} projects from ${fromSample.files} sample workbook(s)`);
+      } else if (store.loadCache(DATA_DIR)) {
+        log(`restored ${store.projectCount} projects from cache snapshot`);
+      } else {
+        log("no data yet — waiting for workbooks in data/ or an upload");
+      }
+    }
+    if (store.projectCount > 0) store.lastIngestAt = store.lastIngestAt || new Date().toISOString();
   }
-  if (store.projectCount > 0) store.lastIngestAt = store.lastIngestAt || new Date().toISOString();
 }
 
 /* ------------------------------------------------------------- watcher */
 
 /**
  * One place decides what an ingest means, for either store. The watcher only
- * reports that a file appeared, changed or went away.
+ * reports that a file appeared, changed or went away. Only ever started for
+ * the ingest leader on STORE=mssql; always started on STORE=memory.
  */
-watchDataDir(DATA_DIR, {
-  onUpsert: async (filePath) => {
-    const parsed = ingestFile(filePath);
-    if (!parsed.ok) {
-      const fileName = path.basename(filePath);
-      if (store instanceof SqlStore) {
-        await store.recordRejectedFile(fileName, parsed.error, { trigger: "watcher" });
-      } else {
-        store.log({ file: fileName, ok: false, error: parsed.error });
+function startWatcher() {
+  return watchDataDir(DATA_DIR, {
+    onUpsert: async (filePath) => {
+      const parsed = ingestFile(filePath);
+      if (!parsed.ok) {
+        const fileName = path.basename(filePath);
+        if (store instanceof SqlStore) {
+          await store.recordRejectedFile(fileName, parsed.error, { trigger: "watcher" });
+        } else {
+          store.log({ file: fileName, ok: false, error: parsed.error });
+        }
+        log(`rejected ${fileName}: ${parsed.error}`);
+        return;
       }
-      log(`rejected ${fileName}: ${parsed.error}`);
-      return;
-    }
-    if (store instanceof SqlStore) {
-      await store.applyFile(parsed, { trigger: "watcher" });
-    } else {
-      applyResult(store, parsed);
-      if (store.demoMode) store.demoMode = false;
-      store.saveCache(DATA_DIR);
-    }
-  },
+      if (store instanceof SqlStore) {
+        await store.applyFile(parsed, { trigger: "watcher" });
+      } else {
+        applyResult(store, parsed);
+        if (store.demoMode) store.demoMode = false;
+        store.saveCache(DATA_DIR);
+      }
+    },
 
-  onRemove: async (fileName) => {
-    /* SqlStore.removeFile already records the removal and refreshes the read
-       model; the in-memory one only deletes, so it is logged here. */
-    if (store instanceof SqlStore) {
-      await store.removeFile(fileName);
-      return;
-    }
-    const removed = store.removeFile(fileName);
-    if (removed > 0) {
-      store.lastIngestAt = new Date().toISOString();
-      store.log({ file: fileName, ok: true, removed });
-      store.saveCache(DATA_DIR);
-    }
-  },
+    onRemove: async (fileName) => {
+      /* SqlStore.removeFile already records the removal and refreshes the read
+         model; the in-memory one only deletes, so it is logged here. */
+      if (store instanceof SqlStore) {
+        await store.removeFile(fileName);
+        return;
+      }
+      const removed = store.removeFile(fileName);
+      if (removed > 0) {
+        store.lastIngestAt = new Date().toISOString();
+        store.log({ file: fileName, ok: true, removed });
+        store.saveCache(DATA_DIR);
+      }
+    },
 
-  onBatch: ({ files }) => {
-    store.emit("ingest", { files, projectCount: store.projectCount, at: store.lastIngestAt });
-    log(`live ingest: ${files.join(", ")} -> ${store.projectCount} projects`);
-  },
+    onBatch: ({ files }) => {
+      store.emit("ingest", { files, projectCount: store.projectCount, at: store.lastIngestAt });
+      log(`live ingest: ${files.join(", ")} -> ${store.projectCount} projects`);
+    },
 
-  logger: { error: (msg) => log(msg) },
+    logger: { error: (msg) => log(msg) },
+  });
+}
+
+/* --------------------------------------------------- ingest leader election */
+
+/**
+ * Exactly one process may watch the drop folder and ingest against a given
+ * database -- this is the sp_getapplock election the spec's P3 row deferred
+ * ("it guards a configuration nobody has deployed"), built now because a
+ * stray process left watching the same folder as a fresh one collided on
+ * dbo.Project's primary key. See server/db/leaderElection.js for the "trap"
+ * (a session-scoped lock needs its own dedicated connection) and
+ * server/ingestRole.js for the boot-time decision this wires up.
+ *
+ * STORE=memory takes none of this: no database, no shared state to collide
+ * over, so it sweeps and watches exactly as it did before this existed.
+ */
+let isIngestLeader = true;
+
+const ingestRole = await startIngestRole({
+  storeType: config.store,
+  electLeader: () => electIngestLeader({ env: process.env, dataDir: DATA_DIR, logger: console }),
+  sweep: sweepDisk,
+  startWatcher,
+  log,
 });
+
+isIngestLeader = ingestRole.isLeader;
+let watcher = ingestRole.watcher;
+
+if (config.store === "mssql" && ingestRole.election?.isLeader) {
+  /* Losing the lock later matters as much as never getting it: the
+     dedicated connection can drop out from under a leader that is otherwise
+     healthy. Deliberately NOT automatic failover -- that is a bigger change
+     than this fix, and honest degradation (stop ingesting, say so loudly)
+     beats a half-built one. A restart is what re-enters the election. */
+  ingestRole.election.watchForLoss((err) => {
+    log(`LOST THE INGEST LOCK's connection (${err.message}) -- stopping the watcher. ` +
+        `This process keeps serving reads from SQL but will NOT re-elect itself; ` +
+        `no automatic failover is built. Restart this process to re-enter the election.`);
+    isIngestLeader = false;
+    const dying = watcher;
+    watcher = null;
+    Promise.resolve(dying?.close?.())
+      .catch((closeErr) => log(`closing the watcher after losing the lock failed: ${closeErr.message}`));
+  });
+}
 
 /* ---------------------------------------------------------------- serve */
 
@@ -230,6 +285,7 @@ const app = createApp({
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),
+  isIngestLeader: () => isIngestLeader,
 });
 
 process.on("unhandledRejection", (err) => console.error(`[gcio] unhandled rejection: ${err && err.stack}`));
@@ -238,5 +294,7 @@ process.on("uncaughtException", (err) => console.error(`[gcio] uncaught exceptio
 app.listen(config.port, config.host, () => {
   log(`GCIO Project Intelligence listening on http://${config.host}:${config.port}`);
   log(`store: ${config.store} · auth: ${config.authMode}${config.authMode === "dev" ? ` (role ${config.devRole})` : ""}`);
-  log(`watching ${DATA_DIR} for workbooks (24x7 live ingestion)`);
+  log(isIngestLeader
+    ? `watching ${DATA_DIR} for workbooks (24x7 live ingestion)`
+    : `NOT watching ${DATA_DIR} -- another instance holds the ingest lock; serving reads from SQL only`);
 });

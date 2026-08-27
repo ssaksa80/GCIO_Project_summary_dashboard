@@ -41,7 +41,8 @@ const VERSION = "1.0.0";
  *   ldapAuthenticate?: Function,
  *   dataDir?: string,
  *   clientDist?: string,
- *   startedAt?: number
+ *   startedAt?: number,
+ *   isIngestLeader?: () => boolean
  * }} deps
  * @returns {import('express').Express}
  */
@@ -54,6 +55,13 @@ export function createApp(deps) {
   const ingestRuns = deps.ingestRuns || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
+  /* A function, not a plain boolean: STORE=mssql's leader status can flip to
+     false mid-run if this process loses its dedicated applock connection
+     (server/db/leaderElection.js), and a scrape must see that without the
+     app being rebuilt. Defaults to true -- true both for STORE=memory, which
+     runs no election at all and is trivially its own ingester, and for any
+     caller (existing tests included) that has not wired the election up. */
+  const isIngestLeader = deps.isIngestLeader || (() => true);
 
   const app = express();
   /* TLS terminates at IIS on the same box, so forwarded headers are trusted
@@ -144,7 +152,10 @@ export function createApp(deps) {
        content-type package, which alphabetizes parameters -- charset before
        version -- undoing the literal header a scraper expects. A Buffer
        skips that step, so the header set above survives byte-for-byte. */
-    const body = await renderMetrics({ store: metricsStore, startedAt, version: config.version, ingestTiming, runOutcomes });
+    const body = await renderMetrics({
+      store: metricsStore, startedAt, version: config.version, ingestTiming, runOutcomes,
+      ingestLeader: isIngestLeader(),
+    });
     res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     res.send(Buffer.from(body, "utf-8"));
   }));

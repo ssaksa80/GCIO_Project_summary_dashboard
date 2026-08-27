@@ -23,10 +23,11 @@ function series(out, name, help, type, rows) {
 
 /**
  * @param {{store: object, startedAt: number, version?: string,
- *          ingestTiming?: object|null, runOutcomes?: object|null}} input
+ *          ingestTiming?: object|null, runOutcomes?: object|null,
+ *          ingestLeader?: boolean}} input
  * @returns {Promise<string>} the exposition body
  */
-export async function renderMetrics({ store, startedAt, version = "unknown", ingestTiming = null, runOutcomes = null }) {
+export async function renderMetrics({ store, startedAt, version = "unknown", ingestTiming = null, runOutcomes = null, ingestLeader = true }) {
   const out = [];
 
   series(out, "gcio_up", "1 when the process is serving.", "gauge", [line("gcio_up", 1)]);
@@ -39,6 +40,16 @@ export async function renderMetrics({ store, startedAt, version = "unknown", ing
     [line("gcio_ready", store.ready ? 1 : 0)]);
   series(out, "gcio_demo_mode", "1 when serving bundled sample data rather than real workbooks.", "gauge",
     [line("gcio_demo_mode", store.demoMode ? 1 : 0)]);
+
+  /* Always emitted, defaulting to 1: a single in-memory process is trivially
+     its own (only possible) ingester, and STORE=mssql passes the live
+     election result -- which can flip to 0 mid-run if this process loses its
+     dedicated connection (see server/db/leaderElection.js). Nobody can tell
+     which of two running instances is actually watching the drop folder
+     without this; that is the whole point of adding it. */
+  series(out, "gcio_ingest_leader",
+    "1 when this process holds the ingest lock and is watching for workbooks; 0 when another instance holds it.",
+    "gauge", [line("gcio_ingest_leader", ingestLeader ? 1 : 0)]);
 
   series(out, "gcio_projects", "Projects currently served.", "gauge",
     [line("gcio_projects", store.projectCount ?? 0)]);

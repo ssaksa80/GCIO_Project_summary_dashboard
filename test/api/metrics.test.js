@@ -120,6 +120,21 @@ test("demo mode is visible, because a demo dashboard in production is worth an a
   assert.match(body, /^gcio_demo_mode 1$/m);
 });
 
+test("gcio_ingest_leader is 1 when this process holds the ingest lock", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now(), ingestLeader: true });
+  assert.match(body, /^gcio_ingest_leader 1$/m);
+});
+
+test("gcio_ingest_leader is 0 when another instance holds the lock", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now(), ingestLeader: false });
+  assert.match(body, /^gcio_ingest_leader 0$/m);
+});
+
+test("gcio_ingest_leader defaults to 1 (memory mode, and any caller that has not wired the election, both ingest in-process)", async () => {
+  const body = await renderMetrics({ store: store(), startedAt: Date.now() });
+  assert.match(body, /^gcio_ingest_leader 1$/m);
+});
+
 test("uptime is seconds, not milliseconds", async () => {
   const body = await renderMetrics({ store: store(), startedAt: Date.now() - 90_000 });
   const uptime = Number(body.match(/^gcio_uptime_seconds ([0-9.]+)$/m)[1]);
@@ -130,7 +145,7 @@ test("uptime is seconds, not milliseconds", async () => {
 
 const config = loadConfig({ NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
 
-function makeApp({ storeOver = {}, ingestRuns = null } = {}) {
+function makeApp({ storeOver = {}, ingestRuns = null, isIngestLeader } = {}) {
   return createApp({
     store: store(storeOver),
     config,
@@ -138,6 +153,7 @@ function makeApp({ storeOver = {}, ingestRuns = null } = {}) {
     roleMapping: memoryRoleMapping({ "gcio-dashboard-admins": "admin" }),
     audit: { append: async () => {} },
     ingestRuns,
+    isIngestLeader,
     ldapAuthenticate: devAuthenticate("admin"),
     dataDir: "data",
     clientDist: "client/dist",
@@ -191,6 +207,27 @@ test("GET /metrics renders history series when ingestRuns answers", async () => 
   assert.match(res.text, /^gcio_ingest_runs\{outcome="applied"\} 4$/m);
   assert.match(res.text, /^gcio_ingest_runs\{outcome="failed"\} 0$/m);
   assert.match(res.text, /^gcio_ingest_parse_slowest_ms 60$/m);
+});
+
+test("GET /metrics reflects the live election result, not just a snapshot from boot", async () => {
+  /* isIngestLeader is a function, not a plain boolean, precisely because a
+     leader can lose its connection mid-run (see leaderElection.test.js) --
+     the scrape must see that flip without the app being rebuilt. */
+  let leader = true;
+  const app = makeApp({ isIngestLeader: () => leader });
+
+  const first = await request(app).get("/metrics");
+  assert.match(first.text, /^gcio_ingest_leader 1$/m);
+
+  leader = false;
+  const second = await request(app).get("/metrics");
+  assert.match(second.text, /^gcio_ingest_leader 0$/m);
+});
+
+test("GET /metrics defaults gcio_ingest_leader to 1 when no election is wired (STORE=memory)", async () => {
+  const app = makeApp();
+  const res = await request(app).get("/metrics");
+  assert.match(res.text, /^gcio_ingest_leader 1$/m);
 });
 
 test("GET /metrics still renders the base series when there is no history backend at all", async () => {
