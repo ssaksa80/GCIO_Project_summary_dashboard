@@ -5,10 +5,15 @@ development workstation. **This is not the target production server.** Every
 command below was actually run and every output is real; nothing is
 reconstructed.
 
-**Outcome:** the deployment itself succeeded completely. The application is
-installed, correct, and runnable. It is **not currently serving**, because SQL
-Server crashed independently partway through and restarting it needs an
-elevated prompt this session does not have. Details in "Where it stands".
+**Outcome: deployed, running as a Windows service, and the whole
+patch/health/rollback cycle proven against it.** GCIO 1.5.0 is serving on
+`127.0.0.1:8130` under `GCIOProjectIntelligence`, started automatically, with
+34 projects from SQL.
+
+Two interruptions along the way, both recorded below rather than tidied away:
+SQL Server crashed on its own partway through (event 7034, unrelated to the
+deployment), and the first attempt at the rollback test proved nothing and had
+to be re-run. Step 7 has both.
 
 ---
 
@@ -194,37 +199,32 @@ Final `deploy.log`:
 
 ---
 
-## Where it stands
-
-**The application is not currently serving, and the deployment is not the
-reason.**
+## An interruption: SQL Server crashed mid-deployment
 
 At **23:07:12** the Windows System log recorded:
 
 > The SQL Server (SQLEXPRESS) service terminated unexpectedly. It has done this
 > 1 time(s). *(Event ID 7034)*
 
-That is a crash, and it happened *before* the patch tests. The application had
-already been running against it happily for eight minutes, only reading. The
-restart afterwards then failed with `ECONNREFUSED 127.0.0.1:1433`.
+A crash, not a stop, and it happened while the application was only reading from
+it. The next restart failed with `ECONNREFUSED 127.0.0.1:1433`.
 
-The deployed code is fine, and that was proved rather than assumed — running the
-installed build against the in-memory store starts cleanly, reports
-`{"status":"ok","version":"1.5.0"}`, and watches the correct directory. Only the
-database is missing.
+The deployed build was proved sound rather than assumed - run against the
+in-memory store it started cleanly, reported `1.5.0`, and watched the correct
+directory. Only the database was missing.
 
-**`MSSQL$SQLEXPRESS` has no failure actions configured, so it will not restart
-itself.** Starting it needs elevation:
+`MSSQL$SQLEXPRESS` had **no failure actions configured**, so it would not have
+restarted itself. Both were fixed from an elevated prompt:
 
 ```
 Start-Service 'MSSQL$SQLEXPRESS'
+sc.exe failure 'MSSQL$SQLEXPRESS' reset= 86400 actions= restart/60000/restart/60000/restart/60000
 ```
 
-Then restart the application. A plausible contributing factor: this SQL Express
-instance is shared with the Security Dashboard project, whose test suite runs
-809 tests across 26 database-backed files and was being run repeatedly this
-afternoon by another session. That is load this instance was not sized for, and
-worth ruling in or out before treating the crash as isolated.
+A plausible contributing factor, worth ruling in or out before treating the
+crash as isolated: this SQL Express instance is shared with another project
+whose test suite runs 809 tests across 26 database-backed files, and was being
+run repeatedly that afternoon by another session.
 
 ---
 
@@ -233,9 +233,11 @@ worth ruling in or out before treating the crash as isolated.
 The service was installed from an elevated prompt on 2026-08-29:
 
 ```
-NSSM:              C:\gciountime
+NSSM:              C:\gcio
+untime
 ssm.exe
-Node:              C:\gciountime
+Node:              C:\gcio
+untime
 ode
 ode.exe  (bundled)
 Install directory: C:\gcio
