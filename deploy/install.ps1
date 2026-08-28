@@ -59,6 +59,31 @@ function Get-InstalledVersion {
   return 'none'
 }
 
+<#
+  Put the host-side tooling ON the host, beside the app.
+
+  Without this the install has no install.ps1 and no lib/common.ps1, so
+  `Update-GCIO.cmd -Rollback` has nothing to call and a rollback is impossible
+  the moment the release folder is gone or a later artifact has replaced it. A
+  rollback has to work when no artifact is present, which is exactly the
+  situation after a bad deploy.
+
+  Refreshed by a patch as well as a bundle, so the tooling on the host never
+  lags the artifact that last touched it.
+#>
+function Install-GcioHostTooling {
+  foreach ($f in 'install.ps1', 'install-service.ps1', 'VERSION', 'versions.json') {
+    $src = Join-Path $Here $f
+    if (Test-Path $src) { Copy-Item -Force $src (Join-Path $InstallDir $f) }
+  }
+  $lib = Join-Path $Here 'lib'
+  if (Test-Path $lib) {
+    $dst = Join-Path $InstallDir 'lib'
+    if (Test-Path $dst) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dst } }
+    Copy-Item -Recurse -Force $lib $dst
+  }
+}
+
 # Service control through sc.exe rather than nssm: the service is NSSM-managed,
 # but sc.exe speaks to the SCM directly and needs no path to nssm.exe. Failures
 # are tolerated -- a host with no service registered is a valid rehearsal case,
@@ -136,6 +161,7 @@ if ($Patch) {
 
   Stop-GcioService
   Copy-GcioPatchOverlay -PatchApp (Join-Path $Here 'app') -InstallApp (Join-Path $InstallDir 'app')
+  Install-GcioHostTooling
   Start-GcioService
 
   if ($SkipHealthGate) {
@@ -178,6 +204,8 @@ if ($Bundle) {
     if (Test-Path $dst) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dst } }
     Copy-Item -Recurse -Force $src $dst
   }
+
+  Install-GcioHostTooling
 
   # Migrations are applied at BOOT by the app itself (server/index.js); there is
   # deliberately no separate migration step here. What keeps that safe is the
