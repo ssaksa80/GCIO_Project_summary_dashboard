@@ -93,3 +93,71 @@ function Get-GcioJsonValue {
   if ($null -eq $o) { return '' }
   return $o
 }
+
+# ---------------------------------------------------------------- fingerprints
+
+# SHA-256 of a string, lowercase hex. Shared by both fingerprints below so they
+# cannot drift apart in how they hash.
+function Get-GcioTextSha256 {
+  param([string]$Text)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join ''
+  } finally { $sha.Dispose() }
+}
+
+<#
+  Fingerprint the database schema.
+
+  GCIO keeps its migrations as JavaScript objects in server/db/migrations.js,
+  not as a directory of .sql files (which is what DEDB fingerprints), so this
+  hashes the whole file.
+
+  THE CONSEQUENCE, stated plainly because it will surprise someone: editing a
+  COMMENT in migrations.js changes this hash and therefore forces a bundle,
+  even though no schema changed. That is deliberate and it is the safe
+  direction. Over-triggering costs one bundle deploy. Under-triggering lets a
+  schema change ride in on a patch overlay -- and because GCIO applies
+  migrations at BOOT (server/index.js), that would migrate a host nobody chose
+  to migrate. There is a test pinning this behaviour; read it before "fixing"
+  this.
+
+  EOL-normalized, so a Windows checkout flipping LF to CRLF never trips it.
+#>
+function Get-GcioMigrationsFingerprint {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return '' }
+  Get-GcioTextSha256 ([IO.File]::ReadAllText($Path) -replace "`r`n", "`n")
+}
+
+<#
+  Fingerprint the DEPENDENCY closure, ignoring the app's own version.
+
+  Everything before the first "node_modules/" key is the app's own metadata --
+  name, version, lockfileVersion -- plus the root "" package entry. None of it
+  describes a dependency, so it is dropped and only the closure is hashed.
+  Without that, `npm version patch` alone would read as a dependency change and
+  refuse every patch: the exact false positive that gets a gate switched off.
+
+  A substring, NOT a regex over "version" lines. A regex that nulls every
+  "version" line also nulls each DEPENDENCY's version, leaving the gate blind
+  to the change it exists to catch. That was measured, not guessed: against
+  this repo's real lockfile such a regex PASSES both directions (a dependency
+  change also alters `resolved` and `integrity`, which survive it) while
+  FAILING the single-line fixtures in the test -- correct-looking exactly where
+  it is least tested.
+
+  Read as text rather than through ConvertFrom-Json: npm lockfiles carry an
+  empty-string key ("") which Windows PowerShell 5.1's parser refuses, and the
+  host runs 5.1.
+#>
+function Get-GcioLockDepsHash {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return '' }
+  $text = [IO.File]::ReadAllText($Path) -replace "`r`n", "`n"
+  $i = $text.IndexOf('"node_modules/')
+  # No dependencies at all: nothing to fingerprint. Hashing the whole text here
+  # would put the app's own version back into the hash.
+  if ($i -ge 0) { $text = $text.Substring($i) } else { $text = '' }
+  Get-GcioTextSha256 $text
+}
