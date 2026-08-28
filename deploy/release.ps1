@@ -63,12 +63,26 @@ try {
     & git -C $Repo checkout -- package.json package-lock.json
   }
 
-  $pfJson = & powershell -NoProfile -ExecutionPolicy Bypass -File "$Here/preflight-release.ps1" -Json 2>$null
+  # 2>&1, not 2>$null: when the preflight cannot even reach a verdict - no
+  # release commit to auto-detect a base ref from, an unreadable package.json -
+  # its own message is the only thing that explains why, and swallowing it
+  # leaves the releaser with "no verdict" and nowhere to go.
+  $pfOut = & powershell -NoProfile -ExecutionPolicy Bypass -File "$Here/preflight-release.ps1" -Json 2>&1
   $verdict = $null
-  try { $verdict = ($pfJson | Where-Object { $_ -match '^\{' } | Select-Object -First 1) | ConvertFrom-Json } catch { }
+  try {
+    $jsonLine = $pfOut | ForEach-Object { "$_" } | Where-Object { $_.TrimStart() -match '^\{' } | Select-Object -First 1
+    if ($jsonLine) { $verdict = $jsonLine | ConvertFrom-Json }
+  } catch { }
+
   if ($null -eq $verdict) {
     & $revert
-    Stop-Gcio 'the preflight produced no verdict - run deploy/preflight-release.ps1 directly to see why. Nothing was committed.'
+    Write-GcioWarn 'the preflight could not reach a verdict. What it said:'
+    foreach ($l in $pfOut) {
+      $t = "$l".Trim()
+      # Skip PowerShell's error-formatting scaffolding; keep the message.
+      if ($t -and $t -notmatch '^(\||\+|~|At line|CategoryInfo|FullyQualifiedErrorId)') { Write-GcioWarn "  $t" }
+    }
+    Stop-Gcio 'release aborted before any verdict. Nothing was committed and the version is unchanged.'
   }
 
   Write-GcioLog ("preflight: bump={0} migrations={1} deps={2} node={3} breaking={4} feat={5}" -f `
