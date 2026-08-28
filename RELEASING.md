@@ -60,13 +60,38 @@ that nobody chose to migrate, with no separate step to pause at.
 
 ## Before the first bundle install on any host
 
-**`DATA_DIR` and `VAULT_DIR` must be set to absolute paths in `.env`** — for
-example `C:\gcio\data` and `C:\gcio\vault`.
+Two settings, both of which fail silently rather than loudly if you skip them.
+Both were found by rehearsing an install rather than by reasoning about one.
+
+**1. `DATA_DIR` and `VAULT_DIR` must be absolute paths in `.env`** — for example
+`C:\gcio\data` and `C:\gcio\vault`.
 
 A bundle installs the application under `<install>\app`, so without these the app
 resolves both directories beneath it and the existing drop folder and vault are
 orphaned. Nothing reports that: the watcher sits on an empty directory,
 `/healthz` stays green, and the portfolio simply stops changing.
+
+**2. The service must run with its working directory set to the INSTALL ROOT**,
+not to `<install>\app`, with the script path `app\server\index.js`:
+
+| NSSM setting | Value |
+| --- | --- |
+| Application | `<install>\runtime\node\node.exe` |
+| Arguments | `app\server\index.js` |
+| Startup directory | `<install>` |
+
+`.env` is loaded relative to the **working directory**, and it lives at
+`<install>\.env`. Start the app from `<install>\app` instead and it finds no
+`.env` at all: it falls back to every default, listens on 8123 rather than the
+configured port, and — because `DATA_DIR` defaults to a path relative to the
+application root — watches `<install>\app\data`, which is failure 1 above
+arriving by a different route. Observed exactly this during the rehearsal; the
+app booted, reported healthy, and was watching the wrong directory on the wrong
+port.
+
+Verify after installing the service: `/healthz` must answer on the port from
+`.env`, and the boot log's `watching ...` line must name the directory `.env`
+configures — not one under `app\`.
 
 ## Release runbook
 
