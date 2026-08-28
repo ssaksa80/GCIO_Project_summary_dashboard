@@ -228,23 +228,114 @@ worth ruling in or out before treating the crash as isolated.
 
 ---
 
+## Step 7 - the Windows service, and the health gate
+
+The service was installed from an elevated prompt on 2026-08-29:
+
+```
+NSSM:              C:\gciountime
+ssm.exe
+Node:              C:\gciountime
+ode
+ode.exe  (bundled)
+Install directory: C:\gcio
+Layout:            bundle  (entry: app\server\index.js)
+Service created: GCIOProjectIntelligence
+Status: Running   StartType: Automatic
+Service is answering on http://127.0.0.1:8130
+```
+
+NSSM registered exactly what it should: `Application` the bundled runtime,
+`AppParameters` `app\server\index.js`, `AppDirectory` `C:\gcio` so `.env`
+resolves.
+
+With a real service in place, the two things that had never been testable were
+finally exercised.
+
+### 7a. The health gate passes a good build
+
+A clean patch, gate armed:
+
+```
+2026-08-28T23:53:16+04:00  PATCH  1.5.0 -> 1.5.0  backup=app.bak-20260828-235113  health=OK
+```
+
+`health=OK`, not `SKIPPED` - the service stopped, the overlay applied, it
+restarted, and the gate polled `/healthz` and got a real answer.
+
+### 7b. The health gate catches a bad build and rolls it back
+
+A patch built from a `server/index.js` carrying a deliberate syntax error. It
+passes all four compatibility gates by design - the schema and the lockfile are
+untouched - so it reaches the health check, which is the point.
+
+```
+[gcio] patching GCIO 1.5.0 -> 1.5.0 (dependencies and schema verified; ...)
+[gcio] health check (allowing time for first boot)
+WARNING: [gcio] health check FAILED - rolling back to the previous version
+Stop-Gcio : the patch failed its health check and was rolled back to 1.5.0
+```
+
+```
+2026-08-29T00:22:04+04:00  PATCH-ROLLBACK  1.5.0 -> 1.5.0  health=FAIL
+```
+
+Verified afterwards:
+
+| Check | Result |
+| --- | --- |
+| Service | Running, Automatic - recovered without intervention |
+| `/healthz` | `1.5.0`, 34 projects |
+| Restored code | `386ce799280b`, byte-identical to the clean build; 0 broken markers |
+| `node_modules` / runtime | 243 entries, v24.19.0 - preserved through the failure |
+| Drop folder / vault | untouched |
+
+`service-err.log` carries the ESM compile failure, which is the evidence that
+the broken build really did run rather than being rejected earlier by something
+else.
+
+**One false start worth recording.** The first attempt at 7b reported
+`health=OK`. That was not a false pass: the installed `index.js` was
+byte-identical to the clean build and no backup contained the broken marker, so
+the broken code never reached the install - the artifact was staged in one step
+and run in another, and which bytes the installer actually read could not be
+proved afterwards. Re-run with a hash check immediately before invoking, it
+failed and rolled back as designed. An assertion that cannot be tied to the
+thing under test proves nothing, which is the same discipline the unit tests are
+held to.
+
+---
+
 ## What was NOT tested, and why
 
 Stated plainly so nobody reads this record as more complete than it is.
 
-1. **The health gate's success and failure paths.** Both need a registered
-   Windows service for `install.ps1` to stop and start. Every apply here used
-   `-SkipHealthGate`. The **refusal** path of the compatibility gates was
-   tested thoroughly; the *health* gate was not, and neither was the automatic
-   rollback that depends on it. Rollback itself is proven — but it was triggered
-   by hand, not by a failed health check.
-2. **The Windows service install.** `deploy/install-service.ps1` needs an
-   elevated prompt. It also predates the `app\` layout and does not yet set the
-   working directory and script path a bundle install requires.
-3. **IIS and TLS.** `deploy/iis-site.md`, unexecuted.
-4. **The backup and restore drill.** Runbook section 6, unexecuted.
+1. **IIS and TLS.** `deploy/iis-site.md`, unexecuted. The service listens on
+   `127.0.0.1:8130` with no TLS in front of it.
+2. **The backup and restore drill.** Runbook section 6, unexecuted.
+3. **A cross-version upgrade.** Every patch applied here was 1.5.0 to 1.5.0.
+   The version arithmetic in the gates is unit-tested but has never moved a real
+   host between two different versions.
+4. **LDAP sign-in.** `AUTH_MODE=ldap` against a directory this machine cannot
+   reach, so no user has actually signed in to the deployed instance.
 
----
+## A security change made during this work
+
+To let the assistant session run the rollback test without an elevated prompt,
+the operator granted the interactive account start/stop/pause rights on this one
+service:
+
+```
+sc.exe sdset GCIOProjectIntelligence "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;CCLCSWRPWPDTLOCRRC;;;<user-sid>)"
+```
+
+It grants no admin rights and cannot create or delete services, but it is a
+permanent widening of access and **should be reverted before this host is
+treated as anything like production**. The original descriptor:
+
+```
+D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)
+```
 
 ## Cleanup still owed
 
