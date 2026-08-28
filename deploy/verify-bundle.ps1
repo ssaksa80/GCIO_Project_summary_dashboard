@@ -1,4 +1,4 @@
-#requires -version 7
+#requires -version 5.1
 <#
 .SYNOPSIS
   Verify an unpacked GCIO bundle: required files present, every checksum matches.

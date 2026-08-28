@@ -43,3 +43,7 @@ data/*
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# Cached nssm.exe, seeded by build-bundle.ps1 so an nssm.cc outage cannot
+# block a rebuild. Reproducible from versions.json and checksum-verified.
+/deploy/.cache/
