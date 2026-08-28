@@ -46,7 +46,8 @@ Read these before starting. They are the system being cloned, and every non-obvi
 | `RELEASING.md` | **New.** The releaser's single source of truth. |
 | `deploy/test/*.test.ps1` | **New.** One file per gate/behaviour. |
 | `deploy/install-service.ps1` | **Existing, keep.** Its `Read-EnvPairs` / preflight logic is reused, not replaced. |
-| `server/app.js:31` | **Modify.** `VERSION` is hardcoded `"1.0.0"`. |
+| `server/app.js:31` | **Modify.** `VERSION` is hardcoded `"1.0.0"` (Task 1). |
+| `server/config.js`, `server/index.js:43` | **Modify.** `DATA_DIR` must be overridable and resolved absolutely, so the drop folder and vault stay outside `app/` (Task 6A). |
 
 ## Naming conventions
 
@@ -371,20 +372,33 @@ function Get-GcioMigrationsFingerprint {
 <#
   Hash a package-lock's DEPENDENCY set, ignoring the app's own version.
 
-  Without nulling the root version, `npm version patch` alone would look like a
-  dependency change and refuse every patch -- the exact false positive that
-  makes a gate get switched off.
+  Without excluding the app's own version, `npm version patch` alone would look
+  like a dependency change and refuse every patch -- the exact false positive
+  that gets a gate switched off.
 
-  Read as text and regex-null the root version rather than round-tripping
-  through ConvertFrom-Json: npm lockfiles carry an empty-string key ("") which
-  Windows PowerShell 5.1's ConvertFrom-Json refuses, and the host runs 5.1.
+  Everything before the first "node_modules/" key is the app's own metadata
+  (name, version, lockfileVersion) plus the root "" package entry. None of it
+  describes a dependency, so it is dropped and only the dependency closure is
+  hashed.
+
+  Substring, not a regex over "version" lines: a regex that nulls every
+  "version" line also nulls each DEPENDENCY's version, leaving the gate blind
+  to the change it exists to catch. That is not hypothetical -- it passes
+  against a real lockfile (because a dependency change also alters `resolved`
+  and `integrity`, which survive) while failing the fixtures in step 1, so it
+  looks correct exactly where it is least tested.
+
+  Text, not ConvertFrom-Json: npm lockfiles carry an empty-string key ("")
+  which Windows PowerShell 5.1's ConvertFrom-Json refuses, and the host is 5.1.
 #>
 function Get-GcioLockDepsHash {
   param([Parameter(Mandatory)][string]$Path)
   if (-not (Test-Path -LiteralPath $Path)) { return '' }
   $text = [IO.File]::ReadAllText($Path) -replace "`r`n", "`n"
-  # Top-level "version": "..." and the root package entry's version.
-  $text = $text -replace '(?m)^\s*"version"\s*:\s*"[^"]*",\s*$', '"version":"",'
+  $i = $text.IndexOf('"node_modules/')
+  # No dependencies at all -> nothing to fingerprint. Returning the whole text
+  # here would make the app's own version part of the hash again.
+  $text = if ($i -ge 0) { $text.Substring($i) } else { '' }
   $sha  = [Security.Cryptography.SHA256]::Create()
   try {
     ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString('x2') }) -join ''
@@ -392,7 +406,7 @@ function Get-GcioLockDepsHash {
 }
 ```
 
-> The regex above is the risky part. Run step 4 and read the failures: if it nulls a *dependency's* version too, the `Assert-Ne` case will fail and tell you. Tighten it until both assertions pass. DEDB's `Get-DedbLockDepsHash` (`common.ps1:910`) solves the same problem — read it before inventing a third approach.
+> Both behaviours above were verified against this repo's real `package-lock.json` before this plan was written: bumping only the app version leaves the hash unchanged, and altering a dependency changes it.
 
 - [ ] **Step 4: Run the test**
 
@@ -741,6 +755,108 @@ git add deploy/lib/common.ps1 deploy/test/patch-refusal.test.ps1 && git commit -
 
 ---
 
+## Task 6A: Move runtime state out of the app directory
+
+**This must be done before Task 7.** Inserted as `6A` so the later task numbers stay stable.
+
+The bundle installs code to `<install>\app\`. But `server/index.js:42` computes `ROOT = path.resolve(__dirname, "..")`, so with the app at `C:\gcio\app\server`, `ROOT` becomes `C:\gcio\app` — and therefore:
+
+| | today | after a bundle install, unchanged |
+|---|---|---|
+| drop folder (`DATA_DIR`, `index.js:43`) | `C:\gcio\data` | `C:\gcio\app\data` |
+| vault (`config.vaultDir`, `index.js:91`) | `C:\gcio\vault` | `C:\gcio\app\vault` |
+
+Two consequences, both bad. The operator's existing drop folder is orphaned — files copied there are **silently never ingested**, with a healthy dashboard and no error anywhere. And the vault, which is what makes "what did that file actually say" answerable, is left behind.
+
+There is a third reason to fix it regardless: `Backup-GcioAppCopy` copies the whole `app` directory before every patch. If the vault lives inside `app`, every deploy copies the entire file archive, and the "off the downtime clock" claim stops being true as the vault grows.
+
+So: `app/` holds **code only**; state stays at the install root where it already is.
+
+**Files:**
+- Modify: `server/index.js` (make `DATA_DIR` overridable), `server/config.js`
+- Test: `test/config/paths.test.js`
+
+- [ ] **Step 1: Confirm the problem is real before changing anything**
+
+```bash
+grep -n "ROOT = \|DATA_DIR = \|vaultDir" server/index.js server/config.js
+```
+
+Expected: `ROOT` resolved from `__dirname/..`, `DATA_DIR` built with `path.join(ROOT, "data")` and **no** env override, `vaultDir` defaulting to `"vault"` with an env override that already honours an absolute path (that was fixed in `6bd993c`).
+
+If `DATA_DIR` already reads an env var, skip to step 5 — the hazard is only the vault's, and it is already solved.
+
+- [ ] **Step 2: Write the failing test**
+
+```js
+import test from "node:test";
+import assert from "node:assert/strict";
+import { loadConfig } from "../../server/config.js";
+
+test("an absolute DATA_DIR is honoured, so state can live outside the app directory", () => {
+  const cfg = loadConfig({ DATA_DIR: "C:\\gcio\\data" });
+  assert.equal(cfg.dataDir, "C:\\gcio\\data",
+    "a bundle installs code under <install>/app, so the drop folder must be configurable outside it - otherwise an upgrade silently orphans the folder the operator drops workbooks into");
+});
+
+test("DATA_DIR defaults to the repo-relative data/ when unset", () => {
+  const cfg = loadConfig({});
+  assert.equal(cfg.dataDir, "data", "the default must not change for a normal dev checkout");
+});
+```
+
+> Match `loadConfig`'s real return shape — read `server/config.js` and the existing config tests first. If `dataDir` is not currently part of the config object, adding it there (beside `vaultDir`) is the change.
+
+- [ ] **Step 3: Run it and watch it fail**
+
+```bash
+node --test test/config/paths.test.js
+```
+
+- [ ] **Step 4: Implement**
+
+Add `dataDir: env.DATA_DIR || "data"` to `loadConfig` beside `vaultDir`, then resolve it in `index.js` the same way the vault already is:
+
+```js
+/* resolve, not join: DATA_DIR is absolute on a real deployment, where the app
+   lives in <install>/app but the drop folder and vault deliberately do not --
+   see docs/superpowers/plans/2026-08-28-gcio-release-bundle-system.md, Task 6A.
+   path.join would produce C:\gcio\app\C:\gcio\data. */
+const DATA_DIR = path.resolve(ROOT, config.dataDir);
+```
+
+- [ ] **Step 5: Run the tests**
+
+```bash
+node --test test/config/paths.test.js
+```
+
+```bash
+npm test
+```
+
+Expected: **fail 0**.
+
+- [ ] **Step 6: Mutation-check**
+
+Change `path.resolve` back to `path.join`. Confirm the absolute-path test goes red. Restore. This is the same bug class as `6bd993c`, so prove the guard works rather than assuming symmetry with the vault.
+
+- [ ] **Step 7: Record the requirement where an operator will meet it**
+
+Add to `deploy/RELEASE-NOTES.md` under the current version, and to `RELEASING.md` when Task 14 writes it:
+
+> **A bundle install requires `DATA_DIR` and `VAULT_DIR` to be set to absolute paths in `.env`** (`C:\gcio\data`, `C:\gcio\vault`). Without them the app resolves both under `C:\gcio\app`, and the existing drop folder and vault are orphaned — with no error, and a dashboard that looks perfectly healthy.
+
+Task 15's rehearsal verifies this on a scratch install; do not take it on trust.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add server/index.js server/config.js test/config/paths.test.js deploy/RELEASE-NOTES.md && git commit -m "fix(config): let the drop folder live outside the app directory"
+```
+
+---
+
 ## Task 7: `build-bundle.ps1`
 
 **Files:**
@@ -783,20 +899,32 @@ Write-GcioLog "building $Name"
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force -Path "$Stage/app","$Stage/runtime" | Out-Null
 
-Write-GcioLog 'npm ci (prod)'
-Push-Location $Repo; npm ci --omit=dev; $ec = $LASTEXITCODE; Pop-Location
+# ORDER MATTERS. vite is a devDependency, so `npm ci --omit=dev` before the
+# build leaves `npm run build` with no vite and the bundle ships a stale dist
+# (or fails outright). Build with the full tree first.
+Write-GcioLog 'npm ci (full - the build needs devDependencies)'
+Push-Location $Repo; npm ci; $ec = $LASTEXITCODE; Pop-Location
 if ($ec) { Stop-Gcio "'npm ci' failed (exit $ec). package-lock.json is likely out of sync with package.json (e.g. after a version bump) - run 'npm install', commit the lockfile, then rebuild. Refusing to ship a stale bundle." }
 
 Write-GcioLog 'build client'
 Push-Location $Repo; npm run build; $ec = $LASTEXITCODE; Pop-Location
 if ($ec) { Stop-Gcio "client build failed (exit $ec). Refusing to ship a stale client dist." }
 
-# The app payload. node_modules is included: that is what makes this a BUNDLE.
+# Source payload (no node_modules yet).
 Copy-Item -Recurse -Force `
   "$Repo/server","$Repo/shared","$Repo/scripts","$Repo/sample-data", `
-  "$Repo/package.json","$Repo/package-lock.json","$Repo/node_modules" "$Stage/app/"
+  "$Repo/package.json","$Repo/package-lock.json" "$Stage/app/"
 New-Item -ItemType Directory -Force "$Stage/app/client" | Out-Null
 Copy-Item -Recurse -Force "$Repo/client/dist" "$Stage/app/client/dist"
+
+# Install PRODUCTION dependencies into the stage, not by pruning the repo's
+# tree. This is what makes it a BUNDLE, and doing it here means the developer's
+# working node_modules is left exactly as it was found - a release build must
+# not leave the repo needing an `npm install` to be usable again.
+Write-GcioLog 'npm ci --omit=dev (into the staged app)'
+Push-Location "$Stage/app"; npm ci --omit=dev; $ec = $LASTEXITCODE; Pop-Location
+if ($ec) { Stop-Gcio "staged 'npm ci --omit=dev' failed (exit $ec) - the bundle would ship without its dependencies." }
+if (-not (Test-Path "$Stage/app/node_modules")) { Stop-Gcio 'staged node_modules missing - refusing to ship a bundle that cannot run.' }
 
 if (-not $SkipRuntimeFetch) {
   $nodeUrl = Get-GcioJsonValue "$Here/versions.json" "node.$Os.url"
@@ -826,12 +954,18 @@ if (-not $SkipRuntimeFetch) {
   }
 } else { Write-GcioWarn 'SkipRuntimeFetch: bundle has no Node/NSSM (testing only)' }
 
-# NOTE: this is an ALLOW-LIST. A host-side script not named here silently does NOT
-# ship, and the operator finds out only when it is missing on the server. In DEDB
-# that was exactly how Set-DedbBindHost.ps1 reached zero hosts across many releases.
-# Add new host scripts here.
-foreach ($f in 'install.ps1','install-service.ps1','uninstall.ps1') {
-  if (Test-Path "$Here/$f") { Copy-Item "$Here/$f" "$Stage/" }
+# ALLOW-LIST of host-side scripts. A script not named here does NOT ship, and
+# the operator finds out only when it is missing on the server. In DEDB that is
+# exactly how Set-DedbBindHost.ps1 reached zero hosts across many releases.
+#
+# Deliberately NOT wrapped in `if (Test-Path)`: DEDB's version is, and that
+# silent skip is the same failure in a different disguise -- a typo or a renamed
+# file drops a script from every future release and nothing says so. Missing
+# here means the build STOPS.
+$HostScripts = 'install.ps1','install-service.ps1'
+foreach ($f in $HostScripts) {
+  if (-not (Test-Path "$Here/$f")) { Stop-Gcio "host script '$f' is on the ship list but does not exist in deploy/. Fix the name or remove it from `$HostScripts - do not let it silently not ship." }
+  Copy-Item "$Here/$f" "$Stage/"
 }
 # install.ps1 sources lib/common.ps1 at runtime - bundle it or it fails with "not found".
 Copy-Item -Recurse -Force "$Here/lib" "$Stage/lib"
@@ -913,8 +1047,15 @@ Write-GcioLog "building $Name (minBase $MinBase)"
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force "$Stage/app/client" | Out-Null
 
-# The SPA build is the only slow step. No npm ci --omit=dev, no runtime fetch,
-# no node_modules copy - that is the entire point of the patch tier.
+# The SPA build is the only slow step here: no staged production install, no
+# runtime fetch, no node_modules in the artifact - that is the patch tier.
+# `npm ci` still runs, because a build against whatever happens to be in the
+# developer's node_modules is not a reproducible release artifact. It is the
+# full tree deliberately: vite is a devDependency.
+Write-GcioLog 'npm ci (full - the build needs devDependencies)'
+Push-Location $Repo; npm ci; $ec = $LASTEXITCODE; Pop-Location
+if ($ec) { Stop-Gcio "'npm ci' failed (exit $ec). Run 'npm install', commit the lockfile, then rebuild." }
+
 Write-GcioLog 'build client'
 Push-Location $Repo; npm run build; $ec = $LASTEXITCODE; Pop-Location
 if ($ec) { Stop-Gcio "client build failed (exit $ec)." }
@@ -1018,10 +1159,17 @@ if ($LASTEXITCODE -ne 0) { Write-Host '[FAIL] a good patch should verify' -Foreg
 & pwsh -NoProfile -File "$PSScriptRoot/../verify-patch.ps1" -Dir $root 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) { Write-Host '[FAIL] a tampered file must fail verification' -ForegroundColor Red; $fails++ } else { Write-Host '[ok] tampering is caught' -ForegroundColor Green }
 
-# a bundle handed to verify-patch must be refused
+# Test-GcioPatchComplete agrees this fixture is a well-formed patch...
 [IO.File]::WriteAllText("$root/app/server/index.js", 'x')
+. "$PSScriptRoot/../lib/common.ps1"
+if (-not (Test-GcioPatchComplete -Root $root)) { Write-Host '[FAIL] a complete patch should pass Test-GcioPatchComplete' -ForegroundColor Red; $fails++ }
+else { Write-Host '[ok] a complete patch passes the structural check' -ForegroundColor Green }
+
+# ...and a bundle must be refused by BOTH the structural check and verify-patch.
 New-Item -ItemType Directory -Force "$root/runtime/node" | Out-Null
 [IO.File]::WriteAllText("$root/runtime/node/node.exe", 'fake')
+if (Test-GcioPatchComplete -Root $root) { Write-Host '[FAIL] an artifact carrying a runtime is not a patch' -ForegroundColor Red; $fails++ }
+else { Write-Host '[ok] a runtime-carrying artifact fails the structural check' -ForegroundColor Green }
 & pwsh -NoProfile -File "$PSScriptRoot/../verify-patch.ps1" -Dir $root 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) { Write-Host '[FAIL] a bundle must not verify as a patch' -ForegroundColor Red; $fails++ } else { Write-Host '[ok] a bundle is refused by verify-patch' -ForegroundColor Green }
 
@@ -1375,6 +1523,11 @@ if ($Rollback) {
 
 if ($Patch) {
   # ---- gates FIRST: a refusal must change nothing ----
+  # Structure before compatibility: a truncated download or a half-extracted zip
+  # should say so plainly rather than surfacing as a confusing gate verdict.
+  if (-not (Test-GcioPatchComplete -Root $Here)) {
+    Stop-Gcio "this does not look like a complete patch artifact (missing files, or it carries a runtime and is actually a bundle). Nothing has been changed. Re-extract it and run verify-patch.ps1 first."
+  }
   $compat = Test-GcioPatchCompatible -PatchRoot $Here -InstallDir $InstallDir
   if (-not $compat.Ok) {
     foreach ($line in Format-GcioPatchRefusal -Compat $compat) { Write-GcioWarn $line }
@@ -1989,6 +2142,16 @@ pwsh -NoProfile -File deploy/verify-patch.ps1 -Dir dist-bundle/gcio-patch-1.5.0-
 
 Use `-InstallDir "$env:TEMP\gcio-rehearsal"` and a port nothing else uses. **Do not touch the live deployment on 8130.** Confirm the app starts and `/healthz` answers with the right version.
 
+- [ ] **Step 3a: Prove Task 6A's fix actually holds on a real install**
+
+With `DATA_DIR` and `VAULT_DIR` set to absolute paths in the scratch `.env`, drop a workbook into the **configured** folder and confirm it ingests:
+
+```bash
+pwsh -NoProfile -Command "Get-ChildItem $env:TEMP\gcio-rehearsal -Directory | Select-Object Name"
+```
+
+There must be **no** `app\data` or `app\vault` directory. If either exists, the app resolved state under `app/` and the orphaning hazard is still live — stop and fix it before going further. Then confirm the vault received the file and `/readyz` project count moved.
+
 - [ ] **Step 4: Apply the patch on top and watch the gate pass**
 
 Expect `PATCH` in `<install>\logs\deploy.log` with `health=OK`.
@@ -2017,12 +2180,13 @@ git add -A && git commit -m "fix(deploy): correct what the end-to-end rehearsal 
 
 ## Definition of done
 
-- `npm test` still reports **0 fail** (total rises by the Task 1 test).
+- `npm test` still reports **0 fail** (total rises by the Task 1 and Task 6A tests).
 - Every `deploy/test/*.test.ps1` passes.
 - Both artifacts build, verify, and install to a scratch directory.
+- A scratch install has **no `app\data` and no `app\vault`** — state lives at the install root, and an ingested workbook proves it.
 - A schema change **provably** refuses a patch, with operator guidance, changing nothing.
 - A failed health check **provably** rolls back, and `deploy.log` records it.
-- `RELEASING.md` states the two GCIO-specific departures from DEDB.
+- `RELEASING.md` states the GCIO-specific departures from DEDB, including the absolute-path requirement for `DATA_DIR` / `VAULT_DIR`.
 
 ## Deliberately not in scope
 
