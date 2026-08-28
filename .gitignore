@@ -29,6 +29,12 @@ data/*
 # Anchored for the same reason as audit/ above.
 /vault/
 
+# Release artifacts: staged bundles/patches and their zips. Large (a bundle
+# carries the whole node_modules tree plus a Node runtime) and reproducible
+# from a release commit, so they are built, not committed.
+# Anchored for the same reason as audit/ and vault/ above.
+/dist-bundle/
+
 # Local environment
 .env
 
