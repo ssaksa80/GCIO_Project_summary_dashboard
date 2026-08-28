@@ -13,6 +13,25 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
+/**
+ * Resolve a configured state directory against the application root.
+ *
+ * Exists as its own function so the resolve-vs-join choice is unit-testable.
+ * It is not incidental: DATA_DIR and VAULT_DIR are absolute on a real
+ * deployment, because a release bundle installs code to `<install>/app` and the
+ * drop folder and vault must NOT move under it — orphaning them is silent
+ * (empty watcher, green health check, a portfolio that just stops changing).
+ * `path.join` would turn an absolute setting into `C:\gcio\app\C:\gcio\data`,
+ * the same bug fixed for the vault in 6bd993c.
+ *
+ * @param {string} root the application root
+ * @param {string} configured an absolute path, or one relative to root
+ * @returns {string}
+ */
+export function resolveStateDir(root, configured) {
+  return path.resolve(root, configured);
+}
+
 const STORES = ["memory", "mssql"];
 const AUTH_MODES = ["ldap", "dev"];
 
@@ -108,6 +127,13 @@ export function loadConfig(env = process.env) {
     sessionIdleMinutes: Number(env.SESSION_IDLE_MINUTES || 240),
     auditDir: env.AUDIT_DIR || "audit",
     vaultDir: env.VAULT_DIR || "vault",
+    /* Both of these are resolved against ROOT by index.js, and both may
+       legitimately be ABSOLUTE on a real deployment. A release bundle installs
+       code to <install>/app, so ROOT becomes C:\gcio\app -- and the drop folder
+       and vault must not move there with it, or the operator's existing folders
+       are orphaned and workbooks copied into them are silently never ingested.
+       See test/domain/paths.test.js. */
+    dataDir: env.DATA_DIR || "data",
     seedAdminGroup: String(env.SEED_ADMIN_GROUP || "").trim(),
   });
 }

@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import dayjs from "dayjs";
 
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveStateDir } from "./config.js";
 import { Store } from "./store.js";
 import { SqlStore } from "./store/sqlStore.js";
 import { ingestDirectory, ingestFile, applyResult, watchDataDir } from "./ingest.js";
@@ -40,10 +40,22 @@ import { makeEntraJwks } from "./auth/entraJwks.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const DATA_DIR = path.join(ROOT, "data");
+/* Ships INSIDE the app, so it is right for this to move with ROOT: a release
+   bundle stages sample-data alongside the code it belongs to. The drop folder
+   and vault below are the opposite case. */
 const SAMPLE_DIR = path.join(ROOT, "sample-data");
 
 const config = loadConfig(process.env);
+
+/* resolve, not join, and read from config rather than hardcoded: DATA_DIR may
+   legitimately be absolute on a real deployment. A bundle installs code to
+   <install>/app, which makes ROOT C:\gcio\app -- and if the drop folder moved
+   there with it, the folder the operator actually copies workbooks into would
+   be orphaned. Nothing would report that: the watcher would sit happily on an
+   empty directory, /healthz would stay green, and the portfolio would simply
+   stop changing. path.join would also mangle an absolute path into
+   C:\gcio\app\C:\gcio\data -- the same bug fixed for the vault in 6bd993c. */
+const DATA_DIR = resolveStateDir(ROOT, config.dataDir);
 const log = (msg) => console.log(`[gcio ${dayjs().format("HH:mm:ss")}] ${msg}`);
 
 /* ------------------------------------------------------------- backends */
@@ -88,7 +100,7 @@ if (config.store === "mssql") {
        deployment, and path.join would then produce C:\gcio\C:\gcioault.
        Found by actually deploying, where the ingest failed with ENOENT on a
        doubled path while the preflight had happily validated the real one. */
-  }, { vault: createVault(path.resolve(ROOT, config.vaultDir)) });
+  }, { vault: createVault(resolveStateDir(ROOT, config.vaultDir)) });
   await store.refresh();
   lastRefreshAt = Date.now();
   log(`loaded ${store.projectCount} projects from SQL`);
