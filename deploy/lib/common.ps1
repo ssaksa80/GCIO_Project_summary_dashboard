@@ -381,3 +381,122 @@ function Format-GcioPatchRefusal {
     '  can bridge any gap a patch overlay cannot.'
   )
 }
+
+# ---------------------------------------------------------------- file ops
+
+<#
+  Retry a destructive file operation through a transient lock -- a virus
+  scanner, a still-draining process, a handle Windows has not released yet.
+  Without this a deploy fails on a lock that would have cleared in a second.
+#>
+function Invoke-GcioFileOp {
+  param([Parameter(Mandatory)][scriptblock]$Op, [int]$Tries = 5)
+  for ($i = 1; $i -le $Tries; $i++) {
+    try { & $Op; return }
+    catch {
+      if ($i -eq $Tries) { throw }
+      Start-Sleep -Milliseconds (200 * $i)
+    }
+  }
+}
+
+<#
+  COPY the current app aside, leaving the live app in place.
+
+  Copy, not move: app code is static at runtime, so this runs BEFORE the service
+  stops and the old version keeps serving throughout. That is what puts the
+  backup off the downtime clock -- and it is also why data/ and vault/ must live
+  outside app/, or every patch would re-copy the whole file archive.
+#>
+function Backup-GcioAppCopy {
+  param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Ts)
+  $dest = Join-Path $InstallDir "app.bak-$Ts"
+  # Replace a stale same-second backup rather than merging into it: Copy-Item
+  # -Force merges directories, which would leave the "backup" a blend of two
+  # versions. Unreachable in normal use, but a backup must be a snapshot.
+  if (Test-Path $dest) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dest } }
+  Copy-Item -Recurse -Force (Join-Path $InstallDir 'app') $dest
+}
+
+<#
+  Overlay a patch's app subset onto the installed app.
+
+  Replaces code and built assets ONLY. node_modules, the runtime, .env and
+  anything else in the install survive untouched -- that is the whole point of
+  the patch tier, and the difference between a ten-second update and a
+  reinstall.
+
+  Remove-then-copy per directory, not Copy-Item -Force over the top: -Force
+  MERGES directories, so a file deleted in the new release would survive
+  forever. A stale module left behind is a genuine hazard - it still imports,
+  and it is nobody's idea of what is deployed.
+#>
+function Copy-GcioPatchOverlay {
+  param([Parameter(Mandatory)][string]$PatchApp, [Parameter(Mandatory)][string]$InstallApp)
+  foreach ($sub in 'server', 'shared', 'scripts', 'sample-data') {
+    $s = Join-Path $PatchApp $sub
+    $d = Join-Path $InstallApp $sub
+    if (Test-Path $s) {
+      if (Test-Path $d) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $d } }
+      Copy-Item -Recurse -Force $s $d
+    }
+  }
+  foreach ($f in 'package.json', 'package-lock.json') {
+    $s = Join-Path $PatchApp $f
+    if (Test-Path $s) { Copy-Item -Force $s (Join-Path $InstallApp $f) }
+  }
+  $s = Join-Path $PatchApp 'client\dist'
+  $d = Join-Path $InstallApp 'client\dist'
+  if (Test-Path $s) {
+    if (Test-Path $d) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $d } }
+    Copy-Item -Recurse -Force $s $d
+  }
+}
+
+# Backup timestamps present, newest first.
+function Get-GcioBackups {
+  param([Parameter(Mandatory)][string]$InstallDir)
+  Get-ChildItem $InstallDir -Directory -Filter 'app.bak-*' -ErrorAction SilentlyContinue |
+    Sort-Object Name -Descending |
+    ForEach-Object { $_.Name -replace '^app\.bak-', '' }
+}
+
+# Move a backup back into place, removing whatever is currently there.
+function Restore-GcioApp {
+  param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Ts)
+  $app = Join-Path $InstallDir 'app'
+  $bak = Join-Path $InstallDir "app.bak-$Ts"
+  if (Test-Path $bak) {
+    if (Test-Path $app) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $app } }
+    Invoke-GcioFileOp { Move-Item $bak $app }
+  }
+}
+
+function Remove-OldGcioBackups {
+  param([Parameter(Mandatory)][string]$InstallDir, [int]$Keep = 3)
+  $stamps = @(Get-GcioBackups -InstallDir $InstallDir)
+  if ($stamps.Count -le $Keep) { return }
+  foreach ($ts in ($stamps | Select-Object -Skip $Keep)) {
+    Remove-Item -Recurse -Force (Join-Path $InstallDir "app.bak-$ts") -ErrorAction SilentlyContinue
+  }
+}
+
+<#
+  One line per deploy.
+
+  THIS FILE is the authority for "what actually reached this host" -- not
+  package.json, not a release PR, not what anyone remembers. A bundle is
+  cumulative, so intermediate versions can reach a host inside a later bundle
+  without ever having been deployed as their own version; only the log knows.
+#>
+function Write-GcioDeployLog {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Kind,
+    [string]$From = '?', [string]$To = '?', [string]$Extra = ''
+  )
+  $logDir = Join-Path $InstallDir 'logs'
+  New-Item -ItemType Directory -Force $logDir | Out-Null
+  $stamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'
+  $line = ("$stamp  $Kind  $From -> $To  $Extra").TrimEnd()
+  Add-Content -Path (Join-Path $logDir 'deploy.log') -Value $line -Encoding ascii
+}
