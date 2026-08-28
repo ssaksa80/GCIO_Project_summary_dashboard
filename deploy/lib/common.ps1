@@ -542,3 +542,128 @@ function Test-GcioHealth {
   param([Parameter(Mandatory)][string]$Url, [int]$TimeoutSec = 5)
   return Test-GcioHealthBody (Get-GcioHealthBody -Url $Url -TimeoutSec $TimeoutSec)
 }
+
+# ---------------------------------------------------------------- release policy
+
+<#
+  Which component of X.Y.Z moved between two versions.
+
+  'none', 'downgrade' and 'unknown' are distinct verdicts on purpose: each is a
+  reason to refuse a release, and collapsing them would lose the operator's
+  explanation for why.
+#>
+function Get-GcioBumpType {
+  param([string]$BaseVersion, [string]$HeadVersion)
+  if (-not $BaseVersion -or -not $HeadVersion) { return 'unknown' }
+  try { $b = [version]$BaseVersion; $h = [version]$HeadVersion } catch { return 'unknown' }
+  if ($h -eq $b) { return 'none' }
+  if ($h -lt $b) { return 'downgrade' }
+  if ($h.Major -gt $b.Major) { return 'major' }
+  if ($h.Minor -gt $b.Minor) { return 'minor' }
+  return 'patch'
+}
+
+<#
+  Does this bump match what actually changed?
+
+  The tier is decided by COMPATIBILITY, not by "did code change":
+    - a Z bump may not carry a migration, a dependency change, a Node-major
+      change, or new functionality;
+    - a Y bump may not carry a breaking change.
+
+  The feature rule lives INSIDE the patch branch deliberately. A minor carrying
+  a feature is this function's success case. Do not hoist it "for symmetry" --
+  in DEDB that exact change regressed three ways at once, including making an
+  already-released version unbuildable from its own release commit.
+#>
+function Test-GcioReleaseBump {
+  param(
+    [string]$Bump, [bool]$MigrationsChanged, [bool]$DepsChanged,
+    [bool]$NodeChanged, [bool]$Breaking, [bool]$FeatureAdded
+  )
+  $mk = { param($ok, $reason, $artifact) [pscustomobject]@{ Ok = [bool]$ok; Reason = "$reason"; Artifact = "$artifact" } }
+
+  # Checked before the switch: a breaking change outranks every other rule.
+  if ($Breaking -and $Bump -ne 'major') {
+    return & $mk $false 'a breaking change requires a MAJOR bump and a full BUNDLE' 'bundle'
+  }
+
+  switch ($Bump) {
+    'patch' {
+      # Node first: it routes to MAJOR, not MINOR, so a combined change gets
+      # the stronger answer rather than the first one that happens to match.
+      if ($NodeChanged)       { return & $mk $false 'the Node runtime major changed -> bump the MAJOR and ship a BUNDLE' 'bundle' }
+      if ($MigrationsChanged) { return & $mk $false 'migrations changed -> bump the MINOR and ship a BUNDLE, not a patch' 'bundle' }
+      if ($DepsChanged)       { return & $mk $false 'dependencies changed -> bump the MINOR and ship a BUNDLE, not a patch' 'bundle' }
+      if ($FeatureAdded)      { return & $mk $false 'new functionality (feat) -> bump the MINOR and ship a BUNDLE, not a patch' 'bundle' }
+      return & $mk $true 'application-only change with no schema, dependency or runtime change' 'patch'
+    }
+    'minor' { return & $mk $true 'new backward-compatible functionality' 'bundle' }
+    'major' { return & $mk $true 'breaking change - ship a bundle, back up first, and write upgrade notes' 'bundle' }
+    'none'      { return & $mk $false 'no version bump - nothing to release' 'none' }
+    'downgrade' { return & $mk $false 'the version went backwards - releases only move forward' 'none' }
+    default     { return & $mk $false "unsupported bump '$Bump' - could not determine what changed" 'none' }
+  }
+}
+
+# Scans commit BODIES: a breaking marker usually lives in a footer, not a subject.
+function Test-GcioBreakingMarker {
+  param([string]$LogBody)
+  if (-not $LogBody) { return $false }
+  if ($LogBody -match '(?m)^\s*BREAKING[ -]CHANGE\s*:') { return $true }
+  if ($LogBody -match '(?m)^\s*[a-z]+(\([^)]*\))?!\s*:') { return $true }
+  return $false
+}
+
+<#
+  Scans commit SUBJECTS only, line-anchored.
+
+  Deliberately not bodies, unlike the breaking check: a squash-merge body quotes
+  every original commit bullet, so scanning bodies would false-positive on any
+  release commit that merely summarises what merged.
+
+  This is a BACKSTOP, not a guarantee. A feature squash-merged under a
+  non-conventional PR title is not detected, and no amount of regex fixes that.
+#>
+function Test-GcioFeatureMarker {
+  param([string]$Subjects)
+  if (-not $Subjects) { return $false }
+  return [bool]($Subjects -match '(?m)^\s*feat(\([^)]*\))?!?\s*:')
+}
+
+function Get-GcioNotesHeading {
+  param([string]$Version)
+  return "## GCIO $Version"
+}
+
+<#
+  A release with no operator-facing notes ships silently: nobody on the host
+  side can tell what the update contains or that they need to run it.
+#>
+function Test-GcioReleaseNotes {
+  param([string]$Notes, [string]$Version)
+  $head = Get-GcioNotesHeading -Version $Version
+  # Anchored at both ends so "## GCIO 1.6.01" cannot satisfy 1.6.0.
+  if ($Notes -and ($Notes -match ('(?m)^' + [regex]::Escape($head) + '\s*$'))) {
+    return @{ Ok = $true; Reason = "release notes present for $Version" }
+  }
+  return @{ Ok = $false; Reason = "deploy/RELEASE-NOTES.md has no '$head' section - write the operator-facing notes before releasing" }
+}
+
+<#
+  The most recent commit whose SUBJECT is "release X.Y.Z ...", from
+  `git log --format='%H%x09%s'`.
+
+  Subject only, never the body: a squash-merge body quotes everything that
+  merged, so a body scan would match prose about a release and pick the wrong
+  base ref - which silently changes what the whole preflight compares against.
+#>
+function Get-GcioReleaseCommitSha {
+  param([string[]]$LogLines)
+  foreach ($l in $LogLines) {
+    $parts = "$l" -split "`t", 2
+    if ($parts.Count -lt 2) { continue }
+    if ($parts[1] -match '^release\s+\d+\.\d+\.\d+(\s|$)') { return $parts[0] }
+  }
+  return ''
+}
