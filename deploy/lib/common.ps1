@@ -161,3 +161,158 @@ function Get-GcioLockDepsHash {
   if ($i -ge 0) { $text = $text.Substring($i) } else { $text = '' }
   Get-GcioTextSha256 $text
 }
+
+# ---------------------------------------------------------------- patch tier
+
+<#
+  Read a property off an object, or $Default when absent or null.
+
+  Guards against StrictMode, which turns a missing property into a terminating
+  error -- and this code reads JSON written by an older release, where a
+  property genuinely may not exist.
+#>
+function Get-GcioProp {
+  param($Obj, [Parameter(Mandatory)][string]$Name, $Default = $null)
+  if ($null -eq $Obj) { return $Default }
+  $p = $Obj.PSObject.Properties[$Name]
+  if ($null -eq $p -or $null -eq $p.Value) { return $Default }
+  return $p.Value
+}
+
+function ConvertTo-GcioNodeMajor {
+  param([string]$VersionString)
+  if ($VersionString -match 'v?(\d+)\.') { return [int]$Matches[1] }
+  return -1
+}
+
+# The Node major actually installed, read from the bundled runtime. Returns -1
+# when there is no runtime to ask, which never equals a patch's target and so
+# fails closed.
+function Get-GcioNodeMajor {
+  param([Parameter(Mandatory)][string]$InstallDir)
+  $exe = Join-Path $InstallDir 'runtime\node\node.exe'
+  if (-not (Test-Path $exe)) { return -1 }
+  try { return ConvertTo-GcioNodeMajor (& $exe --version 2>$null) } catch { return -1 }
+}
+
+function Test-GcioVersionAtLeast {
+  param([Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$Min)
+  try { return ([version]($Version -replace '[^0-9.]', '')) -ge ([version]($Min -replace '[^0-9.]', '')) }
+  catch { return $false }
+}
+
+<#
+  The compatibility contract a patch carries with it.
+
+  Recorded at BUILD time from the staged files, so the host compares like with
+  like rather than trusting a number someone typed.
+#>
+function New-GcioPatchMeta {
+  param(
+    [Parameter(Mandatory)][string]$AppDir,
+    [Parameter(Mandatory)][string]$Version,
+    [Parameter(Mandatory)][int]$NodeMajor,
+    [Parameter(Mandatory)][string]$MinBase,
+    [string]$BuiltFrom = ''
+  )
+  return [ordered]@{
+    kind                  = 'patch'
+    version               = $Version
+    nodeMajor             = $NodeMajor
+    minBase               = $MinBase
+    lockDepsHash          = (Get-GcioLockDepsHash (Join-Path $AppDir 'package-lock.json'))
+    migrationsFingerprint = (Get-GcioMigrationsFingerprint (Join-Path $AppDir 'server\db\migrations.js'))
+    builtFrom             = $BuiltFrom
+  }
+}
+
+<#
+  Required files present and NO runtime -> this looks like a real patch.
+
+  Catches a truncated download or a half-extracted zip before the compatibility
+  gates do, so the operator gets "this is not a complete artifact" rather than a
+  confusing verdict about versions.
+#>
+function Test-GcioPatchComplete {
+  param([Parameter(Mandatory)][string]$Root)
+  $need = 'install.ps1', 'lib\common.ps1', 'app\server\index.js', 'app\package-lock.json',
+          'app\client\dist\index.html', 'patch-meta.json', 'checksums.txt'
+  foreach ($p in $need) { if (-not (Test-Path (Join-Path $Root $p))) { return $false } }
+  # A runtime means somebody handed us a full bundle.
+  if (Test-Path (Join-Path $Root 'runtime\node\node.exe')) { return $false }
+  return $true
+}
+
+<#
+  The four fail-closed gates. Returns
+    { Ok; Code; Reason; Installed; PatchVersion; MinBase }
+
+  MUTATES NOTHING. It runs before any stop, backup or overlay, so a refusal
+  leaves the install byte-identical and there is no rollback to perform. That
+  property is asserted directly by deploy/test/patch-gates.test.ps1 across every
+  refusal path -- keep it true.
+
+  Code is what callers switch on to build operator guidance; Reason is prose for
+  a log. Pass -InstalledNodeMajor to inject the host's Node major (tests);
+  otherwise it is read from the installed runtime.
+#>
+function Test-GcioPatchCompatible {
+  param(
+    [Parameter(Mandatory)][string]$PatchRoot,
+    [Parameter(Mandatory)][string]$InstallDir,
+    [int]$InstalledNodeMajor = -1
+  )
+  # One shape for every verdict, so no return path can forget a field.
+  $mk = {
+    param($ok, $code, $reason, $installed, $patchVer, $minBase)
+    [pscustomobject]@{
+      Ok = [bool]$ok; Code = "$code"; Reason = "$reason"
+      Installed = "$installed"; PatchVersion = "$patchVer"; MinBase = "$minBase"
+    }
+  }
+
+  $metaPath = Join-Path $PatchRoot 'patch-meta.json'
+  if (-not (Test-Path $metaPath)) {
+    return & $mk $false 'meta-missing' 'patch-meta.json missing' 'unknown' 'unknown' 'unknown'
+  }
+  $meta     = Get-Content -Raw $metaPath | ConvertFrom-Json
+  $patchVer = "$(Get-GcioProp $meta 'version' 'unknown')"
+  $minBase  = "$(Get-GcioProp $meta 'minBase' 'unknown')"
+
+  $pkg = Join-Path $InstallDir 'app\package.json'
+  if (-not (Test-Path $pkg)) {
+    return & $mk $false 'no-install' 'no existing install - run a full bundle first' 'unknown' $patchVer $minBase
+  }
+  $instVer = "$((Get-Content -Raw $pkg | ConvertFrom-Json).version)"
+
+  # 1. min base
+  if (-not (Test-GcioVersionAtLeast -Version $instVer -Min $minBase)) {
+    return & $mk $false 'min-base' "installed version $instVer is older than this patch's minimum base $minBase - use the full bundle" $instVer $patchVer $minBase
+  }
+
+  # 2. node major
+  $nm = $InstalledNodeMajor
+  if ($nm -lt 0) { $nm = Get-GcioNodeMajor -InstallDir $InstallDir }
+  $want = [int](Get-GcioProp $meta 'nodeMajor' -1)
+  if ($nm -ne $want) {
+    return & $mk $false 'node-major' "Node runtime major $nm != patch target $want - use the full bundle" $instVer $patchVer $minBase
+  }
+
+  # 3. dependencies
+  $instLock = Join-Path $InstallDir 'app\package-lock.json'
+  if (-not (Test-Path $instLock)) {
+    return & $mk $false 'lockfile-missing' 'cannot verify dependencies (this install predates lockfile tracking) - use the full bundle' $instVer $patchVer $minBase
+  }
+  if ((Get-GcioLockDepsHash $instLock) -ne (Get-GcioLockDepsHash (Join-Path $PatchRoot 'app\package-lock.json'))) {
+    return & $mk $false 'deps-changed' 'dependencies changed - use the full bundle' $instVer $patchVer $minBase
+  }
+
+  # 4. schema
+  $instMig  = Get-GcioMigrationsFingerprint (Join-Path $InstallDir 'app\server\db\migrations.js')
+  $patchMig = Get-GcioMigrationsFingerprint (Join-Path $PatchRoot  'app\server\db\migrations.js')
+  if ($instMig -ne $patchMig) {
+    return & $mk $false 'schema-changed' 'database schema (migrations.js) changed - use the full bundle' $instVer $patchVer $minBase
+  }
+
+  return & $mk $true 'ok' '' $instVer $patchVer $minBase
+}
