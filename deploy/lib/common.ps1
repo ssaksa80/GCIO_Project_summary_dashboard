@@ -500,3 +500,45 @@ function Write-GcioDeployLog {
   $line = ("$stamp  $Kind  $From -> $To  $Extra").TrimEnd()
   Add-Content -Path (Join-Path $logDir 'deploy.log') -Value $line -Encoding ascii
 }
+
+# ---------------------------------------------------------------- health
+
+<#
+  Does this /healthz body say the app is up?
+
+  GCIO answers {"status":"ok",...}; DEDB answers {"ok":true}. Do not port
+  DEDB's matcher here -- accepting the wrong shape means every patch rolls back
+  from a healthy host, and nothing about that failure points at the matcher.
+
+  NULs are stripped first. nssm writes `get` output as UTF-16LE and PowerShell
+  decodes it a byte at a time, so every real character arrives followed by a
+  NUL. A console does not render those, so the string looks completely normal
+  when an operator prints it -- while a literal pattern can never match. In
+  DEDB that made EVERY patch roll back on hosts that were fine.
+#>
+function Test-GcioHealthBody {
+  param([string]$Body)
+  if (-not $Body) { return $false }
+  return (($Body -replace "`0", '') -match '"status"\s*:\s*"ok"')
+}
+
+function Get-GcioVersionFromHealth {
+  param([string]$Body)
+  if (-not $Body) { return '' }
+  if (($Body -replace "`0", '') -match '"version"\s*:\s*"([^"]+)"') { return $Matches[1] }
+  return ''
+}
+
+# An unreachable or erroring endpoint is "not healthy", never an exception:
+# this is called in a retry loop where a connection refused during boot is the
+# normal case, not a fault.
+function Get-GcioHealthBody {
+  param([Parameter(Mandatory)][string]$Url, [int]$TimeoutSec = 5)
+  try { return (Invoke-WebRequest -Uri $Url -TimeoutSec $TimeoutSec -UseBasicParsing).Content }
+  catch { return '' }
+}
+
+function Test-GcioHealth {
+  param([Parameter(Mandatory)][string]$Url, [int]$TimeoutSec = 5)
+  return Test-GcioHealthBody (Get-GcioHealthBody -Url $Url -TimeoutSec $TimeoutSec)
+}
