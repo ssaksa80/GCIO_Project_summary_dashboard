@@ -251,10 +251,90 @@ Output on this machine: nothing — no such service exists here, as expected
 
 ## 3. Upgrading
 
-`deploy/install-service.ps1` is **re-runnable** and doubles as the upgrade
-path: it stops and removes any existing `GCIOProjectIntelligence` service
-before reinstalling, so re-running it with a newer checkout is the entire
-upgrade procedure. What it preserves:
+There are two ways GCIO can be installed, and they upgrade differently. Check
+which one you are looking at before doing anything:
+
+```powershell
+Test-Path C:\gciopp\server\index.js
+```
+
+`True` is a **bundle install** (section 3a). `False`, with `C:\gcio\server\index.js`
+present instead, is a **repo install** (section 3b) — the older shape, and what
+this development machine is running today.
+
+---
+
+### 3a. Bundle install — upgrading with a release artifact
+
+The production path. Nothing is built on the server: a release produces a
+signed-off artifact, the operator copies it across and runs one command.
+
+**Which artifact you get is decided by the release, not by you.** A patch
+overlay (~1 MB) carries application code only; a full bundle (~78 MB) also
+carries `node_modules` and the Node runtime. `RELEASING.md` explains the tier
+rules; on the host the difference is only that a bundle takes longer to copy.
+
+**Steps:**
+
+1. Copy the artifact zip **and** `Update-GCIO.cmd` and `code-update.ps1` into
+   the same folder on the server. All three ship together beside the archive —
+   `code-update.ps1` is what expands the zip, so it cannot be inside it.
+2. Leave **exactly one** `gcio-*.zip` in that folder. Two artifacts side by
+   side is refused by name rather than guessed at.
+3. Run it (elevated, so it can stop and start the service):
+
+```
+Update-GCIO.cmd
+```
+
+That is the whole procedure. What it does, in order: unblocks the zip (a file
+copied from another machine carries a mark-of-the-web that makes PowerShell
+refuse to run it), expands it, verifies every file against `checksums.txt`,
+refuses to continue if anything mismatches, and hands off to the artifact's own
+`install.ps1`.
+
+**What you should see, and what each outcome means:**
+
+| Outcome | Meaning |
+| --- | --- |
+| `OK - GCIO healthy at http://127.0.0.1:<port>/healthz` | Done. The new version is serving and the backup is kept. |
+| `PATCH REFUSED - NOTHING has been changed on this host.` | The overlay cannot safely apply here. **Nothing was touched** — the gates run before any backup, stop or overlay, so there is nothing to undo. The message names what is installed, what the patch needs, why, and the recovery command. Almost always: install the full bundle instead. |
+| `health check FAILED - rolling back` | The new version did not become healthy, and the previous one has been restored automatically from a copy taken while it was still serving. Read `logs\service-err.log` before re-running. |
+| `the artifact failed verification` | The copy is corrupt or truncated. Nothing was applied. Re-copy the release. |
+
+**Rolling back by hand**, if a problem shows up after a deploy that passed its
+health check:
+
+```
+Update-GCIO.cmd -Rollback
+```
+
+This uses the installer **on the host**, not one from an artifact, so it works
+when the release folder is long gone. Up to three previous versions are kept as
+`C:\gciopp.bak-<timestamp>`.
+
+**`C:\gcio\logs\deploy.log` is the authority for what actually reached this
+host** — not `package.json`, not what a release PR intended. One line per
+deploy:
+
+```
+2026-08-28T18:37:31+04:00  BUNDLE  none -> 1.5.0   health=OK
+2026-08-28T18:43:07+04:00  PATCH   1.5.0 -> 1.5.1  backup=app.bak-20260828-183800 health=OK
+2026-08-28T18:43:39+04:00  ROLLBACK 1.5.1 -> 1.5.0
+```
+
+Read it before answering "what version is this host on", because a bundle is
+cumulative: intermediate versions reach a host inside a later bundle without
+ever being deployed as their own version, and only this file records that.
+
+---
+
+### 3b. Repo install — upgrading from a checkout
+
+The older shape, still valid on a machine that has the repository. `deploy/install-service.ps1`
+is **re-runnable** and doubles as the upgrade path: it stops and removes any
+existing `GCIOProjectIntelligence` service before reinstalling, so re-running it
+with a newer checkout is the entire procedure. What it preserves:
 
 - the **env file** — it only reads it, never writes it; the same `-EnvFile`
   path is reused, so nothing about configuration needs restating
@@ -265,11 +345,15 @@ upgrade procedure. What it preserves:
 - **nothing about the service's log files** — `logs/service-out.log` and
   `service-err.log` are not deleted by a reinstall
 
-What an upgrade actually is, in order: pull the new code, `npm ci && npm run
-build` (verified above as step 3), then re-run the elevated install command
-from step 4. The preflight from step 1 is worth running again first —
-it will catch a config drift (a variable renamed, a new required one) before
-the elevated step does.
+In order: pull the new code, `npm ci && npm run build` (step 3), then re-run the
+elevated install command from step 4. Run the step 1 preflight first — it
+catches config drift (a renamed variable, a newly required one) before the
+elevated step does.
+
+**This path builds on the server**, which is why it is not the production
+procedure: it needs a toolchain, a network route to the npm registry, and it
+ships whatever happens to be in the working tree rather than something anyone
+verified.
 
 ---
 
