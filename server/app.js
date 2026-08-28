@@ -28,7 +28,6 @@ import { authRoutes } from "./auth/routes.js";
 import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
 
 const PERIODS = new Set(["daily", "weekly", "monthly", "yearly"]);
-const VERSION = "1.0.0";
 
 /**
  * @param {{
@@ -49,6 +48,13 @@ const VERSION = "1.0.0";
  */
 export function createApp(deps) {
   const { store, config } = deps;
+  /* One source for every endpoint that reports a version, read from
+     package.json by loadConfig. A literal here would drift the moment anyone
+     bumped the package without editing this file -- and it did: /healthz said
+     1.0.0 for every release up to 1.5.0 while /metrics said the truth. The
+     release gates compare versions, so a stale one does not fail loudly, it
+     answers "did the fix land?" wrongly. */
+  const version = config.version || "unknown";
   const dataDir = deps.dataDir || path.resolve("data");
   const clientDist = deps.clientDist || path.resolve("client", "dist");
   const startedAt = deps.startedAt || Date.now();
@@ -102,7 +108,7 @@ export function createApp(deps) {
 
   /* Monitoring must not need a session. */
   app.get("/healthz", (req, res) => {
-    res.json({ status: "ok", uptimeSec: Math.round((Date.now() - startedAt) / 1000), version: VERSION });
+    res.json({ status: "ok", uptimeSec: Math.round((Date.now() - startedAt) / 1000), version });
   });
   app.get("/readyz", (req, res) => {
     if (!store.projectCount) {
@@ -161,7 +167,7 @@ export function createApp(deps) {
        version -- undoing the literal header a scraper expects. A Buffer
        skips that step, so the header set above survives byte-for-byte. */
     const body = await renderMetrics({
-      store: metricsStore, startedAt, version: config.version, ingestTiming, runOutcomes,
+      store: metricsStore, startedAt, version, ingestTiming, runOutcomes,
       ingestLeader: isIngestLeader(),
       readModelAgeSeconds: readModelAgeSeconds(),
     });
@@ -201,7 +207,7 @@ export function createApp(deps) {
       fileCount: store.fileCount,
       lastIngestAt: store.lastIngestAt,
       demoMode: store.demoMode,
-      version: VERSION,
+      version,
     });
   });
   
