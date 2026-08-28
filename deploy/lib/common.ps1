@@ -316,3 +316,68 @@ function Test-GcioPatchCompatible {
 
   return & $mk $true 'ok' '' $instVer $patchVer $minBase
 }
+
+<#
+  Build the operator guidance for a REFUSED patch.
+
+  Returns an ARRAY of plain lines; the caller prints each through its own warn
+  helper. Pure -- no printing, no exit -- so it is unit-testable and shared by
+  install.ps1 -Patch and code-update.ps1.
+
+  Every message states, in this order: that NOTHING was changed (the gates are
+  fail-closed and run before any mutation), what is INSTALLED, what the patch IS
+  and REQUIRES, WHY it was refused in plain language, and the exact recovery
+  COMMAND. The recovery is almost always the full bundle: a bundle ships Node
+  and node_modules and applies migrations at boot, so it can bridge any gap a
+  patch overlay cannot.
+
+  ASCII only -- a host console is not guaranteed to be UTF-8.
+#>
+function Format-GcioPatchRefusal {
+  param([Parameter(Mandatory)]$Compat)
+  $inst = "$(Get-GcioProp $Compat 'Installed' 'unknown')"
+  $pv   = "$(Get-GcioProp $Compat 'PatchVersion' 'unknown')"
+  $mb   = "$(Get-GcioProp $Compat 'MinBase' 'unknown')"
+  $code = "$(Get-GcioProp $Compat 'Code' 'unknown')"
+
+  $why = switch ($code) {
+    'schema-changed' {
+      "This patch changes the database schema (server/db/migrations.js). GCIO applies migrations at boot, so an overlay would migrate this host without anyone having chosen to."
+    }
+    'deps-changed' {
+      "This patch changes the dependency set, and a patch overlay ships no node_modules to satisfy it."
+    }
+    'node-major' {
+      "This patch targets a different Node major than the runtime installed here, and a patch overlay ships no runtime to bridge that."
+    }
+    'min-base' {
+      "This host is on $inst, which is older than this patch's minimum base of $mb. The patch assumes changes that install does not have."
+    }
+    'lockfile-missing' {
+      "This install predates lockfile tracking, so its dependencies cannot be compared against the patch's and compatibility cannot be established."
+    }
+    'no-install' {
+      "There is no GCIO install in this directory to patch."
+    }
+    'meta-missing' {
+      "This artifact carries no patch-meta.json, so it cannot be verified as a patch at all. It may be a partial download."
+    }
+    default {
+      "$(Get-GcioProp $Compat 'Reason' 'The compatibility check refused this patch.')"
+    }
+  }
+
+  return @(
+    'PATCH REFUSED - NOTHING has been changed on this host.',
+    "  installed: $inst",
+    "  patch:     $pv (requires at least $mb)",
+    "  reason:    $code",
+    "  $why",
+    '',
+    '  Recovery: install the full bundle instead -',
+    "    Update-GCIO.cmd        (with gcio-bundle-$pv-win-x64.zip beside it)",
+    '',
+    '  A bundle ships Node and node_modules and applies migrations at boot, so it',
+    '  can bridge any gap a patch overlay cannot.'
+  )
+}
