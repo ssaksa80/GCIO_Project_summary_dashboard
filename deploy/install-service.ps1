@@ -36,7 +36,12 @@
         .\deploy\install-service.ps1 -Preflight
 
 .NOTES
-    NSSM must be on PATH: https://nssm.cc/download
+    NSSM is taken from <install>\runtime\nssm.exe when a full bundle has been
+    deployed, and from PATH otherwise (https://nssm.cc/download).
+
+    The layout is detected: a bundle install runs app\server\index.js with the
+    bundled runtime, a repo install runs server\index.js. Both keep the service
+    working directory at the install root, because .env is read from there.
 #>
 [CmdletBinding()]
 param(
@@ -44,6 +49,9 @@ param(
     [string]$DisplayName = "GCIO Project Intelligence",
     [string]$EnvFile = "$PSScriptRoot\..\.env",
     [string]$NodeExe,
+    [string]$NssmExe,
+    # Where GCIO is installed. Detected when omitted - see Resolve-GcioRoot.
+    [string]$InstallDir,
     [string]$ServiceAccount,
     [securestring]$ServicePassword,
     [switch]$Preflight
@@ -51,15 +59,79 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+<#
+  Work out which directory GCIO is installed in.
+
+  This script can legitimately sit in three different places relative to the
+  application, and getting it wrong is silent rather than loud:
+
+    <install>\deploy\install-service.ps1   repo-shape install  -> root is ..
+    <install>\install-service.ps1          bundle-installed     -> root is here
+    <artifact>\install-service.ps1         unpacked artifact    -> root is here
+
+  The old code always used "$PSScriptRoot\.." which is right for the first and
+  resolves to C:\ for the second - the copy a bundle install now places at the
+  install root. Detect by looking for the application instead of assuming.
+#>
+function Resolve-GcioRoot {
+    param([string]$ScriptRoot, [string]$Explicit)
+    if ($Explicit) { return (Resolve-Path $Explicit).Path }
+    $here = $ScriptRoot
+    $up = Split-Path $ScriptRoot -Parent
+    foreach ($c in @($here, $up)) {
+        if (-not $c) { continue }
+        if ((Test-Path (Join-Path $c 'app\server\index.js')) -or (Test-Path (Join-Path $c 'server\index.js'))) {
+            return (Resolve-Path $c).Path
+        }
+    }
+    if ($up) { return (Resolve-Path $up).Path }
+    return (Resolve-Path $here).Path
+}
+
+<#
+  Bundle or repo? They differ in where the application lives, and therefore in
+  what the service must be pointed at. A bundle install keeps the app under
+  app\ so that a patch overlay can replace it wholesale without touching
+  node_modules, the runtime, .env or the drop folder.
+
+  NOTE both layouts can coexist in one directory: a bundle deployed over an
+  older repo-shape install leaves the old files in place. Bundle is checked
+  FIRST and wins, because that is the newer, deployed copy - pointing the
+  service at the stale repo files would run code nobody deployed.
+#>
+function Get-GcioLayout {
+    param([Parameter(Mandatory)][string]$Root)
+    if (Test-Path (Join-Path $Root 'app\server\index.js')) {
+        return [pscustomobject]@{
+            Kind          = 'bundle'
+            Entry         = (Join-Path $Root 'app\server\index.js')
+            EntryRelative = 'app\server\index.js'
+            ClientBundle  = (Join-Path $Root 'app\client\dist\index.html')
+            BundledNode   = (Join-Path $Root 'runtime\node\node.exe')
+            BundledNssm   = (Join-Path $Root 'runtime\nssm.exe')
+        }
+    }
+    return [pscustomobject]@{
+        Kind          = 'repo'
+        Entry         = (Join-Path $Root 'server\index.js')
+        EntryRelative = 'server\index.js'
+        ClientBundle  = (Join-Path $Root 'client\dist\index.html')
+        BundledNode   = $null
+        BundledNssm   = $null
+    }
+}
+
 # $PSScriptRoot is empty while parameter DEFAULT VALUES are being evaluated
 # under Windows PowerShell 5.1 (fixed in 7) — which is what Windows Server
 # ships. Left alone, an unelevated -Preflight run (or the elevated install
 # path, which has the identical latent bug) would resolve $EnvFile to
 # "\..\.env" and report six invented failures instead of the real ones.
 # Re-resolving it here, in the script body rather than a parameter default,
-# works under both shells.
+# works under both shells. Resolved against the DETECTED root, not a fixed
+# "..", so the copy a bundle places at the install root does not look for
+# C:\.env.
 if (-not $PSBoundParameters.ContainsKey('EnvFile')) {
-    $EnvFile = Join-Path $PSScriptRoot '..\.env'
+    $EnvFile = Join-Path (Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir) '.env'
 }
 
 # ---------------------------------------------------------- shared helpers ---
@@ -132,7 +204,12 @@ function Invoke-Preflight {
     #>
     param([Parameter(Mandatory)][string]$EnvFile)
 
-    $root = (Resolve-Path "$PSScriptRoot\..").Path
+    # Same detection the install path uses. Hardcoding "$PSScriptRoot\.." here
+    # made the preflight check C:\client\dist when run from the copy a bundle
+    # places at the install root - reporting an invented failure while the real
+    # client sat in app\client\dist.
+    $root = Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir
+    $pfLayout = Get-GcioLayout -Root $root
     $results = [System.Collections.Generic.List[object]]::new()
 
     Write-Host "Preflight checks (unelevated, no changes) for $EnvFile`n"
@@ -161,14 +238,20 @@ function Invoke-Preflight {
 
     # 2. NSSM is on PATH. Expected to fail on a machine that never installed it.
     try {
+        # Same resolution the install path uses: a full bundle ships nssm, so
+        # "not on PATH" is not a failure when the bundled copy is present.
+        $pfRoot = Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir
+        $pfBundledNssm = Join-Path $pfRoot 'runtime\nssm.exe'
         $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
-        if ($nssmCmd) {
-            Write-CheckResult $results "NSSM on PATH" "PASS" $nssmCmd.Source
+        if (Test-Path $pfBundledNssm) {
+            Write-CheckResult $results "NSSM available" "PASS" "$pfBundledNssm (shipped with the bundle)"
+        } elseif ($nssmCmd) {
+            Write-CheckResult $results "NSSM available" "PASS" "$($nssmCmd.Source) (on PATH)"
         } else {
-            Write-CheckResult $results "NSSM on PATH" "FAIL" "nssm was not found on PATH - download from https://nssm.cc/download"
+            Write-CheckResult $results "NSSM available" "FAIL" "not shipped with this install and not on PATH - deploy a full bundle, or download from https://nssm.cc/download"
         }
     } catch {
-        Write-CheckResult $results "NSSM on PATH" "FAIL" "error checking nssm: $($_.Exception.Message)"
+        Write-CheckResult $results "NSSM available" "FAIL" "error checking nssm: $($_.Exception.Message)"
     }
 
     # 3. The env file exists, is readable, and every non-blank, non-comment
@@ -284,7 +367,7 @@ function Invoke-Preflight {
 
     # 7. The client is built - without it the service serves a 503 page.
     try {
-        $clientBundle = Join-Path $root "client\dist\index.html"
+        $clientBundle = $pfLayout.ClientBundle
         if (Test-Path $clientBundle) {
             Write-CheckResult $results "Client build present" "PASS" $clientBundle
         } else {
@@ -386,9 +469,26 @@ if (-not $isAdmin) {
     throw "This script must run from an elevated PowerShell prompt (Run as administrator)."
 }
 
-if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
-    throw "nssm was not found on PATH. Download it from https://nssm.cc/download and add it to PATH."
+<#
+  Find nssm. A full bundle SHIPS it at runtime\nssm.exe precisely so a host
+  needs nothing pre-installed - requiring it on PATH as well would defeat that,
+  and it is how this install first failed: the operator had a complete bundle
+  containing nssm and was told to go and download nssm.
+#>
+if (-not $NssmExe) {
+    $candidateRoot = Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir
+    $bundled = Join-Path $candidateRoot 'runtime\nssm.exe'
+    if (Test-Path $bundled) {
+        $NssmExe = $bundled
+    } else {
+        $onPath = Get-Command nssm -ErrorAction SilentlyContinue
+        if ($onPath) { $NssmExe = $onPath.Source }
+    }
 }
+if (-not $NssmExe -or -not (Test-Path $NssmExe)) {
+    throw "nssm was not found. A full bundle ships it at <install>\runtime\nssm.exe; this install has neither that nor nssm on PATH. Either deploy a full bundle, pass -NssmExe <path>, or download it from https://nssm.cc/download."
+}
+Write-Host "NSSM:              $NssmExe"
 
 if (-not $NodeExe) {
     $node = Get-Command node -ErrorAction SilentlyContinue
@@ -396,16 +496,34 @@ if (-not $NodeExe) {
     $NodeExe = $node.Source
 }
 
-$root = (Resolve-Path "$PSScriptRoot\..").Path
-$entry = Join-Path $root "server\index.js"
+$root = Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir
+$layout = Get-GcioLayout -Root $root
+$entry = $layout.Entry
 $logDir = Join-Path $root "logs"
 
-if (-not (Test-Path $entry)) { throw "server\index.js not found under $root." }
+Write-Host "Install directory: $root"
+Write-Host "Layout:            $($layout.Kind)  (entry: $($layout.EntryRelative))"
+
+if (-not (Test-Path $entry)) { throw "$($layout.EntryRelative) not found under $root." }
 if (-not (Test-Path $EnvFile)) { throw "Environment file not found: $EnvFile" }
 
-$clientBundle = Join-Path $root "client\dist\index.html"
-if (-not (Test-Path $clientBundle)) {
-    throw "The client is not built ($clientBundle is missing). Run: npm ci; npm run build"
+if (-not (Test-Path $layout.ClientBundle)) {
+    if ($layout.Kind -eq 'bundle') {
+        throw "The bundled client is missing ($($layout.ClientBundle)). This install looks incomplete - re-run the bundle deploy."
+    }
+    throw "The client is not built ($($layout.ClientBundle) is missing). Run: npm ci; npm run build"
+}
+
+<#
+  On a bundle install, prefer the runtime that SHIPPED WITH IT over whatever is
+  on PATH. The bundle exists precisely so the host does not depend on a
+  machine-wide Node, and the patch gate refuses an overlay whose Node major
+  differs from the installed runtime - so a service running a different node
+  than the gate is comparing against would make that check meaningless.
+#>
+if (-not $NodeExe -and $layout.BundledNode -and (Test-Path $layout.BundledNode)) {
+    $NodeExe = $layout.BundledNode
+    Write-Host "Node:              $NodeExe  (bundled)"
 }
 
 # Read NAME=VALUE pairs, ignoring comments and blank lines. Shared with
@@ -437,34 +555,34 @@ if ($existing) {
         Stop-Service -Name $ServiceName -Force
         $existing.WaitForStatus('Stopped', '00:00:30')
     }
-    nssm remove $ServiceName confirm | Out-Null
+    & $NssmExe remove $ServiceName confirm | Out-Null
     Start-Sleep -Seconds 2
 }
 
 # --------------------------------------------------------------- install ---
 
-nssm install $ServiceName $NodeExe $entry
-nssm set $ServiceName DisplayName $DisplayName
-nssm set $ServiceName Description "Executive portfolio dashboard: Excel ingestion, CIO sections, exports."
-nssm set $ServiceName AppDirectory $root
-nssm set $ServiceName AppStdout (Join-Path $logDir "service-out.log")
-nssm set $ServiceName AppStderr (Join-Path $logDir "service-err.log")
-nssm set $ServiceName AppRotateFiles 1
-nssm set $ServiceName AppRotateOnline 1
-nssm set $ServiceName AppRotateBytes 10485760
-nssm set $ServiceName Start SERVICE_AUTO_START
-nssm set $ServiceName AppExit Default Restart
-nssm set $ServiceName AppRestartDelay 5000
-nssm set $ServiceName AppStopMethodConsole 15000
+& $NssmExe install $ServiceName $NodeExe $entry
+& $NssmExe set $ServiceName DisplayName $DisplayName
+& $NssmExe set $ServiceName Description "Executive portfolio dashboard: Excel ingestion, CIO sections, exports."
+& $NssmExe set $ServiceName AppDirectory $root
+& $NssmExe set $ServiceName AppStdout (Join-Path $logDir "service-out.log")
+& $NssmExe set $ServiceName AppStderr (Join-Path $logDir "service-err.log")
+& $NssmExe set $ServiceName AppRotateFiles 1
+& $NssmExe set $ServiceName AppRotateOnline 1
+& $NssmExe set $ServiceName AppRotateBytes 10485760
+& $NssmExe set $ServiceName Start SERVICE_AUTO_START
+& $NssmExe set $ServiceName AppExit Default Restart
+& $NssmExe set $ServiceName AppRestartDelay 5000
+& $NssmExe set $ServiceName AppStopMethodConsole 15000
 
 # NSSM takes the environment as newline-separated NAME=VALUE pairs.
-nssm set $ServiceName AppEnvironmentExtra ($pairs -join "`n")
+& $NssmExe set $ServiceName AppEnvironmentExtra ($pairs -join "`n")
 
 if ($ServiceAccount) {
     if (-not $ServicePassword) { throw "-ServiceAccount also needs -ServicePassword." }
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ServicePassword))
-    nssm set $ServiceName ObjectName $ServiceAccount $plain
+    & $NssmExe set $ServiceName ObjectName $ServiceAccount $plain
     $plain = $null
     Write-Host "Service will run as $ServiceAccount."
 }
