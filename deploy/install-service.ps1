@@ -15,7 +15,7 @@
 
 .PARAMETER EnvFile
     Path to the environment file. Every NAME=VALUE line is passed to the
-    service. Keep it outside the repository, ACL'd to the service account —
+    service. Keep it outside the repository, ACL'd to the service account -
     it holds the database password.
 
 .PARAMETER ServiceAccount
@@ -25,9 +25,9 @@
     transport does not implement it from `trustedConnection` alone.
 
 .PARAMETER Preflight
-    Runs every check the elevated install would need — Node, NSSM, the env
+    Runs every check the elevated install would need - Node, NSSM, the env
     file, required variables, the port, the client build, VAULT_DIR/
-    AUDIT_DIR, and database reachability — without elevation and without
+    AUDIT_DIR, and database reachability - without elevation and without
     changing anything (no service is created, stopped, removed, or queried).
     Exits 0 if every check passed, 1 otherwise. Run this from an ordinary
     prompt before opening an elevated one, so the elevated run has no
@@ -122,7 +122,7 @@ function Get-GcioLayout {
 }
 
 # $PSScriptRoot is empty while parameter DEFAULT VALUES are being evaluated
-# under Windows PowerShell 5.1 (fixed in 7) — which is what Windows Server
+# under Windows PowerShell 5.1 (fixed in 7) - which is what Windows Server
 # ships. Left alone, an unelevated -Preflight run (or the elevated install
 # path, which has the identical latent bug) would resolve $EnvFile to
 # "\..\.env" and report six invented failures instead of the real ones.
@@ -138,10 +138,25 @@ if (-not $PSBoundParameters.ContainsKey('EnvFile')) {
 # Read-EnvPairs / ConvertTo-EnvMap are used by both the install path and
 # -Preflight, so the two cannot drift apart on what counts as a valid line.
 
+<#
+  Make nssm's output readable.
+
+  nssm writes as UTF-16LE and PowerShell decodes that stream a byte at a time,
+  so every real character arrives followed by a NUL. A console does not render
+  those, but they survive into strings - which is why an nssm error can print as
+  "C a n ' t   o p e n   s e r v i c e !" and why a literal -match against its
+  output silently never fires.
+#>
+function ConvertFrom-NssmOutput {
+    param($Output)
+    if ($null -eq $Output) { return '' }
+    return ((($Output | ForEach-Object { "$_" }) -join "`n") -replace "`0", '').Trim()
+}
+
 function Read-EnvPairs {
     <#
     Reads NAME=VALUE lines from an env file, ignoring comments and blank
-    lines. Does not validate that every remaining line is well-formed — the
+    lines. Does not validate that every remaining line is well-formed - the
     preflight checks that separately, since the install path has never
     needed to.
     #>
@@ -287,7 +302,7 @@ function Invoke-Preflight {
     # 4. STORE and AUTH_MODE are present; when STORE=mssql, the connection
     #    variables server/db/pool.js's buildConfig actually requires are
     #    present too (DB_USER/DB_PASSWORD, and only when DB_WINDOWS_AUTH is
-    #    explicitly "false" — otherwise Windows auth is the default and
+    #    explicitly "false" - otherwise Windows auth is the default and
     #    DB_SERVER/DB_DATABASE fall back to localhost\SQLEXPRESS/GCIO).
     try {
         if (-not $envFileOk) {
@@ -490,14 +505,35 @@ if (-not $NssmExe -or -not (Test-Path $NssmExe)) {
 }
 Write-Host "NSSM:              $NssmExe"
 
-if (-not $NodeExe) {
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $node) { throw "node was not found on PATH. Pass -NodeExe with the full path." }
-    $NodeExe = $node.Source
-}
-
 $root = Resolve-GcioRoot -ScriptRoot $PSScriptRoot -Explicit $InstallDir
 $layout = Get-GcioLayout -Root $root
+
+<#
+  Node resolution, in this order deliberately:
+
+    -NodeExe  ->  the bundled runtime  ->  PATH
+
+  The bundled runtime must be preferred over PATH, and the ORDER of these two
+  blocks is what makes that true. They were the other way round on the first
+  attempt, so the PATH lookup filled $NodeExe in and the bundled check - written
+  as `if (-not $NodeExe)` - could never fire. The service would have been
+  registered against C:\Program Files\nodejs, which the patch gate does not
+  compare against.
+#>
+if (-not $NodeExe -and $layout.BundledNode -and (Test-Path $layout.BundledNode)) {
+    $NodeExe = $layout.BundledNode
+    Write-Host "Node:              $NodeExe  (bundled)"
+}
+if (-not $NodeExe) {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) { throw "node was not found. This install ships no runtime and node is not on PATH. Pass -NodeExe with the full path." }
+    $NodeExe = $node.Source
+    if ($layout.Kind -eq 'bundle') {
+        Write-Warning "Using node from PATH ($NodeExe) even though this is a bundle install - the bundled runtime at $($layout.BundledNode) is missing. The patch gate compares against the INSTALLED runtime, so this install may refuse patches it should accept."
+    } else {
+        Write-Host "Node:              $NodeExe  (from PATH)"
+    }
+}
 $entry = $layout.Entry
 $logDir = Join-Path $root "logs"
 
@@ -512,18 +548,6 @@ if (-not (Test-Path $layout.ClientBundle)) {
         throw "The bundled client is missing ($($layout.ClientBundle)). This install looks incomplete - re-run the bundle deploy."
     }
     throw "The client is not built ($($layout.ClientBundle) is missing). Run: npm ci; npm run build"
-}
-
-<#
-  On a bundle install, prefer the runtime that SHIPPED WITH IT over whatever is
-  on PATH. The bundle exists precisely so the host does not depend on a
-  machine-wide Node, and the patch gate refuses an overlay whose Node major
-  differs from the installed runtime - so a service running a different node
-  than the gate is comparing against would make that check meaningless.
-#>
-if (-not $NodeExe -and $layout.BundledNode -and (Test-Path $layout.BundledNode)) {
-    $NodeExe = $layout.BundledNode
-    Write-Host "Node:              $NodeExe  (bundled)"
 }
 
 # Read NAME=VALUE pairs, ignoring comments and blank lines. Shared with
@@ -550,7 +574,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "Existing service found — stopping and removing it first."
+    Write-Host "Existing service found - stopping and removing it first."
     if ($existing.Status -ne 'Stopped') {
         Stop-Service -Name $ServiceName -Force
         $existing.WaitForStatus('Stopped', '00:00:30')
@@ -561,7 +585,41 @@ if ($existing) {
 
 # --------------------------------------------------------------- install ---
 
-& $NssmExe install $ServiceName $NodeExe $entry
+<#
+  Install, then CONFIRM the service exists before configuring it.
+
+  nssm writes its errors to stdout as UTF-16 and does not always set a non-zero
+  exit code, so a failed install is easy to miss: every subsequent `nssm set`
+  fails too, Start-Service fails, and the operator is left looking at "the
+  service did not answer within 30 seconds" - which points at the application,
+  which is not the problem at all. That is exactly how this failed on its first
+  real run.
+
+  ConvertFrom-NssmOutput strips the interleaved NULs so the message is
+  readable; without it the error prints as "C a n ' t   o p e n ...".
+#>
+$installOut = & $NssmExe install $ServiceName $NodeExe $entry 2>&1
+$installText = ConvertFrom-NssmOutput $installOut
+
+if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+    $lines = @(
+        "nssm did not create the service $ServiceName. Nothing further was configured.",
+        "",
+        "  nssm:  $NssmExe",
+        "  node:  $NodeExe",
+        "  entry: $entry",
+        "",
+        "nssm said:",
+        $installText,
+        "",
+        "Common causes: the prompt is not really elevated; a service of this name is",
+        "half-removed and pending deletion (close services.msc and retry); or the node",
+        "or entry path is unreadable by the account doing the install."
+    )
+    throw ($lines -join [Environment]::NewLine)
+}
+Write-Host "Service created: $ServiceName"
+
 & $NssmExe set $ServiceName DisplayName $DisplayName
 & $NssmExe set $ServiceName Description "Executive portfolio dashboard: Excel ingestion, CIO sections, exports."
 & $NssmExe set $ServiceName AppDirectory $root
@@ -608,7 +666,7 @@ foreach ($attempt in 1..15) {
 
 if ($ready) {
     Write-Host "Service is answering on http://127.0.0.1:$port" -ForegroundColor Green
-    Write-Host "Next: put IIS in front for TLS — see deploy\iis-site.md"
+    Write-Host "Next: put IIS in front for TLS - see deploy\iis-site.md"
 } else {
     Write-Warning "The service did not answer within 30 seconds. Check $logDir\service-err.log"
 }
