@@ -1,100 +1,102 @@
 <#
-  code-update.ps1 - the operator-facing entry point.
+  The update flow's decisions.
 
-  Tested for the decisions it makes before handing off: which artifact is
-  present, which tier it is, whether it verified, and what happens when any of
-  that is ambiguous. The install itself is install.ps1's job and is covered by
-  patch-gates/overlay/health-probe.
+  code-update.ps1 now checks elevation at step 0/4 - everything it does stops or
+  starts a service, and discovering that three steps in as a confusing service
+  failure helps nobody. That makes the SCRIPT untestable from an ordinary
+  prompt, so the decisions it makes are pure functions in lib/common.ps1 and are
+  tested here directly. The script is then a thin shell around them.
 
-  Each case runs in its own directory holding a copy of the scripts plus a real
-  zip, because the script's whole job is reading its own surroundings.
+  What is deliberately NOT tested here: expanding an archive and handing off to
+  install.ps1. That path needs a real service, and it is covered by the live
+  deployment record instead.
 #>
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/../lib/common.ps1"
 
 $script:fails = 0
 function Check { param($Cond, [string]$What)
   if ($Cond) { Write-Host "[ok] $What" -ForegroundColor Green }
   else { Write-Host "[FAIL] $What" -ForegroundColor Red; $script:fails++ } }
 
-$deploy = (Resolve-Path "$PSScriptRoot/..").Path
-$repo   = (Resolve-Path "$PSScriptRoot/../..").Path
-$root   = Join-Path ([IO.Path]::GetTempPath()) ("gcio-u-" + [guid]::NewGuid().ToString('N'))
+# ---------------------------------------------------------------- artifact choice
 
-# Build a scratch "release folder": the updater, the verifiers, and whatever
-# zips the case needs.
-function New-ReleaseDir {
-  param([string]$Name)
-  $d = Join-Path $root $Name
-  New-Item -ItemType Directory -Force $d | Out-Null
-  foreach ($f in 'code-update.ps1', 'verify-patch.ps1', 'verify-bundle.ps1') {
-    Copy-Item (Join-Path $deploy $f) $d
-  }
-  return $d
-}
+$r = Select-GcioArtifact -Names @('gcio-patch-1.5.1-win-x64.zip')
+Check ($r.Kind -eq 'patch' -and "$($r.Version)" -eq '1.5.1') 'a lone patch is chosen'
 
-function Run { param([string]$Dir, [string[]]$Extra = @())
-  $out = & pwsh -NoProfile -File (Join-Path $Dir 'code-update.ps1') -InstallDir (Join-Path $Dir 'fake-install') @Extra 2>&1
-  return [pscustomobject]@{ Code = $LASTEXITCODE; Text = ($out | Out-String) } }
+$r = Select-GcioArtifact -Names @('gcio-bundle-1.6.0-win-x64.zip')
+Check ($r.Kind -eq 'bundle' -and "$($r.Version)" -eq '1.6.0') 'a lone bundle is chosen'
 
-try {
-  $realPatch = Join-Path $repo 'dist-bundle/gcio-patch-1.5.0-win-x64.zip'
-  if (-not (Test-Path $realPatch)) {
-    Write-Host '[skip] no built patch zip - run deploy/build-patch.ps1 first' -ForegroundColor Yellow
-    Write-Host "`nall passed" -ForegroundColor Green
-    exit 0
-  }
+Check ($null -eq (Select-GcioArtifact -Names @()))                        'nothing present yields no decision'
+Check ($null -eq (Select-GcioArtifact -Names @('notes.txt','README.md'))) 'unrelated files are not mistaken for artifacts'
 
-  # ------------------------------------------------ nothing to install
-  $d = New-ReleaseDir 'empty'
-  $r = Run $d
-  Check ($r.Code -ne 0) 'an empty folder fails rather than doing something surprising'
-  Check ($r.Text -match 'no gcio-bundle') 'and says what to copy next to the script'
+<#
+  Arbitration, the rule ported from DEDB: the BUNDLE WINS at equal or greater
+  version. A bundle does everything a patch does and more, so preferring it is
+  never the less-capable choice - and choosing the patch would risk overlaying
+  onto a base the operator meant to replace wholesale.
+#>
+$r = Select-GcioArtifact -Names @('gcio-patch-1.5.1-win-x64.zip', 'gcio-bundle-1.5.1-win-x64.zip')
+Check ($r.Kind -eq 'bundle') 'at EQUAL version the bundle wins over the patch'
 
-  # ------------------------------------------------ ambiguity is refused
-  $d = New-ReleaseDir 'two'
-  Copy-Item $realPatch $d
-  Copy-Item $realPatch (Join-Path $d 'gcio-bundle-1.5.0-win-x64.zip')   # name only; content irrelevant here
-  $r = Run $d
-  Check ($r.Code -ne 0) 'two artifacts side by side is REFUSED, not guessed at'
-  Check ($r.Text -match 'exactly one') 'and the operator is told to leave exactly one'
-  Check ($r.Text -match 'gcio-patch-1\.5\.0' -and $r.Text -match 'gcio-bundle-1\.5\.0') 'both candidates are named so the operator can see the ambiguity'
+$r = Select-GcioArtifact -Names @('gcio-patch-1.5.1-win-x64.zip', 'gcio-bundle-1.6.0-win-x64.zip')
+Check ($r.Kind -eq 'bundle' -and "$($r.Version)" -eq '1.6.0') 'a NEWER bundle wins'
 
-  # ------------------------------------------------ tier detection + verify
-  $d = New-ReleaseDir 'patch'
-  Copy-Item $realPatch $d
-  $r = Run $d
-  Check ($r.Text -match 'PATCH') 'a gcio-patch-* zip is identified as the patch tier'
-  Check ($r.Text -match 'verifying with verify-patch\.ps1') 'the artifact is verified before anything is applied'
-  Check (Test-Path (Join-Path $d 'gcio-patch-1.5.0-win-x64')) 'the archive was expanded beside the script'
-  # It then hands off to install.ps1, which refuses because fake-install is not
-  # a GCIO install. That refusal is the correct outcome here.
-  Check ($r.Code -ne 0) 'applying to a directory that is not an install fails'
-  Check ($r.Text -match 'no-install|NOTHING has been changed') 'and the refusal comes from the gates, with the no-change guarantee'
+$r = Select-GcioArtifact -Names @('gcio-patch-1.7.0-win-x64.zip', 'gcio-bundle-1.6.0-win-x64.zip')
+Check ($r.Kind -eq 'patch' -and "$($r.Version)" -eq '1.7.0') 'a patch NEWER than every bundle is chosen'
 
-  # ------------------------------------------------ verification is never skipped
-  $d = New-ReleaseDir 'tampered'
-  Copy-Item $realPatch $d
-  # Expand, corrupt one file, re-zip: a genuinely altered artifact.
-  $tmpX = Join-Path $root 'x'
-  Remove-Item -Recurse -Force $tmpX -ErrorAction SilentlyContinue
-  Expand-Archive -Path (Join-Path $d 'gcio-patch-1.5.0-win-x64.zip') -DestinationPath $tmpX -Force
-  $victim = Get-ChildItem "$tmpX/gcio-patch-1.5.0-win-x64/app/server" -Filter '*.js' | Select-Object -First 1
-  Add-Content -LiteralPath $victim.FullName -Value "`n// tampered"
-  Remove-Item (Join-Path $d 'gcio-patch-1.5.0-win-x64.zip')
-  Compress-Archive -Path "$tmpX/gcio-patch-1.5.0-win-x64" -DestinationPath (Join-Path $d 'gcio-patch-1.5.0-win-x64.zip') -Force
-  $r = Run $d
-  Check ($r.Code -ne 0) 'a tampered artifact is refused'
-  Check ($r.Text -match 'failed verification') 'and the reason names verification, not something downstream'
-  Check ($r.Text -notmatch 'applying: install\.ps1') 'the installer is never reached for a tampered artifact'
+$r = Select-GcioArtifact -Names @('gcio-patch-1.5.0-win-x64.zip', 'gcio-patch-1.5.3-win-x64.zip', 'gcio-patch-1.5.1-win-x64.zip')
+Check ("$($r.Version)" -eq '1.5.3') 'the newest of several patches is chosen'
 
-  # ------------------------------------------------ rollback needs an install
-  $d = New-ReleaseDir 'rollback'
-  $r = Run $d @('-Rollback')
-  Check ($r.Code -ne 0) 'rollback with no installed install.ps1 fails'
-  Check ($r.Text -match 'cannot roll back') 'and explains that a rollback uses the INSTALLED installer'
-} finally {
-  Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-}
+$r = Select-GcioArtifact -Names @('gcio-bundle-1.9.0-win-x64.zip', 'gcio-bundle-1.10.0-win-x64.zip')
+Check ("$($r.Version)" -eq '1.10.0') 'versions compare numerically, not as strings (1.10.0 > 1.9.0)'
+
+$r = Select-GcioArtifact -Names @('gcio-patch-1.5.1-win-x64.zip', 'gcio-bundle-1.6.0-win-x64.zip')
+Check ($r.Reason -match 'bundle wins') 'the choice explains itself'
+
+# ---------------------------------------------------------------- version gate
+
+$g = Test-GcioVersionGate -Installed 'none' -Artifact '1.5.0'
+Check ($g.Proceed -and $g.Code -eq 'first-install') 'a host with no install proceeds as a first install'
+
+$g = Test-GcioVersionGate -Installed '1.5.0' -Artifact '1.6.0'
+Check ($g.Proceed -and $g.Code -eq 'upgrade') 'a newer artifact proceeds as an upgrade'
+
+# Both refusals must change nothing - an operator running a release folder twice
+# is the common case, and a downgrade is almost always a mistake.
+$g = Test-GcioVersionGate -Installed '1.5.0' -Artifact '1.5.0'
+Check (-not $g.Proceed -and $g.Code -eq 'same-version') 'the same version is REFUSED rather than re-applied'
+Check ($g.Message -match '-Force')                       'and the refusal names the override'
+
+$g = Test-GcioVersionGate -Installed '1.6.0' -Artifact '1.5.0'
+Check (-not $g.Proceed -and $g.Code -eq 'downgrade') 'an older artifact is REFUSED as a downgrade'
+Check ($g.Message -match 'NOTHING was changed')      'and says plainly that nothing was changed'
+
+$g = Test-GcioVersionGate -Installed '1.5.0' -Artifact '1.5.0' -Force $true
+Check ($g.Proceed -and $g.Code -eq 'forced') '-Force re-applies the same version'
+$g = Test-GcioVersionGate -Installed '1.6.0' -Artifact '1.5.0' -Force $true
+Check ($g.Proceed -and $g.Code -eq 'forced') '-Force allows a downgrade'
+
+Check ((Test-GcioVersionGate -Installed '1.9.0' -Artifact '1.10.0').Code -eq 'upgrade') 'the gate compares numerically too (1.10.0 > 1.9.0)'
+
+# ---------------------------------------------------------------- the script itself
+
+<#
+  Only what can be checked without elevation or a service: that the script
+  parses under the version the host actually runs, and that its elevation guard
+  is present. Removing that guard is a regression - everything after it stops
+  and starts a service.
+#>
+$script:updater = Join-Path $PSScriptRoot '../code-update.ps1'
+$errs = $null
+$null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script:updater).Path, [ref]$null, [ref]$errs)
+Check (-not $errs) 'code-update.ps1 parses'
+
+$text = Get-Content -Raw $script:updater
+Check ($text -match 'WindowsBuiltInRole\]::Administrator') 'code-update.ps1 checks for elevation'
+Check ($text -match 'Select-GcioArtifact')  'code-update.ps1 uses the shared artifact chooser rather than its own copy'
+Check ($text -match 'Test-GcioVersionGate') 'code-update.ps1 uses the shared version gate'
+Check ((@([char[]]$text | Where-Object { [int]$_ -gt 126 })).Count -eq 0) 'code-update.ps1 is ASCII-only (a BOM-less non-ASCII script breaks 5.1 parsing)'
 
 if ($script:fails) { Write-Host "`n$($script:fails) failed" -ForegroundColor Red; exit 1 }
 Write-Host "`nall passed" -ForegroundColor Green

@@ -1,46 +1,103 @@
 #requires -version 5.1
 <#
 .SYNOPSIS
-  Expand whichever GCIO artifact sits beside this script, verify it, and apply it.
+  The single command that installs or updates GCIO on a host.
 
 .DESCRIPTION
-  The operator-facing entry point. Drop a gcio-bundle-*.zip or gcio-patch-*.zip
-  next to this file and run it; it works out which tier it is holding and hands
-  off to that artifact's own install.ps1.
+  Drop a gcio-bundle-*.zip or gcio-patch-*.zip beside this script and run it.
+  It works out which tier it is holding, verifies it, and applies it - the same
+  command for a first install, an upgrade, or a patch.
 
-  This script ships OUTSIDE the archive, beside it. It is what expands the
+  Modelled on DEDB's code-update.ps1, and deliberately step-numbered the same
+  way so an operator moving between the two systems reads the same shape:
+
+    0/4  pre-flight      elevation, mark-of-the-web, outer package, artifact choice
+    1/4  version gate    already-installed / downgrade guards
+    2/4  apply           verify, then install.ps1 (health-gated, auto-rollback)
+    3/4  verify          service, version, port, health - read back from the host
+    4/4  done
+
+  DEDB's steps for a database backup, an explicit migration runner and cutoff
+  settings have no GCIO equivalent: GCIO applies migrations at boot and has no
+  settings table. Their absence is deliberate, not an omission - see
+  docs/dedb-packaging-gap-analysis.md.
+
+  This script ships OUTSIDE the archive, beside it: it is what expands the
   archive, so it cannot live inside the thing it unzips.
 
-.PARAMETER InstallDir
-  Where GCIO is installed. Defaults to C:\gcio.
+.PARAMETER Force
+  Re-apply the same version, or allow a downgrade. Without it, both are refused
+  having changed nothing.
 
 .PARAMETER Rollback
-  Revert to the most recent backup, using the INSTALLED install.ps1 rather than
-  anything in an artifact - a rollback must work even when no artifact is
-  present, which is exactly the situation after a bad deploy.
+  Revert to the most recent backup using the installer ON THE HOST, so it works
+  when no artifact is present - which is the situation after a bad deploy.
 
 .EXAMPLE
   .\Update-GCIO.cmd
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File code-update.ps1 -Rollback
+  .\Update-GCIO.cmd -Rollback
 #>
 [CmdletBinding()] param(
   [string]$InstallDir = 'C:\gcio',
   [switch]$Rollback,
+  [switch]$Force,
   [int]$Port = 0,
-  [switch]$SkipHealthGate
+  [switch]$SkipHealthGate,
+  [switch]$SkipSqlPrecheck
 )
-# Continue, NOT Stop: sc.exe and nssm write benign noise to stderr during a
-# slow boot, and under Stop that aborts a run that is going perfectly well. Real
+# Continue, NOT Stop: sc.exe and nssm write benign noise to stderr during a slow
+# boot, and under Stop that aborts a run that is going perfectly well. Real
 # signals are exit codes, the health check, and the reported version.
 $ErrorActionPreference = 'Continue'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# The decision logic lives in lib/common.ps1 so it can be tested without
+# elevation or a service; this script is the shell around it. lib/ sits beside
+# this script in a release folder, or inside the artifact once expanded.
+$libCandidates = @("$Here\lib\common.ps1", "$Here\..\lib\common.ps1")
+$lib = $libCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($lib) { . $lib }
+
+function Step { param([string]$N, [string]$M) Write-Host "`n===== $N  $M =====" -ForegroundColor Cyan }
 function Info { param([string]$M) Write-Host "[gcio] $M" }
+function Ok   { param([string]$M) Write-Host "[ok] $M" -ForegroundColor Green }
+function Warn2{ param([string]$M) Write-Host "[warn] $M" -ForegroundColor Yellow }
 function Fail { param([string]$M) Write-Host "[FAIL] $M" -ForegroundColor Red; exit 1 }
 
-# ---------------------------------------------------------------- rollback
+function To-Ver { param([string]$S) try { return [version]($S -replace '[^0-9.]', '') } catch { return [version]'0.0.0' } }
+function Get-ArtifactVersion { param([string]$Name)
+  if ($Name -match 'gcio-(?:patch|bundle)-(\d+\.\d+\.\d+)') { return [version]$Matches[1] }
+  return [version]'0.0.0' }
+function Get-InstalledVer {
+  $p = Join-Path $InstallDir 'app\package.json'
+  if (Test-Path $p) { try { return "$((Get-Content -Raw $p | ConvertFrom-Json).version)" } catch { return '?' } }
+  return 'none'
+}
 
+# =================================================================== 0/4
+
+Step '0/4' 'Pre-flight'
+
+# Elevation, checked HERE rather than discovered three steps in as a confusing
+# service failure. Everything below stops or starts a service.
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+      [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Fail 'this must run from an ELEVATED prompt - it stops and starts the Windows service. Nothing has been changed.'
+}
+Ok 'running elevated'
+
+<#
+  Files copied from another machine carry a mark-of-the-web zone marker, and
+  RemoteSigned then refuses to run them. Unblocking the ZIP before extraction
+  also stops the marker propagating to every file inside it.
+
+  A blocked copy of THIS script cannot unblock itself - Update-GCIO.cmd ships
+  beside it for exactly that bootstrap.
+#>
+Get-ChildItem $Here -Filter '*.zip' -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+
+# ---- rollback needs nothing else ----
 if ($Rollback) {
   $installed = Join-Path $InstallDir 'install.ps1'
   if (-not (Test-Path $installed)) {
@@ -50,38 +107,78 @@ if ($Rollback) {
   exit $LASTEXITCODE
 }
 
-# ---------------------------------------------------------------- find it
-
 <#
-  Files copied from another machine carry a mark-of-the-web zone marker, and
-  RemoteSigned then refuses to run them ("not digitally signed"). Unblocking
-  the ZIP before extraction also stops the marker propagating to every file
-  inside it.
-
-  NOTE: a blocked copy of THIS script cannot unblock itself. Update-GCIO.cmd
-  ships beside it for exactly that bootstrap.
+  Outer package. One zip per release can carry the artifact plus this updater
+  and docs; operators do copy the whole thing across without unzipping it. When
+  no loose artifact is present, expand every GCIO-*.zip that is not itself an
+  artifact and surface what it contains beside us, so the normal detection just
+  works.
 #>
-Get-ChildItem $Here -Filter '*.zip' -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+function Get-LooseArtifacts { param([string]$Dir)
+  @(Get-ChildItem $Dir -Filter 'gcio-patch-*.zip' -ErrorAction SilentlyContinue) +
+  @(Get-ChildItem $Dir -Filter 'gcio-bundle-*.zip' -ErrorAction SilentlyContinue) }
 
-$zips = @(Get-ChildItem $Here -Filter 'gcio-*-win-x64.zip' -ErrorAction SilentlyContinue)
-if (-not $zips.Count) {
+if (-not (Get-LooseArtifacts $Here)) {
+  $pkgs = @(Get-ChildItem $Here -Filter 'GCIO-*.zip' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notmatch '^gcio-(patch|bundle)-' })
+  foreach ($pkg in $pkgs) {
+    $ex = Join-Path $Here ('_pkg-' + [IO.Path]::GetFileNameWithoutExtension($pkg.Name))
+    Info "auto-extracting package $($pkg.Name)"
+    try {
+      if (Test-Path $ex) { Remove-Item -Recurse -Force $ex }
+      Expand-Archive -Path $pkg.FullName -DestinationPath $ex -Force
+    } catch { Warn2 "could not extract $($pkg.Name): $($_.Exception.Message)"; continue }
+    $inner = @(Get-ChildItem $ex -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^gcio-(patch|bundle)-.*\.zip$' })
+    foreach ($z in $inner) { Copy-Item -LiteralPath $z.FullName -Destination $Here -Force; Info "  found $($z.Name)" }
+    if (-not $inner) { Warn2 "  no gcio-patch/gcio-bundle inside $($pkg.Name)" }
+  }
+}
+
+# ---- choose the artifact ----
+$all = @(Get-LooseArtifacts $Here)
+if (-not $all.Count) {
   Fail "no gcio-bundle-*.zip or gcio-patch-*.zip found beside $Here. Copy the release artifact next to this script and run it again."
 }
-if ($zips.Count -gt 1) {
-  # Refuse rather than guess. "Newest by name" would happily pick a patch over
-  # the bundle an operator meant to install, and they would not find out until
-  # the gates refused it - or worse, until they did not.
-  Info 'more than one artifact is present:'
-  foreach ($z in $zips) { Info "  $($z.Name)" }
-  Fail 'leave exactly one gcio-*.zip beside this script so there is nothing to guess.'
-}
 
-$zip = $zips[0]
+<#
+  Arbitration, not refusal. A release folder can legitimately hold both tiers,
+  and DEDB's rule is the right one: THE BUNDLE WINS when its version is at
+  least the newest patch's. A bundle can do everything a patch can and more, so
+  preferring it is never the less-capable choice - and picking the patch
+  instead would risk applying an overlay to a base the operator meant to
+  replace wholesale.
+#>
+$decision = Select-GcioArtifact -Names @($all | ForEach-Object { $_.Name })
+if (-not $decision) { Fail "found files beside this script but none is a gcio-bundle-*/gcio-patch-* artifact." }
+Info "chose: $($decision.Reason)"
+$chosen = $all | Where-Object { $_.Name -eq $decision.Name } | Select-Object -First 1
+
+$zip = $chosen
 $isPatch = $zip.Name -like 'gcio-patch-*'
 $kind = if ($isPatch) { 'patch' } else { 'bundle' }
-Info "found $($zip.Name) -> $($kind.ToUpper())"
+$artifactVer = Get-ArtifactVersion $zip.Name
+Ok "$($zip.Name) -> $($kind.ToUpper()) $artifactVer"
 
-# ---------------------------------------------------------------- expand
+# =================================================================== 1/4
+
+Step '1/4' 'Version gate'
+
+$current = Get-InstalledVer
+$cv = To-Ver $current
+$tv = $artifactVer
+Info "artifact $artifactVer  |  installed $current  |  install dir $InstallDir"
+
+$gate = Test-GcioVersionGate -Installed $current -Artifact "$artifactVer" -Force ([bool]$Force)
+if (-not $gate.Proceed) {
+  if ($gate.Code -eq 'same-version') { Ok $gate.Message; exit 0 }
+  Fail $gate.Message
+}
+Info $gate.Message
+
+# =================================================================== 2/4
+
+Step '2/4' "Apply the $kind"
 
 $dest = Join-Path $Here $zip.BaseName
 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -89,25 +186,19 @@ Info "expanding to $dest"
 Expand-Archive -Path $zip.FullName -DestinationPath $Here -Force
 if (-not (Test-Path $dest)) { Fail "expected $dest after extraction but it is not there - the archive may be truncated." }
 
-# ---------------------------------------------------------------- verify
-
 # The verifier may sit beside this script or inside the artifact. Prefer
 # whichever exists, and NEVER silently skip: an unverified artifact is exactly
 # what checksums.txt exists to prevent.
 $verifier = @("$Here\verify-$kind.ps1", "$dest\verify-$kind.ps1") |
   Where-Object { Test-Path $_ } | Select-Object -First 1
-
 if ($verifier) {
   Info "verifying with $(Split-Path $verifier -Leaf)"
   & powershell -NoProfile -ExecutionPolicy Bypass -File $verifier -Dir $dest
-  if ($LASTEXITCODE -ne 0) {
-    Fail 'the artifact failed verification - refusing to apply it. Re-copy the release and try again.'
-  }
+  if ($LASTEXITCODE -ne 0) { Fail 'the artifact failed verification - refusing to apply it. Re-copy the release and try again.' }
+  Ok 'checksums verified'
 } else {
-  Write-Warning "[gcio] no verify-$kind.ps1 found beside the artifact or inside it - applying UNVERIFIED"
+  Warn2 "no verify-$kind.ps1 found beside the artifact or inside it - applying UNVERIFIED"
 }
-
-# ---------------------------------------------------------------- apply
 
 $installer = Join-Path $dest 'install.ps1'
 if (-not (Test-Path $installer)) { Fail "no install.ps1 inside $dest - this artifact is incomplete." }
@@ -115,18 +206,74 @@ if (-not (Test-Path $installer)) { Fail "no install.ps1 inside $dest - this arti
 # NOT $args: that is an automatic variable in PowerShell. Assigning to it is
 # legal but shadows the caller's arguments in ways that bite much later.
 $installArgs = @('-InstallDir', $InstallDir)
-if ($Port -gt 0)      { $installArgs += @('-Port', "$Port") }
-if ($SkipHealthGate)  { $installArgs += '-SkipHealthGate' }
+if ($Port -gt 0)     { $installArgs += @('-Port', "$Port") }
+if ($SkipHealthGate) { $installArgs += '-SkipHealthGate' }
 if ($isPatch) { $installArgs += '-Patch' } else { $installArgs += '-Bundle' }
 
-Info "applying: install.ps1 $($installArgs -join ' ')"
+Info "install.ps1 $($installArgs -join ' ')"
 & powershell -NoProfile -ExecutionPolicy Bypass -File $installer @installArgs
 $rc = $LASTEXITCODE
 
 if ($rc -ne 0) {
   Write-Host ''
-  Info "the installer exited $rc."
+  Warn2 "the installer exited $rc."
   Info 'A refused patch changed NOTHING - read the reason above and use the full bundle.'
   Info 'A failed health check has already rolled back. To revert by hand:  Update-GCIO.cmd -Rollback'
+  exit $rc
 }
-exit $rc
+Ok "$kind applied"
+
+# =================================================================== 3/4
+
+Step '3/4' 'Verify'
+
+<#
+  Read the outcome back FROM THE HOST rather than trusting that the installer
+  said it worked. An operator should be able to see, in one place, what version
+  is installed, what the service is doing, and what the app itself reports.
+#>
+$after = Get-InstalledVer
+$svc = Get-Service -Name 'GCIOProjectIntelligence' -ErrorAction SilentlyContinue
+$svcState = if ($svc) { "$($svc.Status)" } else { 'not installed' }
+
+$p = $Port
+if ($p -le 0) {
+  $p = 8130
+  $envFile = Join-Path $InstallDir '.env'
+  if (Test-Path $envFile) {
+    foreach ($line in Get-Content $envFile) { if ($line -match '^\s*PORT\s*=\s*(\d+)\s*$') { $p = [int]$Matches[1] } }
+  }
+}
+
+Write-Host ("  installed version : {0}" -f $after)
+Write-Host ("  service           : {0}" -f $svcState)
+Write-Host ("  port              : {0}" -f $p)
+
+$body = ''
+try { $body = (Invoke-WebRequest -Uri "http://127.0.0.1:$p/healthz" -TimeoutSec 5 -UseBasicParsing).Content } catch { $body = '' }
+Write-Host ("  /healthz          : {0}" -f $(if ($body) { ($body -replace "`0", '') } else { '(no answer)' }))
+try { $r = (Invoke-WebRequest -Uri "http://127.0.0.1:$p/readyz" -TimeoutSec 5 -UseBasicParsing).Content } catch { $r = '(no answer)' }
+Write-Host ("  /readyz           : {0}" -f ($r -replace "`0", ''))
+
+$listener = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+Write-Host ("  listener          : {0}" -f $(if ($listener) { "PID $($listener.OwningProcess) on $($listener.LocalAddress)" } else { 'none' }))
+
+# The version the artifact claimed must be the version the host now reports.
+# Anything else means the overlay did not land where it was supposed to.
+if ($after -ne "$artifactVer") {
+  Warn2 "the host reports $after but the artifact was $artifactVer - the overlay may not have landed. Check $InstallDir\logs\deploy.log."
+}
+
+# =================================================================== 4/4
+
+Step '4/4' 'Done'
+if ($body -match '"status"\s*:\s*"ok"') {
+  Ok "GCIO $after is serving on http://127.0.0.1:$p"
+  Info "deploy log: $InstallDir\logs\deploy.log"
+} else {
+  Warn2 "GCIO $after is installed but did not answer /healthz."
+  Info "Check $InstallDir\logs\service-err.log - and note it can hold OLD traces from a previous failed deploy, so check timestamps."
+  Info "To revert:  Update-GCIO.cmd -Rollback"
+  exit 1
+}
+exit 0

@@ -836,3 +836,76 @@ function Set-GcioNssmAutoRestart {
   $invoke = if ($Invoke) { $Invoke } else { { param($exe, $a, $b, $c) & $exe set $ServiceName $b $c | Out-Null } }
   try { & $invoke $Nssm $ServiceName 'AppExit Default' $action | Out-Null } catch { }
 }
+
+# ---------------------------------------------------------------- update flow
+
+<#
+  Choose which artifact to apply when several are present.
+
+  THE BUNDLE WINS when its version is at least the newest patch's. A bundle can
+  do everything a patch can and more, so preferring it is never the less-capable
+  choice - and picking the patch instead would risk overlaying onto a base the
+  operator meant to replace wholesale.
+
+  Pure: takes names, returns a decision. The caller does the file work, and this
+  can be tested without a release folder.
+
+  Returns { Name; Kind; Version; Reason } or $null when there is nothing to do.
+#>
+function Select-GcioArtifact {
+  param([string[]]$Names)
+  $cands = @()
+  foreach ($n in @($Names)) {
+    if ($n -match '^gcio-(patch|bundle)-(\d+\.\d+\.\d+)') {
+      $cands += [pscustomobject]@{ Name = $n; Kind = $Matches[1]; Version = [version]$Matches[2] }
+    }
+  }
+  if (-not $cands.Count) { return $null }
+
+  $patches = @($cands | Where-Object { $_.Kind -eq 'patch' })
+  $bundles = @($cands | Where-Object { $_.Kind -eq 'bundle' })
+  $newestPatch  = if ($patches.Count) { ($patches | Sort-Object Version -Descending | Select-Object -First 1).Version } else { $null }
+  $newestBundle = if ($bundles.Count) { ($bundles | Sort-Object Version -Descending | Select-Object -First 1).Version } else { $null }
+
+  if ($newestBundle -and (-not $newestPatch -or $newestBundle -ge $newestPatch)) {
+    $pick = $bundles | Where-Object { $_.Version -eq $newestBundle } | Select-Object -First 1
+    $why = if ($newestPatch) { "a bundle ($newestBundle) at or above the newest patch ($newestPatch) - the bundle wins" } else { 'the only tier present is a bundle' }
+    return [pscustomobject]@{ Name = $pick.Name; Kind = 'bundle'; Version = $pick.Version; Reason = $why }
+  }
+
+  $pick = $patches | Where-Object { $_.Version -eq $newestPatch } | Select-Object -First 1
+  $why = if ($newestBundle) { "the newest patch ($newestPatch) is above every bundle present ($newestBundle)" } else { 'the only tier present is a patch' }
+  return [pscustomobject]@{ Name = $pick.Name; Kind = 'patch'; Version = $pick.Version; Reason = $why }
+}
+
+<#
+  Should this artifact be applied to this install?
+
+  Refuses a re-apply and refuses a downgrade, both having changed nothing. A
+  re-apply is usually an operator running a release folder twice; a downgrade
+  almost always is a mistake. -Force overrides either.
+
+  Returns { Proceed; Code; Message }. Code is one of: first-install, upgrade,
+  same-version, downgrade, forced.
+#>
+function Test-GcioVersionGate {
+  param([string]$Installed, [string]$Artifact, [bool]$Force = $false)
+  $mk = { param($proceed, $code, $msg) [pscustomobject]@{ Proceed = [bool]$proceed; Code = "$code"; Message = "$msg" } }
+
+  if ($Installed -eq 'none' -or -not $Installed) {
+    return & $mk $true 'first-install' 'no existing install - this will be a first install'
+  }
+  $toVer = { param($s) try { [version]($s -replace '[^0-9.]', '') } catch { [version]'0.0.0' } }
+  $cv = & $toVer $Installed
+  $tv = & $toVer $Artifact
+
+  if ($tv -eq $cv) {
+    if ($Force) { return & $mk $true 'forced' "re-applying $Artifact over the same installed version (-Force)" }
+    return & $mk $false 'same-version' "this host is already on $Installed - nothing to do. Use -Force to re-apply, or -Rollback to revert."
+  }
+  if ($tv -lt $cv) {
+    if ($Force) { return & $mk $true 'forced' "downgrading $Installed -> $Artifact (-Force)" }
+    return & $mk $false 'downgrade' "artifact $Artifact is OLDER than the installed $Installed - refusing to downgrade. NOTHING was changed. Use -Force to override, or -Rollback to revert."
+  }
+  return & $mk $true 'upgrade' "will move $Installed -> $Artifact"
+}
