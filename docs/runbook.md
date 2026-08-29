@@ -1,11 +1,15 @@
 # Runbook
 
 For whoever is reading this because something is wrong, and did not build the
-thing. Every command below is labelled **[verified]** — run on this development
-machine while this document was written, with its actual output shown — or
-**[needs an elevated prompt — not executed]**, meaning it was never run and the
-paragraph next to it says what a working run is expected to look like. Nothing
-here is marked verified because it looked right.
+thing. Every command below is labelled **[verified]** - run on this machine with
+its actual output shown - or **[needs an elevated prompt - not executed]**,
+meaning it was never run and the paragraph beside it says what a working run
+should look like. Nothing here is marked verified because it looked right.
+
+Sections 2 and 3 were re-verified on 2026-08-29 against a real bundle
+deployment: the service is installed and running, and the patch, health-gate and
+rollback paths were each exercised against it. What is still unrun is called out
+where it appears, and collected in section 8.
 
 A runbook nobody has run is worse than no runbook, because it is trusted.
 
@@ -65,12 +69,18 @@ build machine this document was written on has no elevated shell and does not
 have NSSM installed, which is the honest reason those steps could not be run
 for real.
 
-### Step 0 — install NSSM **[needs an elevated prompt — not executed]**
+### Step 0 - NSSM **[no longer required]**
 
-Download NSSM from <https://nssm.cc/download> and put `nssm.exe` on `PATH`.
-There is nothing to verify here beyond `nssm --version` printing a version
-once it's done — this step exists only because step 1 will otherwise fail on
-it, correctly.
+Nothing to do. A full bundle ships `nssm.exe` at `<install>
+untime
+ssm.exe`,
+and `install-service.ps1` prefers it over anything on `PATH`. That is the point
+of the bundle: a host needs nothing pre-installed.
+
+This step used to say "download NSSM and put it on PATH", and on the first real
+install that is exactly what an operator was told to do while a complete bundle
+containing nssm sat in the same directory. Pass `-NssmExe <path>` if you ever
+need to override it.
 
 ### Step 1 — preflight, unelevated **[verified]**
 
@@ -200,27 +210,52 @@ dist/assets/index-BV3SQHd7.js     675.87 kB
 Confirms `client/dist/index.html` exists afterwards — the same file preflight
 step 1 checks for.
 
-### Step 4 — install the service **[needs an elevated prompt — not executed]**
+### Step 4 - install the service **[verified 2026-08-29]**
 
-From an **elevated** PowerShell prompt, in the repository root:
+From an **elevated** prompt. No `-EnvFile` needed - it resolves `.env` from the
+detected install directory:
 
 ```powershell
-.\deploy\install-service.ps1 -EnvFile C:\gcio\.env
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\gcio\install-service.ps1
 ```
 
-Not runnable from this session — no elevated shell, and NSSM is not
-installed here (see step 0). Expected behaviour, read from the script itself
-rather than guessed: it refuses `AUTH_MODE=dev`, warns (does not refuse) on
-`NODE_ENV` other than `production` and on `STORE=memory`, installs the
-service via `nssm install`, points its stdout/stderr at
-`<repo root>\logs\service-out.log` / `service-err.log`, starts it, and then
-polls `http://127.0.0.1:<PORT>/readyz` for up to 30 seconds — a `200` or a
-`503` (no data ingested yet, which is not a failure this early) both count as
-"the service answered"; anything else after 30 seconds prints a warning
-pointing at `service-err.log`.
+Actual output from the run on this machine:
 
-Keep `EnvFile` **outside the repository**, ACL'd so only the service account
-and administrators can read it — it holds the database password.
+```
+NSSM:              C:\gcio
+untime
+ssm.exe
+Node:              C:\gcio
+untime
+ode
+ode.exe  (bundled)
+Install directory: C:\gcio
+Layout:            bundle  (entry: app\server\index.js)
+Service created: GCIOProjectIntelligence
+Status: Running   StartType: Automatic
+Service is answering on http://127.0.0.1:8130
+```
+
+**Read the first four lines before letting it continue.** They are the whole
+point of printing them:
+
+- `Layout: bundle` - on a host that once had a repo-shape install, both copies
+  of the application can be present. Bundle wins, but check it did.
+- `Node: ... (bundled)` - the patch gate compares an overlay's Node major
+  against the *installed* runtime, so a service running a node from `PATH`
+  instead would quietly make that gate meaningless.
+- `Service created:` - a failed `nssm install` used to sail past silently and
+  surface 30 seconds later as "the service did not answer", which points at the
+  application and is never the problem. It now stops here with nssm's own error.
+
+It refuses `AUTH_MODE=dev`, warns on `NODE_ENV` other than `production` and on
+`STORE=memory`, and rotates stdout/stderr into `<install>\logs\`.
+
+Keep the env file **outside any repository**, ACL'd so only the service account
+and administrators can read it - it holds the database password.
+
+Re-running is safe and is the upgrade path for the service definition itself
+(section 3 covers upgrading the application).
 
 ### Step 5 — put IIS in front for TLS **[needs an elevated prompt — not executed]**
 
@@ -842,3 +877,30 @@ not on a value, since the process cannot report its own absence.
   merely-empty deployment) or with `gcio_last_ingest_timestamp_seconds`
   before paging anyone, or a brand-new, correctly-working deployment will
   generate its first incident on day one.
+- **No cross-version upgrade has ever been performed.** Every deploy and every
+  patch exercised on this host moved 1.5.0 to 1.5.0. The version arithmetic the
+  gates depend on -- `Get-GcioBumpType`, the `minBase` floor in
+  `Test-GcioPatchCompatible`, and the `From -> To` recorded in `deploy.log` --
+  is unit-tested in `deploy/test/`, but it has never moved a real host between
+  two different version numbers. The first genuine `1.5.0 -> 1.6.0` is
+  therefore also the first test of that arithmetic against a live install.
+  Expect it to work; do not assume it, and read `deploy.log`'s transition line
+  afterwards rather than trusting the absence of an error.
+- **The live SQL suite only passes against an EMPTY database.**
+  `npm run test:db` (`test/db/live.test.js`) ingests the sample workbook and
+  several of its assertions require the tables to start empty --
+  `dbo.Project.ProjectId` is a bare primary key, so a second run against a
+  populated database collides rather than upserting. Against the deployed
+  database, which holds 34 real projects, the suite fails for that reason and
+  not because anything is wrong.
+
+  It is gated off by default and is not part of `npm test`, so this bites only
+  someone who runs it deliberately while diagnosing. If you need it, point
+  `SECDASH`-style connection variables at a scratch database, never at the one
+  a host is serving from -- it truncates as part of its own setup.
+- **LDAP sign-in has never been exercised on this deployment.** `AUTH_MODE=ldap`
+  is configured against a directory this machine cannot reach, so the service
+  runs, serves `/healthz`, `/readyz` and `/metrics`, and ingests workbooks --
+  but no user has ever completed a sign-in against it. The authentication path
+  is covered by the in-process suites with a fake directory; it has not been
+  proved end to end against a real one.
