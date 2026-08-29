@@ -148,13 +148,15 @@ Not everything went one way.
 
 ## 6. Ranked recommendations
 
-### Port now — correctness
+### Port now — correctness ✅ **DONE, commit `7fc8aa5`**
 
-1. **`Wait-GcioCleanStop`** (§3a). Wait for the port to actually free; force-kill stragglers under the install directory. Without it a patch can be health-checked against the process it was supposed to replace. **This makes an existing green result untrustworthy.**
-2. **NSSM auto-restart suppression** across stop → overlay → start, restored in a `finally` on every path (§3b).
-3. **`Wait-GcioServiceState`** — confirm `Stopped`, not `STOP_PENDING`, before overlaying (§3c).
+1. ~~**`Wait-GcioCleanStop`**~~ (§3a) — waits for the port *and* any node process under the install directory to be gone, force-kills what survives the grace period, and returns a verdict. `Clean=$false` **refuses to overlay** on the patch and bundle paths; the recovery paths only warn, because refusing to restore a broken install because the broken thing will not let go helps nobody. Probes are scoped to the bound address.
+2. ~~**NSSM auto-restart suppression**~~ (§3b) — `AppExit` set to `Exit` across stop → overlay → start, restored in a `finally` on every exit path.
+3. ~~**`Wait-GcioServiceState`**~~ (§3c) — waits for `Stopped` rather than `STOP_PENDING`.
 
-Together these are one coherent change to `Stop-GcioService` and the patch path, plus a `clean-stop` test file.
+`deploy/test/clean-stop.test.ps1`, 18 assertions, every probe injectable so the sequence runs with no service, no ports and no processes. Mutating the wait back to the old "assume it stopped" behaviour turns **5 tests red**; dropping the bound address or inverting the nssm action each turn their own.
+
+**Not yet deployed.** The fix is in the built patch artifact but has not been applied to the running host — that needs service control, which this session no longer has.
 
 ### Port next — operability
 
@@ -183,4 +185,6 @@ What it missed is concentrated in one place: **the stop half of the stop → ove
 
 That is not a coincidence of effort. Those mechanisms exist in DEDB because each one is a scar. They are the least visible part of the system when reading it and the least likely to fail during a test where everything works — which is exactly why they were the part that did not survive the port.
 
-**Nothing here invalidates the deployed system.** GCIO 1.5.0 is serving correctly and its gates demonstrably work. But a patch applied to a slow-stopping instance can currently be verified against the wrong process, and that should be fixed before this system is trusted on a server nobody is watching.
+**Nothing here invalidates the deployed system.** GCIO 1.5.0 is serving correctly and its gates demonstrably work.
+
+**Update, same day:** items 1-3 are ported and committed (`7fc8aa5`). The remaining recommendations are operability rather than correctness - the SQL pre-check, failure-log surfacing, and an uninstall path. The running host is still on the pre-fix build; the corrected code is in the patch artifact, waiting for someone with service control to apply it.
