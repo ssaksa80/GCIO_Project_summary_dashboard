@@ -667,3 +667,160 @@ function Get-GcioReleaseCommitSha {
   }
   return ''
 }
+
+# ---------------------------------------------------------------- stop window
+
+<#
+  Is a port held, and by whom?
+
+  LocalAddress scopes the probe to one bound IP. That is not cosmetic on a host
+  running several applications on the same port behind different addresses: an
+  unscoped probe sees a neighbour's listener, concludes our own stop has not
+  finished, and force-kills its way toward a state that had already been
+  reached. Empty means "match any address".
+#>
+function Test-GcioPortInUse {
+  param([Parameter(Mandatory)][int]$Port, [string]$LocalAddress = '')
+  try {
+    $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($LocalAddress) { $conns = @($conns | Where-Object { $_.LocalAddress -eq $LocalAddress }) }
+    if ($conns.Count) { return $conns[0] }
+    return $null
+  } catch { return $null }
+}
+
+<#
+  Wait for a stopped service to ACTUALLY let go, then force-kill what did not.
+
+  This is the guard the deploy sequence rests on. A patch is
+  stop -> overlay -> start -> health-check, and every step after the stop
+  assumes the old process is gone. If it is not, the overlay writes new files
+  underneath a process still serving from memory, and the health check that
+  follows can be answered by the very process the patch was meant to replace -
+  reporting health=OK having verified nothing.
+
+  A fixed sleep cannot do this. `sc.exe stop` returns when the SCM has accepted
+  the request, not when the process has exited and released its socket, and how
+  long that takes depends on in-flight requests and the shutdown path.
+
+  Returns { Clean; Killed; Reason }. Clean=$false means the port is still held
+  by something this could not stop, and the CALLER MUST NOT PROCEED - overlaying
+  then is the exact failure described above.
+
+  Every probe is injectable so the sequence can be tested without a service.
+#>
+function Wait-GcioCleanStop {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [int]$Port = 0,
+    [int]$GraceSec = 12,
+    [string]$BindAddr = '',
+    [scriptblock]$GetProcs = $null,
+    [scriptblock]$TestPort = $null,
+    [scriptblock]$KillProc = $null,
+    [scriptblock]$Sleep = $null
+  )
+
+  # Node processes running FROM this install. Scoped by path so a developer's
+  # unrelated node, or another application's, is never a candidate for killing.
+  $getProcs = if ($GetProcs) { $GetProcs } else {
+    { param($d) @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) }) }
+  }
+  $testPort = if ($TestPort) { $TestPort } else { { param($p, $addr) [bool](Test-GcioPortInUse -Port $p -LocalAddress $addr) } }
+  $killProc = if ($KillProc) { $KillProc } else { { param($procId) try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { } } }
+  $sleep    = if ($Sleep)    { $Sleep }    else { { param($ms) Start-Sleep -Milliseconds $ms } }
+
+  $killed = @()
+  $clean = $false
+  $steps = [Math]::Max(1, [int]($GraceSec * 2))   # 500ms steps
+
+  for ($i = 0; $i -lt $steps; $i++) {
+    $procs = @(& $getProcs $InstallDir)
+    $busy = if ($Port -gt 0) { [bool](& $testPort $Port $BindAddr) } else { $false }
+    if ($procs.Count -eq 0 -and -not $busy) { $clean = $true; break }
+    & $sleep 500
+  }
+
+  if (-not $clean) {
+    Write-GcioWarn "the service did not fully release after stop - force-killing leftover node processes under $InstallDir"
+    foreach ($p in @(& $getProcs $InstallDir)) {
+      & $killProc $p.ProcessId
+      $killed += $p.ProcessId
+    }
+    & $sleep 500
+    $stillBusy = if ($Port -gt 0) { [bool](& $testPort $Port $BindAddr) } else { $false }
+    $stillProcs = @(& $getProcs $InstallDir).Count
+    if (-not $stillBusy -and $stillProcs -eq 0) {
+      return [pscustomobject]@{ Clean = $true; Killed = $killed; Reason = 'clean after force-kill' }
+    }
+    # Held by something outside this install. Say so and let the caller refuse:
+    # proceeding would overlay under a live listener.
+    return [pscustomobject]@{
+      Clean = $false; Killed = $killed
+      Reason = "port $Port still held after force-kill (by a process outside $InstallDir, or one that could not be stopped)"
+    }
+  }
+
+  return [pscustomobject]@{ Clean = $true; Killed = $killed; Reason = 'stopped cleanly' }
+}
+
+<#
+  Wait for the SCM to settle on a state.
+
+  `sc.exe stop` returning does not mean Stopped - it commonly means
+  STOP_PENDING, and a stale STOP_PENDING can strand the later start, leaving
+  the service down after an apparently successful patch.
+
+  A service that does not exist counts as reaching Stopped: there is nothing to
+  wait for, and a rehearsal install with no service registered is a valid case.
+#>
+function Wait-GcioServiceState {
+  param(
+    [Parameter(Mandatory)][string]$State,
+    [string]$ServiceName = 'GCIOProjectIntelligence',
+    [int]$TimeoutSec = 30,
+    [scriptblock]$GetState = $null,
+    [scriptblock]$Sleep = $null
+  )
+  $getState = if ($GetState) { $GetState } else {
+    { $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+      if ($null -eq $svc) { return $null }
+      return "$($svc.Status)" }
+  }
+  $sleep = if ($Sleep) { $Sleep } else { { param($ms) Start-Sleep -Milliseconds $ms } }
+
+  $steps = [Math]::Max(1, [int]($TimeoutSec * 2))
+  for ($i = 0; $i -lt $steps; $i++) {
+    $s = & $getState
+    if ($null -eq $s) { return $true }       # no such service - nothing to wait for
+    if ("$s" -eq $State) { return $true }
+    & $sleep 500
+  }
+  return $false
+}
+
+<#
+  Suppress or restore NSSM's automatic restart.
+
+  AppExit=Restart is armed at install so NSSM can self-heal a crash of the
+  running application. Left armed across an overlay it does the opposite: it
+  RESURRECTS the old application while its files are being replaced underneath
+  it. Suppress it for the stop -> overlay -> start window and restore it on
+  every exit path - success, rollback, or a thrown error - or a future crash
+  goes unrestarted.
+
+  Never throws. A failure to restore during a rollback would be a second fault
+  stacked on the first, and the caller is already handling one.
+#>
+function Set-GcioNssmAutoRestart {
+  param(
+    [Parameter(Mandatory)][string]$Nssm,
+    [Parameter(Mandatory)][bool]$Enabled,
+    [string]$ServiceName = 'GCIOProjectIntelligence',
+    [scriptblock]$Invoke = $null
+  )
+  $action = if ($Enabled) { 'Restart' } else { 'Exit' }
+  $invoke = if ($Invoke) { $Invoke } else { { param($exe, $a, $b, $c) & $exe set $ServiceName $b $c | Out-Null } }
+  try { & $invoke $Nssm $ServiceName 'AppExit Default' $action | Out-Null } catch { }
+}

@@ -84,14 +84,38 @@ function Install-GcioHostTooling {
   }
 }
 
-# Service control through sc.exe rather than nssm: the service is NSSM-managed,
-# but sc.exe speaks to the SCM directly and needs no path to nssm.exe. Failures
-# are tolerated -- a host with no service registered is a valid rehearsal case,
-# and the health gate is the real arbiter of success either way.
+# NSSM, when this install has one. Needed to suppress AppExit=Restart across the
+# overlay; absent on a rehearsal install, where the suppression is a no-op.
+$NssmExe = Join-Path $InstallDir 'runtime\nssm.exe'
+if (-not (Test-Path $NssmExe)) { $NssmExe = '' }
+
+<#
+  Stop the service and WAIT FOR IT TO ACTUALLY LET GO.
+
+  `sc.exe stop` returns when the SCM accepts the request, not when the process
+  has exited and released its socket. The previous version of this function was
+  `sc.exe stop` plus `Start-Sleep 3`, and three seconds is a guess: if the app
+  takes longer, the overlay writes new files underneath a process still serving
+  from memory, and the health check that follows can be answered by the very
+  process the patch was meant to replace - reporting health=OK having verified
+  nothing.
+
+  Two waits, in order. First the SCM must settle on Stopped rather than
+  STOP_PENDING, because a stale STOP_PENDING can strand the later start. Then
+  the port and any node process under this install must actually be gone.
+
+  Returns the Wait-GcioCleanStop verdict. Clean=$false means something outside
+  this install still holds the port, and the caller MUST NOT overlay.
+
+  Service-control failures stay tolerated: a host with no service registered is
+  a valid rehearsal case, and the health gate is the real arbiter either way.
+#>
 function Stop-GcioService {
   try { & sc.exe stop $ServiceName 2>&1 | Out-Null } catch { }
-  Start-Sleep 3
+  [void](Wait-GcioServiceState -State 'Stopped' -ServiceName $ServiceName -TimeoutSec 30)
+  return Wait-GcioCleanStop -InstallDir $InstallDir -Port $Port -GraceSec 12
 }
+
 function Start-GcioService {
   try { & sc.exe start $ServiceName 2>&1 | Out-Null } catch { }
 }
@@ -126,7 +150,12 @@ if ($Rollback) {
   if (-not $stamps.Count) { Stop-Gcio "no backup to roll back to in $InstallDir" }
   $from = Get-InstalledVersion
   Write-GcioLog "rolling back to app.bak-$($stamps[0])"
-  Stop-GcioService
+  # Restoring files under a live process is the same race as overlaying under
+  # one, so the same wait applies. A non-clean stop only warns here: this path
+  # exists to recover a broken install, and refusing to recover because the
+  # broken thing will not let go helps nobody.
+  $stop = Stop-GcioService
+  if (-not $stop.Clean) { Write-GcioWarn "stop was not clean ($($stop.Reason)) - restoring anyway, this is the recovery path" }
   Restore-GcioApp -InstallDir $InstallDir -Ts $stamps[0]
   Start-GcioService
   $to = Get-InstalledVersion
@@ -159,9 +188,31 @@ if ($Patch) {
   # Copy-backup while the old version is still serving: off the downtime clock.
   Backup-GcioAppCopy -InstallDir $InstallDir -Ts $Ts
 
-  Stop-GcioService
-  Copy-GcioPatchOverlay -PatchApp (Join-Path $Here 'app') -InstallApp (Join-Path $InstallDir 'app')
-  Install-GcioHostTooling
+  <#
+    Suppress NSSM's auto-restart for the whole stop -> overlay -> start window.
+
+    AppExit=Restart is armed at install so NSSM can self-heal a crash of the
+    running app. Left armed here it does the opposite: it RESURRECTS the old
+    application while its files are being replaced underneath it. The finally
+    GUARANTEES restoration on every exit path - success, rollback, or a thrown
+    overlay error - so a future crash is still self-healed.
+  #>
+  if ($NssmExe) { Set-GcioNssmAutoRestart -Nssm $NssmExe -Enabled:$false -ServiceName $ServiceName }
+  try {
+    $stop = Stop-GcioService
+    if (-not $stop.Clean) {
+      # Overlaying now is precisely how a health check ends up answered by the
+      # process this patch was supposed to replace. Refuse instead - the backup
+      # is a copy, so the install is still exactly as it was.
+      Stop-Gcio "the service did not release port $Port cleanly: $($stop.Reason). NOTHING was overlaid - the install is unchanged. Find what is holding the port, then re-run."
+    }
+    if ($stop.Killed.Count) { Write-GcioWarn "force-killed leftover process(es): $($stop.Killed -join ', ')" }
+
+    Copy-GcioPatchOverlay -PatchApp (Join-Path $Here 'app') -InstallApp (Join-Path $InstallDir 'app')
+    Install-GcioHostTooling
+  } finally {
+    if ($NssmExe) { Set-GcioNssmAutoRestart -Nssm $NssmExe -Enabled:$true -ServiceName $ServiceName }
+  }
   Start-GcioService
 
   if ($SkipHealthGate) {
@@ -179,7 +230,8 @@ if ($Patch) {
   }
 
   Write-GcioWarn 'health check FAILED - rolling back to the previous version'
-  Stop-GcioService
+  $stop = Stop-GcioService
+  if (-not $stop.Clean) { Write-GcioWarn "stop was not clean ($($stop.Reason)) - restoring anyway" }
   Restore-GcioApp -InstallDir $InstallDir -Ts $Ts
   Start-GcioService
   $back = Get-InstalledVersion
@@ -194,7 +246,13 @@ if ($Bundle) {
   Write-GcioLog "installing the full bundle into $InstallDir (from $from)"
 
   if ($from -ne 'none') { Backup-GcioAppCopy -InstallDir $InstallDir -Ts $Ts }
-  Stop-GcioService
+  if ($NssmExe) { Set-GcioNssmAutoRestart -Nssm $NssmExe -Enabled:$false -ServiceName $ServiceName }
+  $stop = Stop-GcioService
+  if (-not $stop.Clean -and $from -ne 'none') {
+    if ($NssmExe) { Set-GcioNssmAutoRestart -Nssm $NssmExe -Enabled:$true -ServiceName $ServiceName }
+    Stop-Gcio "the service did not release port $Port cleanly: $($stop.Reason). NOTHING was replaced - the install is unchanged."
+  }
+  if ($stop.Killed.Count) { Write-GcioWarn "force-killed leftover process(es): $($stop.Killed -join ', ')" }
 
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
   foreach ($d in 'app', 'runtime') {
@@ -236,7 +294,8 @@ if ($Bundle) {
     Stop-Gcio "the first install did not become healthy at $HealthUrl. Nothing was rolled back (there is no previous version). Check the service error log and .env."
   }
   Write-GcioWarn 'health check FAILED - rolling back to the previous version'
-  Stop-GcioService
+  $stop = Stop-GcioService
+  if (-not $stop.Clean) { Write-GcioWarn "stop was not clean ($($stop.Reason)) - restoring anyway" }
   Restore-GcioApp -InstallDir $InstallDir -Ts $Ts
   Start-GcioService
   $back = Get-InstalledVersion
