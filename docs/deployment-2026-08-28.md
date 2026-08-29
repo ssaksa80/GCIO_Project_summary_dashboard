@@ -308,6 +308,61 @@ held to.
 
 ---
 
+## Step 8 - removing the old repo tree, and proving a clean start
+
+A bundle deployed over the older repo-shape install leaves the old files in
+place. Two complete copies of the application in one directory is a hazard, not
+untidiness: which one runs depends entirely on the service configuration.
+
+Removed on 2026-08-29 after confirming NSSM points at `app\server\index.js`
+with the bundled runtime, and that every path in the service environment
+resolves to `C:\gcio\{data,vault,audit}` rather than the old tree:
+
+```
+server  client  shared  scripts  sample-data  package.json  package-lock.json
+deploy  node_modules
+```
+
+About 161 MB, of which `node_modules` was 159 MB. Backed up first to
+`C:\gcio-oldrepo-backup-20260829` (2.3 MB, everything except `node_modules`,
+which is regenerable). Loose logs and the old deployment report were moved to
+`logsrchive` rather than deleted.
+
+**A running service is not proof.** The process kept serving throughout the
+removal, uptime unbroken - but a running process does not re-read the
+filesystem, so that shows nothing about whether it can START without those
+files. The service is set to Automatic, so an undiscovered dependency would
+surface at the next reboot, which is the worst possible time to find it.
+
+Restarted deliberately:
+
+```
+[gcio 10:03:58] schema is current
+[gcio 10:03:59] loaded 34 projects from SQL
+[gcio 10:03:59] elected ingest leader (lock "gcio-ingest:c:/gcio/data") -- watching the drop folder
+[gcio 10:03:59] GCIO Project Intelligence listening on http://127.0.0.1:8130
+[gcio 10:03:59] watching C:\gcio\data for workbooks (24x7 live ingestion)
+```
+
+`{"status":"ok","uptimeSec":5,"version":"1.5.0"}` - a genuine cold start with
+the old tree gone.
+
+### A trap left in service-err.log
+
+`C:\gcio\logs\service-err.log` contains **15 stack traces** of the
+`SyntaxError: Unexpected identifier 'is'` from the deliberately broken patch -
+NSSM restarted the failing application repeatedly during the rollback test at
+00:22 before the health gate gave up and rolled back.
+
+They are historical and the application has been healthy since. But anyone who
+tails that file while diagnosing a future problem will find a syntax error in
+`app/server/index.js` that has not existed for hours, and it looks exactly like
+a live fault. The file was left alone rather than truncated because NSSM holds
+it open; NSSM's own rotation (`AppRotateFiles`, 10 MB) will eventually clear it.
+**Check the timestamps before believing that trace.**
+
+---
+
 ## What was NOT tested, and why
 
 Stated plainly so nobody reads this record as more complete than it is.
