@@ -32,7 +32,19 @@ function Stop-Gcio      { param([string]$Msg) Write-Error "[gcio] $Msg"; exit 1 
 #>
 function Get-GcioSha256 {
   param([Parameter(Mandatory)][string]$Path)
-  (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLower()
+  # Get-FileHash first, .NET as the fallback. The cmdlet arrived in PowerShell
+  # 4.0 and is normally present on any host this runs on -- but it was NOT
+  # available in one real deploy account, and the verifier's only reaction was
+  # "the artifact failed verification", which points at the artifact and is
+  # completely wrong. A hash function is not the place to depend on module
+  # loading having gone well.
+  $fh = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+  if ($fh) { return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLower() }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  try {
+    ($sha.ComputeHash($fs) | ForEach-Object { $_.ToString('x2') }) -join ''
+  } finally { $fs.Dispose(); $sha.Dispose() }
 }
 
 <#
