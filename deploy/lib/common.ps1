@@ -825,6 +825,37 @@ function Wait-GcioServiceState {
   Never throws. A failure to restore during a rollback would be a second fault
   stacked on the first, and the caller is already handling one.
 #>
+<#
+  The argument vector for setting nssm's exit action. Separate from the call so
+  the SHAPE can be asserted.
+
+  nssm takes `set <service> AppExit Default <action>` as FIVE arguments. Passing
+  "AppExit Default" as one string is rejected with
+  `Invalid parameter "AppExit Default"` and a list of every valid parameter -
+  which is what happened on the first real deploy that used this. The original
+  test asserted a CONCATENATED string of the call, so it matched
+  "AppExit Default Exit" while the arguments underneath were wrong, and passed.
+  Returning the vector is what makes the structure testable.
+#>
+function Get-GcioNssmAutoRestartArgs {
+  param([Parameter(Mandatory)][string]$ServiceName, [Parameter(Mandatory)][bool]$Enabled)
+  $action = if ($Enabled) { 'Restart' } else { 'Exit' }
+  return @('set', $ServiceName, 'AppExit', 'Default', $action)
+}
+
+<#
+  Suppress or restore NSSM's automatic restart.
+
+  AppExit=Restart is armed at install so NSSM can self-heal a crash of the
+  running application. Left armed across an overlay it does the opposite: it
+  RESURRECTS the old application while its files are being replaced underneath
+  it. Suppress it for the stop -> overlay -> start window and restore it on
+  every exit path - success, rollback, or a thrown error - or a future crash
+  goes unrestarted.
+
+  Never throws. A failure to restore during a rollback would be a second fault
+  stacked on the first, and the caller is already handling one.
+#>
 function Set-GcioNssmAutoRestart {
   param(
     [Parameter(Mandatory)][string]$Nssm,
@@ -832,9 +863,9 @@ function Set-GcioNssmAutoRestart {
     [string]$ServiceName = 'GCIOProjectIntelligence',
     [scriptblock]$Invoke = $null
   )
-  $action = if ($Enabled) { 'Restart' } else { 'Exit' }
-  $invoke = if ($Invoke) { $Invoke } else { { param($exe, $a, $b, $c) & $exe set $ServiceName $b $c | Out-Null } }
-  try { & $invoke $Nssm $ServiceName 'AppExit Default' $action | Out-Null } catch { }
+  $argv = Get-GcioNssmAutoRestartArgs -ServiceName $ServiceName -Enabled $Enabled
+  $invoke = if ($Invoke) { $Invoke } else { { param($exe, $a) & $exe @a | Out-Null } }
+  try { & $invoke $Nssm $argv | Out-Null } catch { }
 }
 
 # ---------------------------------------------------------------- update flow

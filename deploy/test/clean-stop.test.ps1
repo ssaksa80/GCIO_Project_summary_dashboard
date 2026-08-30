@@ -105,15 +105,34 @@ Check ($ok -eq $true) 'a service that does not exist counts as Stopped (nothing 
   can RESURRECT the old application while files are being replaced underneath
   it. It must be suppressed for the window and restored on every exit path.
 #>
-$script:nssmCalls = @()
-$fakeNssm = { param($a, $b, $c, $d) $script:nssmCalls += "$b $c $d" }
-Set-GcioNssmAutoRestart -Nssm 'nssm.exe' -Enabled:$false -Invoke $fakeNssm
-Check ($script:nssmCalls[-1] -match 'AppExit Default Exit') 'disabling sets AppExit to Exit, so a crash is not restarted mid-overlay'
-Set-GcioNssmAutoRestart -Nssm 'nssm.exe' -Enabled:$true -Invoke $fakeNssm
-Check ($script:nssmCalls[-1] -match 'AppExit Default Restart') 'enabling restores AppExit to Restart'
+<#
+  The ARGUMENT VECTOR, not a concatenation of it.
 
-# It must never throw: a failure to restore auto-restart during a rollback
-# would be a second fault stacked on the first.
+  nssm takes `set <service> AppExit Default <action>` as five separate
+  arguments. The first version of this test recorded "$b $c $d" and matched
+  "AppExit Default Exit" - which passed while the real call was passing
+  "AppExit Default" as ONE argument. nssm rejected it on the first real deploy
+  with `Invalid parameter "AppExit Default"`, and the suppression silently never
+  happened. Assert the shape.
+#>
+$argv = Get-GcioNssmAutoRestartArgs -ServiceName 'GCIOProjectIntelligence' -Enabled $false
+Check ($argv.Count -eq 5)          'the nssm call is FIVE arguments, not a concatenated string'
+Check ($argv[0] -eq 'set')         'argv[0] is set'
+Check ($argv[2] -eq 'AppExit')     'argv[2] is AppExit on its own'
+Check ($argv[3] -eq 'Default')     'argv[3] is Default on its own - NOT joined to AppExit'
+Check ($argv[4] -eq 'Exit')        'disabling asks for Exit, so a crash is not restarted mid-overlay'
+
+$argv = Get-GcioNssmAutoRestartArgs -ServiceName 'GCIOProjectIntelligence' -Enabled $true
+Check ($argv[4] -eq 'Restart')     'enabling restores Restart'
+Check ($argv[3] -eq 'Default')     'and Default is still its own argument'
+
+# The wrapper must hand that vector through untouched.
+$script:seen = $null
+Set-GcioNssmAutoRestart -Nssm 'nssm.exe' -Enabled:$false -Invoke { param($exe, $a) $script:seen = $a }
+Check ($script:seen.Count -eq 5 -and $script:seen[2] -eq 'AppExit' -and $script:seen[3] -eq 'Default') 'the wrapper passes the vector through unaltered'
+
+# It must never throw: a failure to restore auto-restart during a rollback would
+# be a second fault stacked on the first.
 $threw = $false
 try { Set-GcioNssmAutoRestart -Nssm 'nssm.exe' -Enabled:$true -Invoke { throw 'nssm exploded' } } catch { $threw = $true }
 Check ($threw -eq $false) 'a failing nssm call is swallowed, never thrown from the restore path'
