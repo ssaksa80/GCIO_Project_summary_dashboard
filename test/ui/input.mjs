@@ -141,51 +141,45 @@ export async function clickUntil(page, selector, condition, options = {}) {
 }
 
 /**
- * Type into a field and confirm the characters actually arrived.
+ * Type into an empty field and confirm the characters actually arrived.
  *
  * page.type() resolves once the key events have been dispatched, not once the
- * field holds the text. A dropped keystroke leaves the field short or empty,
- * and the only symptom is that whatever the typing was supposed to cause never
- * happens - which then times out somewhere else entirely, blaming the feature
- * rather than the keystroke. Verified directly on this app: an input's .value
- * stayed empty after a completed page.type().
+ * field holds the text, so a lost keystroke leaves the field short and the only
+ * symptom is that whatever the typing should have caused never happens - which
+ * times out somewhere else and blames the feature rather than the keystroke.
  *
- * The field is cleared before each attempt so a partially delivered first try
- * cannot concatenate into the second - but it must be cleared the way React
- * accepts. Assigning `el.value` directly desynchronises React's internal value
- * tracker, after which it can revert the DOM on its next render and swallow
- * everything typed afterwards. That is not theoretical: the first version of
- * this helper did exactly that and reported "typing never landed (field holds
- * "")" on every run - the helper causing the failure it was written to
- * diagnose. Going through the prototype's own value setter and then dispatching
- * `input` is the form React recognises.
+ * Single attempt, deliberately. On this machine, once keyboard delivery to a
+ * page stops it does not come back, so a retry cannot succeed. Measured with
+ * listeners attached directly to the field: the first characters arrive as
+ * ordinary keydown/input events with isTrusted true and the app handles them
+ * correctly, and then NOTHING arrives at all - no keydown, no input - while
+ * document.activeElement still reports the field as focused. Blurring and
+ * refocusing does not restore it, and neither does waiting. Retrying in that
+ * state only turns one clear failure into three slow ones.
+ *
+ * Callers should keep typed strings short enough to finish before whatever the
+ * field triggers on a debounce, since the delivery failure is much more likely
+ * once the page has started doing work.
  *
  * @throws {InputUnavailable} if the field never holds `text`
  */
-export async function typeUntil(page, selector, text, { attempts = 3 } = {}) {
+export async function typeUntil(page, selector, text, { timeout = 15_000 } = {}) {
   await page.waitForSelector(selector);
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    await page.$eval(selector, (el) => {
-      if (el.value === "") return;
-      const setValue = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, "value").set;
-      setValue.call(el, "");
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    /* focus(), not click(). Clicking to place the cursor is what a person does,
-       but page.click() aims at coordinates and can land on whatever has moved
-       into them - here it hit the <summary> above the search box and closed the
-       disclosure, after which nothing could be typed anywhere. Focus needs no
-       coordinates, and what this helper is verifying is that the characters
-       arrive, not that a click can reach the field. */
-    await page.focus(selector);
-    await page.type(selector, text);
-    const landed = await page.waitForFunction(
-      (sel, want) => document.querySelector(sel)?.value === want,
-      { timeout: 5000 }, selector, text,
-    ).then(() => true).catch(() => false);
-    if (landed) return;
+  const before = await page.$eval(selector, (el) => el.value);
+  if (before !== "") {
+    throw new InputUnavailable(
+      `${selector} already holds "${before}" - this types into an empty field only`);
   }
+
+  await page.focus(selector);
+  await page.type(selector, text);
+
+  const landed = await page.waitForFunction(
+    (sel, want) => document.querySelector(sel)?.value === want,
+    { timeout }, selector, text,
+  ).then(() => true).catch(() => false);
+  if (landed) return;
+
   const got = await page.$eval(selector, (el) => el.value).catch(() => "(gone)");
   throw new InputUnavailable(`typing into ${selector} never landed (field holds "${got}")`);
 }

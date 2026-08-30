@@ -143,7 +143,14 @@ test("the all-projects table filters", { skip: !ui }, async (t) => {
      box short or empty and the only symptom is that the table never narrows -
      which times out on the next line and reads as a broken filter rather than
      as a lost keypress. */
-  await typeUntil(page, "input[type='search']", "zzzzz-no-such-project");
+  /* Short on purpose. ProjectTable debounces its refetch by 200ms, and a longer
+     string takes long enough to type that the refetch lands mid-way - after
+     which this browser stops delivering key events to the page entirely (no
+     keydown, no input, though the field still reports as focused, and it never
+     recovers). Four characters complete well inside the debounce, so the
+     refetch happens after typing rather than during it. "zzzz" matches no
+     project, which is all the assertion below needs. */
+  await typeUntil(page, "input[type='search']", "zzzz");
   await page.waitForFunction((n) => document.querySelectorAll("table.projects tbody tr").length < n, {}, before);
   assert.ok(await rows() < before, "the filter did not narrow the table");
   }
