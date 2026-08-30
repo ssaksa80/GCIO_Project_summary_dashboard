@@ -283,6 +283,46 @@ same way. This is recorded so a reader doesn't mistake "the interactive tool
 couldn't do X" for "the app can't do X" — they are not the same claim, and
 only the second one belongs in an accessibility assessment.
 
+### A test that was not measuring what it claimed (found 2026-08-30)
+
+Re-running this suite surfaced a defect in the suite, not the app: **the "an
+open project drawer" subtest had stopped auditing the drawer entirely, and the
+run still reported green.**
+
+Two independent mistakes had to line up:
+
+1. `settle()` reloads the page, which returns the scroll position to the top.
+   `page.click()` then scrolls the target into view, computes its coordinates
+   and dispatches a mouse event at them — but that scroll is itself what first
+   brings the lower sections into view, firing their IntersectionObserver
+   reveals and changing the heights of everything above the target. The element
+   had moved before the event landed, so the click hit nothing. Confirmed
+   directly rather than inferred: no `[role="dialog"]` ever entered the DOM and
+   no `GET /api/projects/:id` was ever sent — the drawer was not loading
+   slowly, it never opened. The target measured `y=3705` in a 1000px-tall
+   viewport at click time, with `document.elementFromPoint` at its centre
+   returning nothing.
+
+2. The subtest carried node:test's `todo` marker, added for Finding 1 (the
+   brand-palette contrast failure). `todo` tolerates *any* failure, so the
+   resulting 30-second `TimeoutError` was reported as an expected known issue.
+   Nothing in the output distinguished "the known contrast finding" from "this
+   test no longer runs."
+
+Both are fixed. The click now waits for the element's own box to stop moving
+before dispatching (`clickWhenStill`), and the known finding is carried as an
+expected *value* (`KNOWN_BLOCKING = ["color-contrast"]`) rather than a blanket
+`todo`, so any other failure — a new violation, a harness break, a timeout —
+fails the run. Both fixes were mutation-checked: reverting the click makes the
+drawer subtest fail with the timeout it had been hiding, and emptying
+`KNOWN_BLOCKING` makes the dashboard and drawer subtests fail on the assertion.
+
+With the drawer genuinely audited by the automated pass for the first time, its
+result matches what the manual assessment above already recorded:
+`aria-allowed-role` (minor, #2), `color-contrast` (serious, #1) and `region`
+(moderate, #4). No new finding — but that agreement is now measured on every
+run instead of asserted once.
+
 ## Findings that conflict with the brand palette
 
 Only one does: **Finding 1**, the `--critical` (Pantone 192 C) text-contrast

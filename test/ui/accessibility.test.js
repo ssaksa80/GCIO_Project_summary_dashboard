@@ -89,6 +89,49 @@ async function settle(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
 }
 
+/**
+ * Click something only once the page has stopped moving underneath it.
+ *
+ * The drawer subtest below was failing here on every run, invisibly. settle()
+ * reloads, which leaves the page scrolled back to the top; Puppeteer's
+ * page.click() then scrolls the target into view, computes its coordinates,
+ * and dispatches a mouse event at them. That scroll is itself what first
+ * brings the lower sections into view, which fires their IntersectionObserver
+ * reveals (client/src/lib/motion.jsx) and changes the heights of everything
+ * above the target - so the element has moved by the time the event lands and
+ * the click hits nothing at all.
+ *
+ * Confirmed directly, not inferred: with the click issued immediately, no
+ * [role="dialog"] ever enters the DOM and no GET /api/projects/:id is ever
+ * sent, so the drawer is not slow to load - it never opens. The identical
+ * click a few tens of milliseconds later opens it every time. The target was
+ * measured at y=3705 in a 1000px-tall viewport at the moment of the click,
+ * with document.elementFromPoint at its centre returning nothing.
+ *
+ * So: scroll first, wait until the target's own box stops moving, then click.
+ * A fixed sleep would only make the race less likely; this waits for the
+ * condition that actually has to hold before a coordinate is meaningful.
+ */
+async function clickWhenStill(page, selector) {
+  const handle = await page.waitForSelector(selector);
+  await handle.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await page.evaluate(() => { delete window.__lastClickY; });
+  await page.waitForFunction(
+    (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return false;
+      const y = el.getBoundingClientRect().y;
+      const previous = window.__lastClickY;
+      window.__lastClickY = y;
+      return previous !== undefined && Math.abs(y - previous) < 0.5;
+    },
+    { polling: "raf", timeout: 10_000 },
+    selector,
+  );
+  await handle.click();
+  return handle;
+}
+
 /** Serious and critical fail the build. Moderate and minor are recorded. */
 const BLOCKING = new Set(["serious", "critical"]);
 
@@ -106,14 +149,23 @@ function report(where, violations) {
    .solid.critical.chip elements each time. Fixing it means moving off a
    mandated brand hex or darkening the surfaces derived from another one,
    which is a brand-owner decision this phase deliberately does not make.
-   `todo` is used, not `skip`: the subtest still runs axe against the real
-   page and still prints the ratios on every invocation (see console.log
-   below and in `report()`) - only how node:test classifies a failing result
-   changes, so the finding stays visible instead of silently disappearing
-   from the count. If either of these ever reports as passing, the
-   underlying colour was changed - treat that as confirmation the finding
-   was fixed, not as a fluke, and remove its `todo` option. */
-const CRITICAL_CONTRAST_TODO = "known finding: --critical fails text contrast on dark themes (Finding 1, docs/accessibility-assessment.md) - brand-palette decision pending, not yet fixed";
+   This was previously carried as node:test's `todo` on both subtests. That
+   was wrong, and it cost real coverage: `todo` tolerates ANY failure, not
+   just the known one, so when the drawer subtest started timing out before
+   it ever reached axe, the run still reported green and nobody could tell
+   from the output that the drawer was no longer being audited at all. It had
+   not been audited for as long as the race existed (see clickWhenStill
+   above). A marker that hides the difference between "the known brand
+   finding" and "this test stopped working" is not a marker worth having.
+
+   So the known finding is an expected VALUE instead. The subtests assert
+   their blocking violations equal exactly this list: the recorded finding
+   keeps them from failing, and anything else - a new violation, a harness
+   break, a timeout - fails loudly. When the palette is fixed these go red
+   with "expected [color-contrast], got []"; that is the intended signal that
+   the finding is closed, and the fix is to empty this list, not to silence
+   the test. */
+const KNOWN_BLOCKING = ["color-contrast"];
 
 test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
   /* This measures something nobody has measured before, so it may legitimately
@@ -132,7 +184,7 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
     } finally { await app.close(); }
   });
 
-  await t.test("the dashboard", { todo: CRITICAL_CONTRAST_TODO }, async () => {
+  await t.test("the dashboard", async () => {
     const app = await startDashboard();
     try {
       await app.page.waitForSelector("[data-section='priorities']");
@@ -141,11 +193,11 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
       console.log(report("dashboard", violations));
-      assert.deepEqual(blocking.map((v) => v.id), [], report("dashboard (blocking)", blocking));
+      assert.deepEqual(blocking.map((v) => v.id), KNOWN_BLOCKING, report("dashboard (blocking)", blocking));
     } finally { await app.close(); }
   });
 
-  await t.test("an open project drawer", { todo: CRITICAL_CONTRAST_TODO }, async () => {
+  await t.test("an open project drawer", async () => {
     /* Audited separately because a modal's problems - focus not moving into
        it, no way out by keyboard, no accessible name - are invisible to an
        audit of the page behind it. */
@@ -153,8 +205,7 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
     try {
       await app.page.waitForSelector("[data-section='priorities'] .pname");
       await settle(app.page);
-      await app.page.waitForSelector("[data-section='priorities'] .pname");
-      await app.page.click("[data-section='priorities'] .pname");
+      await clickWhenStill(app.page, "[data-section='priorities'] .pname");
       /* Wait for the drawer's own heading, not merely the dialog wrapper - the
          wrapper mounts immediately on click, before its fetch to
          /api/projects/:id resolves (same fact Task 4 recorded). Auditing the
@@ -164,7 +215,7 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
       console.log(report("drawer", violations));
-      assert.deepEqual(blocking.map((v) => v.id), [], report("drawer (blocking)", blocking));
+      assert.deepEqual(blocking.map((v) => v.id), KNOWN_BLOCKING, report("drawer (blocking)", blocking));
     } finally { await app.close(); }
   });
 });
