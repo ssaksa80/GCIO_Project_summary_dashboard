@@ -82,10 +82,11 @@ Write-Host ''
 
 if ($WhatIf) { Write-GcioLog '-WhatIf: nothing was changed.'; exit 0 }
 
-# From here on everything mutates, so elevation is required.
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-      [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Stop-Gcio 'this must run from an ELEVATED prompt - it removes a Windows service. Nothing has been changed.'
+# From here on everything mutates. Removing a service needs more than start/stop
+# rights, so this one really does want elevation - but say so accurately.
+$ctl = Test-GcioCanControlService -ServiceName $ServiceName
+if (-not $ctl.Can) {
+  Stop-Gcio "cannot control the Windows service ($($ctl.Why)). Run from an ELEVATED prompt. Nothing has been changed."
 }
 
 <#

@@ -79,13 +79,15 @@ function Get-InstalledVer {
 
 Step '0/4' 'Pre-flight'
 
-# Elevation, checked HERE rather than discovered three steps in as a confusing
-# service failure. Everything below stops or starts a service.
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-      [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Fail 'this must run from an ELEVATED prompt - it stops and starts the Windows service. Nothing has been changed.'
+# Checked HERE rather than discovered three steps in as a confusing service
+# failure. The test is the CAPABILITY, not the role: a service descriptor can
+# grant start/stop to a named account, and demanding elevation from a session
+# that already holds the right refuses work it can perfectly well do.
+$ctl = Test-GcioCanControlService -ServiceName 'GCIOProjectIntelligence'
+if (-not $ctl.Can) {
+  Fail "cannot control the Windows service ($($ctl.Why)). Run from an ELEVATED prompt, or grant this account start/stop on the service. Nothing has been changed."
 }
-Ok 'running elevated'
+Ok $ctl.Why
 
 <#
   Files copied from another machine carry a mark-of-the-web zone marker, and

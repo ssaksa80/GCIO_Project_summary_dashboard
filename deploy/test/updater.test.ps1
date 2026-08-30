@@ -93,7 +93,21 @@ $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 
 Check (-not $errs) 'code-update.ps1 parses'
 
 $text = Get-Content -Raw $script:updater
-Check ($text -match 'WindowsBuiltInRole\]::Administrator') 'code-update.ps1 checks for elevation'
+
+<#
+  The guard is that the updater refuses when it cannot control the service. The
+  earlier version of this asserted the SOURCE TEXT
+  `WindowsBuiltInRole]::Administrator`, which pinned one IMPLEMENTATION of that
+  guard rather than the guard itself - and went red the moment the check was
+  corrected to test the capability instead of the role, even though the guard
+  had got strictly better. Assert the behaviour.
+#>
+Check ($text -match 'Test-GcioCanControlService') 'code-update.ps1 refuses when it cannot control the service'
+
+# ...and the check itself is exercised directly, which the source grep never did.
+$ctl = Test-GcioCanControlService -ServiceName 'a-service-that-does-not-exist'
+Check ($null -ne $ctl -and $null -ne $ctl.Can) 'the capability check returns a verdict for an unknown service rather than throwing'
+Check ($ctl.Why -and $ctl.Why.Length -gt 10) 'and explains itself, so a refusal says what to do'
 Check ($text -match 'Select-GcioArtifact')  'code-update.ps1 uses the shared artifact chooser rather than its own copy'
 Check ($text -match 'Test-GcioVersionGate') 'code-update.ps1 uses the shared version gate'
 Check ((@([char[]]$text | Where-Object { [int]$_ -gt 126 })).Count -eq 0) 'code-update.ps1 is ASCII-only (a BOM-less non-ASCII script breaks 5.1 parsing)'

@@ -1214,3 +1214,48 @@ function Get-GcioUninstallPlan {
     Summary = $summary
   }
 }
+
+<#
+  Can this session actually stop and start the service?
+
+  NOT "is it elevated". Elevation is the usual way to hold that right, but it is
+  not the only one: a service's own security descriptor can grant start/stop to
+  a named account, and on this project it was granted exactly that way. Checking
+  the ROLE instead of the CAPABILITY refuses a session that is perfectly able to
+  do the work - which is what happened the first time a deploy ran under such a
+  grant.
+
+  Administrator short-circuits to true. Otherwise the service descriptor is read
+  and the caller's own SID looked for with both RP (start) and WP (stop).
+
+  Group-granted rights are not detected: the SDDL would name the group, not the
+  caller. That is a false NEGATIVE, so the worst case is telling someone to
+  elevate when they need not - never the reverse.
+#>
+function Test-GcioCanControlService {
+  param([string]$ServiceName = 'GCIOProjectIntelligence')
+  try {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+      return [pscustomobject]@{ Can = $true; Why = 'running elevated' }
+    }
+  } catch { }
+
+  try {
+    $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+    $sddl = ((& sc.exe sdshow $ServiceName 2>&1) | Where-Object { $_ -match '^D:' }) -join ''
+    if ($sddl) {
+      foreach ($ace in [regex]::Matches($sddl, '\(([^)]*)\)')) {
+        $parts = $ace.Groups[1].Value -split ';'
+        if ($parts.Count -ge 6 -and $parts[5] -eq $sid) {
+          $rights = $parts[2]
+          if ($rights -match 'RP' -and $rights -match 'WP') {
+            return [pscustomobject]@{ Can = $true; Why = "the service grants this account start/stop directly (not elevated)" }
+          }
+        }
+      }
+    }
+  } catch { }
+
+  return [pscustomobject]@{ Can = $false; Why = 'not elevated, and the service does not grant this account start/stop' }
+}
