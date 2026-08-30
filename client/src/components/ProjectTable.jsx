@@ -90,9 +90,24 @@ export default function ProjectTable({ meta, onOpen, refreshTick }) {
         <table className="projects">
           <thead>
             <tr>
+              {/* A real <button> inside the <th>, not tabIndex+role on the <th>
+                  itself: focusability and Enter/Space activation then come from
+                  the browser rather than from hand-written key handling, and the
+                  cell keeps its table semantics. aria-sort is the part assistive
+                  technology actually announces for a sortable column. Finding 10
+                  in docs/accessibility-assessment.md - before this, sorting could
+                  not be done from the keyboard at all. */}
               {COLUMNS.map(([field, label]) => (
-                <th key={field} onClick={() => toggleSort(field)}>
-                  {label}{sortGlyph.field === field ? ` ${sortGlyph.glyph}` : ""}
+                <th
+                  key={field}
+                  data-field={field}
+                  aria-sort={sortGlyph.field === field
+                    ? (sortGlyph.glyph === "↓" ? "descending" : "ascending")
+                    : "none"}
+                >
+                  <button type="button" className="th-sort" onClick={() => toggleSort(field)}>
+                    {label}{sortGlyph.field === field ? ` ${sortGlyph.glyph}` : ""}
+                  </button>
                 </th>
               ))}
             </tr>
@@ -100,8 +115,20 @@ export default function ProjectTable({ meta, onOpen, refreshTick }) {
           <tbody>
             {rows.map((p) => (
               <tr key={p.id} onClick={() => onOpen(p.id)}>
+                {/* One focusable control per row, on the thing a keyboard user
+                    would naturally activate. The <tr onClick> above stays so
+                    mouse behaviour is unchanged; stopPropagation keeps a mouse
+                    click on the name from firing onOpen twice. Making the <tr>
+                    itself role="button" would have overridden the row's table
+                    semantics for a screen reader. */}
                 <td className="cell-name" title={p.name}>
-                  {p.name}
+                  <button
+                    type="button"
+                    className="cell-name-btn"
+                    onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                  >
+                    {p.name}
+                  </button>
                   <div className="cell-sub">{p.id}{p.program ? ` · ${p.program}` : ""}</div>
                 </td>
                 <td>{p.department}</td>

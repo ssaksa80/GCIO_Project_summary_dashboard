@@ -135,6 +135,11 @@ noticed the measurement was broken.
 ### Minor / Moderate — recorded, not blocking
 
 **2. `<aside role="dialog">` is not an allowed ARIA role for `<aside>`.**
+**Fixed 2026-08-30** - the host element is now a `<div>` carrying
+`role="dialog"` and `aria-modal="true"`. Confirmed by re-running the audit:
+`aria-allowed-role` no longer appears in the drawer's violations, which went
+from three to two.
+
 `ProjectDrawer.jsx` renders `<aside class="drawer" role="dialog" aria-label="Project detail">`.
 axe: `aria-allowed-role`, minor, on the drawer surface only. Does not conflict
 with the brand palette — swapping the host element (e.g. a plain `<div>`) or
@@ -176,19 +181,26 @@ conversation.
 ### Manual checks (axe cannot see these)
 
 **5. Opening a project drawer does not move keyboard focus into it.**
+**Fixed 2026-08-30** - the dialog container takes focus on mount.
+
 Confirmed directly: with the drawer open, `document.activeElement` is still
 the `.pname` button that was clicked, not anything inside `[role="dialog"]`.
 A screen-reader or keyboard-only user gets no signal that anything opened
 except whatever they can see.
 
-**6. No focus trap.** While the drawer is open, Tab continues to move focus
+**6. No focus trap.**
+**Fixed 2026-08-30** - Tab and Shift+Tab now wrap within the dialog.
+ While the drawer is open, Tab continues to move focus
 through the underlying page rather than staying inside the dialog — confirmed
 directly: Tab from the trigger moved to the *next* project's `.pname` button
 in the section behind the drawer, not into the drawer. Combined with #5: a
 keyboard user can keep tabbing through, and activating, content that is
 visually covered by the drawer's backdrop.
 
-**7. The drawer is a long way from its own trigger in tab order.** Measured
+**7. The drawer is a long way from its own trigger in tab order.**
+**Fixed 2026-08-30** by #6 - with focus trapped, the drawer's DOM position no
+longer determines how far away its controls are, so it did not need to move.
+ Measured
 directly (DOM order, since nothing in the client sets a custom `tabindex`
 except one unrelated control in `UploadPanel.jsx`): from the `.pname` button
 that opens a drawer, its own close button is **99 Tab presses away** (element
@@ -201,13 +213,21 @@ no practical way to find the drawer's own controls.
 `ProjectDrawer.jsx` has its own `window`-level `keydown` listener for this,
 independent of any native browser default action.
 
-**9. "Focus return" is accidental, not deliberate.** After Escape, focus is
+**9. "Focus return" is accidental, not deliberate.**
+**Fixed 2026-08-30** - the element focused at mount is saved and restored on
+close, guarded by `isConnected`. The exact regression predicted here did occur
+while the work was in progress and was caught: see the note below.
+ After Escape, focus is
 back on the trigger button — but only because it never left in the first
 place (see #5). If a future fix adds real focus-into-dialog behaviour without
 also adding an explicit restore-on-close, this could regress silently with no
 test currently in place to catch it.
 
-**10. The "all projects" reference table is partly mouse-only.** Its sortable
+**10. The "all projects" reference table is partly mouse-only.**
+**Fixed 2026-08-30** - sort headers wrap their label in a real `<button>` and
+carry `aria-sort`; each row's name cell is a `<button>`. The `<tr onClick>`
+stays for mouse users.
+ Its sortable
 column headers (`<th onClick=...>`) and clickable rows (`<tr onClick=...>`,
 opens a project — `client/src/components/ProjectTable.jsx`) are plain `<th>`/
 `<tr>` elements: no `tabindex`, no `role="button"`, no `onKeyDown`. Confirmed
@@ -267,6 +287,35 @@ Measured, not eyeballed:
 - A project drawer opened at this width still renders fully on-screen
   (620×500 of an 800×500 viewport) with its close button fully visible and
   in-bounds.
+
+### The keyboard findings, fixed and now regression-tested (2026-08-30)
+
+Findings 2, 5, 6, 7, 9 and 10 are fixed. `test/ui/keyboard.test.js` covers them
+with six assertions driven by real key presses; before the fix, five of the six
+failed, each naming the defect it was written for - focus left on the trigger,
+Tab escaping to `<body>`, and Shift+Tab landing on the reference table's
+`<summary>` *behind the backdrop*, which is Finding 6 caught in the act.
+
+The sixth, Escape-returns-focus, **passed against the broken code** - because
+focus had never left the trigger, exactly as Finding 9 said. A test that passes
+whether or not the feature exists is worth nothing, so it now asserts that focus
+is inside the dialog and moves within it before Escape is pressed. Each fix was
+then mutation-checked: removing the trap fails both wrap tests, removing the
+focus restore fails the Escape test, and marking either the header or the row
+button `tabIndex={-1}` fails its own reachability test and nothing else.
+
+**One caveat worth recording.** Input delivery to this page in headless Chrome
+is unreliable - clicks that do not open a `<details>`, Tab presses that produce
+no focus change for seconds, selectors that never resolve. It is the page's
+weight rather than the browser: the same presses against a trivial page in the
+same browser with the same flags are perfectly reliable, and neither
+`Emulation.setFocusEmulationEnabled` nor forcing reduced motion changed it.
+Left alone it failed a different test on roughly half of all runs, which would
+have made the suite worthless. The suite therefore distinguishes "the browser
+did not deliver an input" from "the app did the wrong thing" and retries only
+the first; an assertion failure is never retried, so a real regression still
+fails on the first attempt. Eight consecutive runs pass with that in place, two
+of them having silently retried once.
 
 ### A tooling limitation, not an app finding
 

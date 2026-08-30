@@ -510,6 +510,23 @@ table.projects th:hover { color: var(--ink-2); }
 table.projects td { padding: 8px 10px; border-bottom: 1px solid var(--hairline-soft); vertical-align: middle; }
 table.projects tbody tr { cursor: pointer; }
 table.projects tbody tr:hover { background: var(--surface-2); }
+/* The sort headers and the row name are real <button>s so they can be reached
+   and activated from the keyboard (Finding 10). These rules only strip the
+   browser's default button chrome so they keep looking exactly like the cell
+   text they replaced - the focus ring comes from the app's global
+   :focus-visible rule, which already measures 10.5-11.1:1 on the dark themes. */
+table.projects th .th-sort,
+.cell-name .cell-name-btn {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+  text-align: inherit; cursor: pointer;
+}
+table.projects th .th-sort { width: 100%; white-space: nowrap; }
+.cell-name .cell-name-btn {
+  display: block; width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .cell-name { max-width: 300px; font-weight: 700; }
 .cell-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-sub { font-size: 10.5px; color: var(--muted); font-weight: 400; }

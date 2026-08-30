@@ -445,6 +445,29 @@ async function boot({ role = "admin", stubs = null } = {}) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1600, height: 1000 });
 
+    /*
+      Make the page believe it is the focused window.
+
+      Emulation.setFocusEmulationEnabled forces the renderer to treat the page
+      as focused regardless of whether the OS window is, which is the right
+      baseline for any suite that presses keys: without it, whether Tab does
+      anything depends on OS window focus, which a test cannot control.
+
+      It is not a cure for this harness's input flakiness - that was measured
+      before and after, with no improvement (see test/ui/keyboard.test.js, which
+      retries on input loss for that reason). It is kept because it removes one
+      real variable, not because it removed the symptom.
+
+      Wrapped, because a protocol that does not offer it should degrade to the
+      old flaky-but-working behaviour rather than failing every UI suite.
+    */
+    try {
+      const cdp = await page.createCDPSession();
+      await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    } catch (err) {
+      if (DEBUG) console.error("focus emulation unavailable:", err.message);
+    }
+
     if (stubs) await applyStubs(page, stubs);
 
     const baseUrl = `http://127.0.0.1:${port}`;

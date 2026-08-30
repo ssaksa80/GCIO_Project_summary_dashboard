@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getJSON, downloadExport } from "../lib/api.js";
 import { fmtMoney, fmtDate, HEALTH_CHIP } from "../lib/format.js";
+
+/* What the browser itself treats as tabbable. The dialog container carries
+   tabIndex={-1} so it can take initial focus without ever joining the tab
+   order, which is why the -1 entries are excluded here. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 const SCHEDULE_CHIP = { "On Track": "good", "At Risk": "warn", Overdue: "critical", Completed: "good" };
 const RISK_CHIP = { Critical: "critical", High: "serious", Medium: "warn", Low: "neutral" };
@@ -41,6 +48,86 @@ export default function ProjectDrawer({ id, onClose, onNavigate, period, date })
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  /*
+    Modal focus behaviour.
+
+    The drawer already behaved as a modal for a mouse: a backdrop that dismisses
+    it, and Escape to close. It did not behave as one for the keyboard. Focus
+    stayed on whatever was clicked, Tab kept walking the page behind the
+    backdrop, and the drawer's own close button sat 99 Tab presses away because
+    the drawer mounts last in the document. Findings 5, 6, 7 and 9 in
+    docs/accessibility-assessment.md.
+
+    Focus goes to the dialog container rather than to the close button or the
+    heading. It is the only one of the three that exists at mount - the drawer
+    renders a skeleton, and the <h2> does not arrive until the fetch above
+    resolves - and it announces the dialog's own name rather than "Close,
+    button".
+  */
+  const dialogRef = useRef(null);
+  const returnFocusRef = useRef(null);
+
+  useEffect(() => {
+    returnFocusRef.current = document.activeElement;
+    dialogRef.current?.focus();
+    return () => {
+      /* The trigger can legitimately be gone by now - the table's filters may
+         have changed underneath, or navigation replaced the section that held
+         it. Focusing a detached node silently sends focus to <body>, which is
+         worse than leaving it alone. */
+      const target = returnFocusRef.current;
+      if (target && target.isConnected) target.focus();
+    };
+  }, []);
+
+  /* Re-announce when the tree navigates to a different project inside the same
+     mounted drawer: the heading changes but focus would otherwise sit on the
+     tree node of a project that is no longer being shown. */
+  useEffect(() => { dialogRef.current?.focus(); }, [id]);
+
+  /*
+    Keep Tab inside the dialog.
+
+    The list is re-queried on every keypress rather than captured once, because
+    the contents change twice after mount: when the fetch resolves and the
+    skeleton is replaced, and when onNavigate swaps to another project. A list
+    captured at mount would hold one stale close button.
+  */
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      /* No extra filtering on top of FOCUSABLE. The selector already excludes
+         disabled controls, and any additional rule here would have to be
+         mirrored exactly by anything reasoning about "the last focusable in the
+         dialog" - including the tests, which disagreed with an earlier
+         aria-hidden filter and failed intermittently because of it. */
+      const items = [...dialog.querySelectorAll(FOCUSABLE)];
+      if (items.length === 0) return;
+
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+
+      if (e.shiftKey && (active === first || active === dialog)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (!dialog.contains(active)) {
+        /* Focus escaped some other way - a click on the backdrop, say. Bring it
+           back rather than letting Tab continue through the page behind. */
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    const dialog = dialogRef.current;
+    dialog?.addEventListener("keydown", onKeyDown);
+    return () => dialog?.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const exportProject = async (format) => {
     setBusy(format);
     try {
@@ -57,8 +144,19 @@ export default function ProjectDrawer({ id, onClose, onNavigate, period, date })
 
   return (
     <>
-      <div className="backdrop" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label="Project detail">
+      <div className="backdrop" onClick={onClose} aria-hidden="true" />
+      {/* A <div>, not an <aside>: <aside> is not permitted to carry
+          role="dialog" (axe aria-allowed-role, Finding 2). aria-modal tells
+          assistive technology the rest of the page is unavailable while this is
+          open, which is now true for the keyboard as well. */}
+      <div
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Project detail"
+        tabIndex={-1}
+        ref={dialogRef}
+      >
         <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">✕</button>
 
         {error && <div style={{ color: "var(--critical)", marginTop: 30 }}>{error}</div>}
@@ -201,7 +299,7 @@ export default function ProjectDrawer({ id, onClose, onNavigate, period, date })
             </div>
           </>
         )}
-      </aside>
+      </div>
     </>
   );
 }
