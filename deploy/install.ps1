@@ -208,6 +208,16 @@ if ($Patch) {
     else { Write-GcioLog "SQL pre-check OK: $($sql.Reason)" }
   }
 
+  <#
+    Log length markers, taken BEFORE anything is touched. A service log
+    accumulates across deploys, so on a failure only what THIS deploy wrote is
+    worth showing - the rest sends an operator chasing a fault that stopped
+    existing hours ago.
+  #>
+  $logDirPath = Join-Path $InstallDir 'logs'
+  $sinceOut = Get-GcioLogLength (Join-Path $logDirPath 'service-out.log')
+  $sinceErr = Get-GcioLogLength (Join-Path $logDirPath 'service-err.log')
+
   # Copy-backup while the old version is still serving: off the downtime clock.
   Backup-GcioAppCopy -InstallDir $InstallDir -Ts $Ts
 
@@ -253,6 +263,7 @@ if ($Patch) {
   }
 
   Write-GcioWarn 'health check FAILED - rolling back to the previous version'
+  foreach ($l in (Show-GcioFailureLog -InstallDir $InstallDir -SinceOut $sinceOut -SinceErr $sinceErr -ProbeUrl $HealthUrl)) { Write-Host $l }
   $stop = Stop-GcioService
   if (-not $stop.Clean) { Write-GcioWarn "stop was not clean ($($stop.Reason)) - restoring anyway" }
   Restore-GcioApp -InstallDir $InstallDir -Ts $Ts
@@ -267,6 +278,10 @@ if ($Patch) {
 if ($Bundle) {
   $from = Get-InstalledVersion
   Write-GcioLog "installing the full bundle into $InstallDir (from $from)"
+
+  $logDirPath = Join-Path $InstallDir 'logs'
+  $sinceOut = Get-GcioLogLength (Join-Path $logDirPath 'service-out.log')
+  $sinceErr = Get-GcioLogLength (Join-Path $logDirPath 'service-err.log')
 
   if ($from -ne 'none') { Backup-GcioAppCopy -InstallDir $InstallDir -Ts $Ts }
   if ($NssmExe) { Set-GcioNssmAutoRestart -Nssm $NssmExe -Enabled:$false -ServiceName $ServiceName }
@@ -314,9 +329,11 @@ if ($Bundle) {
     # Nothing to roll back to: a first install that will not start is a
     # configuration problem, and pretending otherwise by deleting the install
     # only destroys the evidence.
-    Stop-Gcio "the first install did not become healthy at $HealthUrl. Nothing was rolled back (there is no previous version). Check the service error log and .env."
+    foreach ($l in (Show-GcioFailureLog -InstallDir $InstallDir -SinceOut $sinceOut -SinceErr $sinceErr -ProbeUrl $HealthUrl)) { Write-Host $l }
+    Stop-Gcio "the first install did not become healthy at $HealthUrl. Nothing was rolled back (there is no previous version)."
   }
   Write-GcioWarn 'health check FAILED - rolling back to the previous version'
+  foreach ($l in (Show-GcioFailureLog -InstallDir $InstallDir -SinceOut $sinceOut -SinceErr $sinceErr -ProbeUrl $HealthUrl)) { Write-Host $l }
   $stop = Stop-GcioService
   if (-not $stop.Clean) { Write-GcioWarn "stop was not clean ($($stop.Reason)) - restoring anyway" }
   Restore-GcioApp -InstallDir $InstallDir -Ts $Ts

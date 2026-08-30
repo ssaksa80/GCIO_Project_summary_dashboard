@@ -1018,3 +1018,104 @@ function Test-GcioSqlReady {
   # The one blocking verdict: the probe ran and said no.
   return & $mk $false $false "SQL Server is NOT reachable: $($result.Output)"
 }
+
+# ---------------------------------------------------------------- failure log
+
+# Current length of a log in bytes, or 0 when it does not exist yet. Recorded
+# BEFORE a deploy touches anything, so what follows can be told apart from what
+# was already there.
+function Get-GcioLogLength {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return 0 }
+  try { return (Get-Item -LiteralPath $Path).Length } catch { return 0 }
+}
+
+<#
+  What a log gained after a recorded offset.
+
+  A log SHORTER than the marker has been rotated or truncated, which makes the
+  offset meaningless; fall back to the whole file, since that is the best
+  available answer rather than nothing or an exception.
+#>
+function Get-GcioLogSince {
+  param([Parameter(Mandatory)][string]$Path, [long]$Since = 0, [int]$MaxLines = 40)
+  if (-not (Test-Path -LiteralPath $Path)) { return '' }
+  try {
+    $len = (Get-Item -LiteralPath $Path).Length
+    if ($len -le $Since) {
+      if ($len -lt $Since) {
+        # rotated: the marker no longer refers to this file
+        $all = [IO.File]::ReadAllText($Path)
+        return (($all -split "`r?`n" | Select-Object -Last $MaxLines) -join "`n").Trim()
+      }
+      return ''
+    }
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+      [void]$fs.Seek($Since, [IO.SeekOrigin]::Begin)
+      $buf = New-Object byte[] ($len - $Since)
+      [void]$fs.Read($buf, 0, $buf.Length)
+      $text = [Text.Encoding]::UTF8.GetString($buf)
+    } finally { $fs.Dispose() }
+    return (($text -split "`r?`n" | Select-Object -Last $MaxLines) -join "`n").Trim()
+  } catch { return '' }
+}
+
+<#
+  What to show an operator when a health check has just failed.
+
+  SINCE, not TAIL. A service log accumulates across deploys - this host's
+  service-err.log holds 15 stack traces from a deliberately broken patch applied
+  on 2026-08-29 - so printing the tail sends whoever reads it chasing a fault
+  that stopped existing hours ago. Only what THIS deploy produced is useful, and
+  saying "nothing new" is itself a finding: a service that never started writes
+  nothing at all.
+
+  Pure - returns lines, does not print or exit - so both install.ps1 and
+  code-update.ps1 can print it through their own helper, and it is testable.
+  Never throws: it runs when something has already gone wrong, and a second
+  fault stacked on the first helps nobody.
+#>
+function Show-GcioFailureLog {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [long]$SinceOut = 0,
+    [long]$SinceErr = 0,
+    [string]$ProbeUrl = ''
+  )
+  $lines = @()
+  try {
+    $logDir = Join-Path $InstallDir 'logs'
+    $errPath = Join-Path $logDir 'service-err.log'
+    $outPath = Join-Path $logDir 'service-out.log'
+
+    $lines += '--- what the application logged during THIS deploy ---'
+    if ($ProbeUrl) { $lines += "    probed: $ProbeUrl" }
+
+    $err = Get-GcioLogSince -Path $errPath -Since $SinceErr
+    $out = Get-GcioLogSince -Path $outPath -Since $SinceOut
+
+    if ($err) {
+      $lines += ''
+      $lines += "  stderr ($errPath):"
+      foreach ($l in ($err -split "`n")) { $lines += "    $l" }
+    }
+    if ($out) {
+      $lines += ''
+      $lines += "  stdout ($outPath):"
+      foreach ($l in ($out -split "`n")) { $lines += "    $l" }
+    }
+    if (-not $err -and -not $out) {
+      $lines += ''
+      $lines += '  nothing new was logged by this deploy.'
+      $lines += "  A service that never started writes nothing at all - check that it is registered,"
+      $lines += "  and that $errPath is writable."
+    }
+    $lines += ''
+    $lines += "  Older entries in those files are from EARLIER deploys and are not shown."
+    $lines += "  Read them directly if you need them, and check timestamps before believing a trace."
+  } catch {
+    $lines += "  (could not read the service logs: $($_.Exception.Message))"
+  }
+  return $lines
+}
