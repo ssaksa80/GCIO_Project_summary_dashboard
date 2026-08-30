@@ -167,6 +167,24 @@ function report(where, violations) {
    the test. */
 const KNOWN_BLOCKING = ["color-contrast"];
 
+/* Findings 3 and 4, now fixed: the app had no <main>, so landmark-one-main
+   reported directly and `region` reported everything sitting loose in .shell as
+   content outside any landmark.
+
+   These are checked separately, against the FULL violation list rather than the
+   blocking subset, because both rules are moderate - the assertions above have
+   never been able to see them, which is exactly why nothing would have noticed
+   the fix being removed again. Moderate violations stay non-blocking in
+   general; these two are named because they are fixed and a regression should
+   be loud rather than a line in a console log. */
+const MUST_NOT_REGRESS = ["landmark-one-main", "region"];
+
+function assertLandmarks(where, violations) {
+  const back = violations.map((v) => v.id).filter((id) => MUST_NOT_REGRESS.includes(id));
+  assert.deepEqual(back, [],
+    `${where}: landmark violations are back - ${report(where, violations.filter((v) => back.includes(v.id)))}`);
+}
+
 test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
   /* This measures something nobody has measured before, so it may legitimately
      fail. If it does, the failure is the deliverable - record it in
@@ -180,6 +198,7 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
       console.log(report("sign-in", violations));
+      assertLandmarks("sign-in", violations);
       assert.deepEqual(blocking.map((v) => v.id), [], report("sign-in (blocking)", blocking));
     } finally { await app.close(); }
   });
@@ -193,6 +212,7 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
       console.log(report("dashboard", violations));
+      assertLandmarks("dashboard", violations);
       assert.deepEqual(blocking.map((v) => v.id), KNOWN_BLOCKING, report("dashboard (blocking)", blocking));
     } finally { await app.close(); }
   });
@@ -205,16 +225,38 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
     try {
       await app.page.waitForSelector("[data-section='priorities'] .pname");
       await settle(app.page);
-      await clickWhenStill(app.page, "[data-section='priorities'] .pname");
-      /* Wait for the drawer's own heading, not merely the dialog wrapper - the
-         wrapper mounts immediately on click, before its fetch to
-         /api/projects/:id resolves (same fact Task 4 recorded). Auditing the
-         loading skeleton would report on placeholder markup nobody reads. */
-      await app.page.waitForSelector("[role='dialog'] h2");
+      /*
+        Wait for the drawer's own heading, not merely the dialog wrapper - the
+        wrapper mounts immediately on click, before its fetch to
+        /api/projects/:id resolves (same fact Task 4 recorded). Auditing the
+        loading skeleton would report on placeholder markup nobody reads.
+
+        The click is retried while the wrapper is absent, because a click this
+        browser silently dropped is not an accessibility finding and must not be
+        reported as one - it surfaced here as a bare 30s selector timeout during
+        a full-suite run, with nothing in the output to say the audit had simply
+        never happened. Absent wrapper means the click was lost, so re-click;
+        present wrapper with no heading means the fetch is the problem, and
+        clicking again would only hit the backdrop and close it.
+      */
+      let opened = false;
+      for (let attempt = 1; attempt <= 3 && !opened; attempt++) {
+        await clickWhenStill(app.page, "[data-section='priorities'] .pname");
+        const mounted = await app.page.waitForSelector("[role='dialog']", { timeout: 6000 })
+          .then(() => true).catch(() => false);
+        if (!mounted) continue;
+        /* 30s, matching the default this replaced - the retry loop is here to
+           make a lost click legible, not to make the test stricter than it was. */
+        opened = await app.page.waitForSelector("[role='dialog'] h2", { timeout: 30_000 })
+          .then(() => true).catch(() => false);
+        break;
+      }
+      assert.ok(opened, "the drawer never opened, so the audit below never ran");
 
       const { violations } = await audit(app.page);
       const blocking = violations.filter((v) => BLOCKING.has(v.impact));
       console.log(report("drawer", violations));
+      assertLandmarks("drawer", violations);
       assert.deepEqual(blocking.map((v) => v.id), KNOWN_BLOCKING, report("drawer (blocking)", blocking));
     } finally { await app.close(); }
   });

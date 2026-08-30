@@ -129,7 +129,7 @@ export default function App() {
   const sections = summary?.sections;
 
   if (me === null) {
-    return <div className="shell"><div className="skeleton" style={{ height: 120, marginTop: 40 }} /></div>;
+    return <div className="shell"><main><div className="skeleton" style={{ height: 120, marginTop: 40 }} /></main></div>;
   }
 
   if (!me.authenticated) {
@@ -163,60 +163,68 @@ export default function App() {
         }}
       />
 
-      {error && (
-        <div className="card panel error-panel">
-          <span className="micro critical-ink">Connection issue</span>
-          <div className="meta">{error} — retrying on next refresh.</div>
-        </div>
-      )}
-
-      {!hasData && health && <EmptyState onUpload={() => setUploadOpen(true)} />}
-
-      {hasData && summary && sections && (
-        <>
-          <div className="page-head">
-            <h1 className="page-title display">{PERIOD_TITLE[period]}</h1>
-            <span className="page-range">
-              {rangeLabel}{health?.demoMode ? "  ·  demonstration portfolio" : ""}
-            </span>
+      {/* A sibling of the header, never a parent. <header> maps to the banner
+          role only while it is NOT inside <main>, so wrapping the whole shell
+          would have fixed landmark-one-main by destroying a landmark the app
+          already had. The drawer and the upload panel stay outside: they are
+          fixed-position modals carrying their own role="dialog", not the page's
+          main content. */}
+      <main>
+        {error && (
+          <div className="card panel error-panel">
+            <span className="micro critical-ink">Connection issue</span>
+            <div className="meta">{error} — retrying on next refresh.</div>
           </div>
+        )}
 
-          {!sections.historyAvailable && (
-            <p className="empty-line no-history">
-              {summary.historyStartedAt
-                ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
-                : "No change history yet — it begins with the next upload."}
-            </p>
-          )}
+        {!hasData && health && <EmptyState onUpload={() => setUploadOpen(true)} />}
 
-          <KpiStrip
-            kpis={summary.kpis}
-            questionCount={sections.qri.counts.questions}
-            lastIngestAt={health?.lastIngestAt}
-          />
+        {hasData && summary && sections && (
+          <>
+            <div className="page-head">
+              <h1 className="page-title display">{PERIOD_TITLE[period]}</h1>
+              <span className="page-range">
+                {rangeLabel}{health?.demoMode ? "  ·  demonstration portfolio" : ""}
+              </span>
+            </div>
 
-          <SectionNav />
+            {!sections.historyAvailable && (
+              <p className="empty-line no-history">
+                {summary.historyStartedAt
+                  ? `No change history before ${fmtDate(summary.historyStartedAt)}.`
+                  : "No change history yet — it begins with the next upload."}
+              </p>
+            )}
 
-          <SectionSuccesses data={sections.successes} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
-          <SectionQRI data={sections.qri} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
-          <SectionPriorities data={sections.priorities} onOpen={setDrawerId} />
-          <SectionRoadmap data={sections.roadmap} theme={theme} onOpen={setDrawerId} />
-          <SectionPosture data={sections.posture} onOpen={setDrawerId} />
+            <KpiStrip
+              kpis={summary.kpis}
+              questionCount={sections.qri.counts.questions}
+              lastIngestAt={health?.lastIngestAt}
+            />
 
-          <details className="all-projects" open={params().has("table")}>
-            <summary>All projects — reference table ({health.projectCount})</summary>
-            <ProjectTable meta={meta} onOpen={setDrawerId} refreshTick={refreshTick} />
-          </details>
-        </>
-      )}
+            <SectionNav />
 
-      {!summary && !error && (
-        <div className="skeleton-stack">
-          <div className="skeleton" style={{ height: 96 }} />
-          <div className="skeleton" style={{ height: 320 }} />
-          <div className="skeleton" style={{ height: 280 }} />
-        </div>
-      )}
+            <SectionSuccesses data={sections.successes} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
+            <SectionQRI data={sections.qri} charts={summary.charts} theme={theme} onOpen={setDrawerId} />
+            <SectionPriorities data={sections.priorities} onOpen={setDrawerId} />
+            <SectionRoadmap data={sections.roadmap} theme={theme} onOpen={setDrawerId} />
+            <SectionPosture data={sections.posture} onOpen={setDrawerId} />
+
+            <details className="all-projects" open={params().has("table")}>
+              <summary>All projects — reference table ({health.projectCount})</summary>
+              <ProjectTable meta={meta} onOpen={setDrawerId} refreshTick={refreshTick} />
+            </details>
+          </>
+        )}
+
+        {!summary && !error && (
+          <div className="skeleton-stack">
+            <div className="skeleton" style={{ height: 96 }} />
+            <div className="skeleton" style={{ height: 320 }} />
+            <div className="skeleton" style={{ height: 280 }} />
+          </div>
+        )}
+      </main>
 
       {drawerId && (
         <ProjectDrawer id={drawerId} onClose={() => setDrawerId(null)} onNavigate={setDrawerId} period={period} date={date} />

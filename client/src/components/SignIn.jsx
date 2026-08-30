@@ -42,7 +42,12 @@ export default function SignIn({ onSignedIn, devMode, sso, entra }) {
   };
 
   return (
-    <div className="signin-wrap">
+    /* <main>, not a <div>: the sign-in screen is a page in its own right and
+       had no landmark at all, so every one of its elements - the brand line,
+       the heading, the explanatory paragraph - was reported as content outside
+       any landmark (Findings 3 and 4). The class is unchanged, so the layout
+       is too. */
+    <main className="signin-wrap">
       <form className="card signin" onSubmit={submit}>
         <span className="brand-sub">GCIO · Project Intelligence</span>
         <h1 className="display signin-title">Sign in</h1>
@@ -100,6 +105,6 @@ export default function SignIn({ onSignedIn, devMode, sso, entra }) {
           </p>
         )}
       </form>
-    </div>
+    </main>
   );
 }

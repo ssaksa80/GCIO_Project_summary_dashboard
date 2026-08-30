@@ -145,11 +145,15 @@ axe: `aria-allowed-role`, minor, on the drawer surface only. Does not conflict
 with the brand palette — swapping the host element (e.g. a plain `<div>`) or
 adjusting the role assignment is ordinary markup work.
 
-**3. No `<main>` landmark.** `landmark-one-main`, moderate, on sign-in and the
+**3. No `<main>` landmark.**
+**Fixed 2026-08-30** - see the note below.
+ `landmark-one-main`, moderate, on sign-in and the
 dashboard. The whole document has no element with `role="main"`/`<main>`.
 Does not conflict with the brand palette.
 
-**4. Most page content sits outside any landmark region.** `region`,
+**4. Most page content sits outside any landmark region.**
+**Fixed 2026-08-30** by the same change as #3 - see the note below.
+ `region`,
 moderate, on all three surfaces — the sign-in copy and fields, the page
 header, the "no history" notice, the KPI strip, are all flagged as content
 "not contained by landmarks." Does not conflict with the brand palette; this
@@ -288,6 +292,45 @@ Measured, not eyeballed:
   (620×500 of an 800×500 viewport) with its close button fully visible and
   in-bounds.
 
+### The landmark findings, fixed (2026-08-30)
+
+Findings 3 and 4 were one omission, not two. The app was not short of landmarks
+in general - `TopBar` already renders `<header>` (banner), `SectionNav` already
+renders `<nav aria-label="Report sections">`, and `ProjectTable` already renders
+a named `<section>`. It had no `main`. That is what `landmark-one-main` reported
+directly, and it is why `region` reported the page head, the KPI strip, the
+"no history" line and everything else sitting loose in `.shell`.
+
+The dashboard now has a `<main>` between the top bar and the modals, and the
+sign-in screen's wrapper is a `<main>` rather than a `<div>`. The dashboard's
+`<main>` is a **sibling** of the header, never a parent: `<header>` maps to the
+banner role only while it is not nested inside `<main>`, so wrapping the whole
+shell would have fixed one finding by destroying a landmark the app already had.
+The drawer and upload panel stay outside it - they are fixed-position modals
+with their own `role="dialog"`, not the page's main content.
+
+**Measured result, and better than expected.** The open-drawer surface was left
+as a measurement rather than a prediction, since a dialog is not a landmark and
+it was not obvious whether its `region` violation would clear. It did:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| sign-in | 2 violations | **0** |
+| dashboard | 3 violations | 1 |
+| open drawer | 3 violations (2 after the drawer fix) | 1 |
+
+Every remaining axe violation on this application is now Finding 1, the
+brand-palette contrast failure - the one finding that is a brand-owner decision
+rather than implementation work.
+
+Both rules are *moderate*, so the audit's blocking assertions could never see
+them, which is also why nothing would have noticed the fix being removed later.
+`test/ui/accessibility.test.js` now asserts that `landmark-one-main` and
+`region` are absent from the full violation list on each surface. Run against
+the unfixed code first, all three surfaces failed; mutation-checked afterwards
+by turning each `<main>` back into a `<div>`, which fails exactly the surfaces
+that element serves and no others.
+
 ### The keyboard findings, fixed and now regression-tested (2026-08-30)
 
 Findings 2, 5, 6, 7, 9 and 10 are fixed. `test/ui/keyboard.test.js` covers them
@@ -381,11 +424,12 @@ a mandated secondary colour, and no fix keeps that literal hex while reaching
 decision for whoever owns the brand palette, not a defect for this task to
 patch.
 
-Every other finding in this document — the missing `<main>` landmark, the
-ungrouped page regions, the drawer's role/focus/keyboard behaviour, the
-table's missing keyboard affordances, and the near-miss platinum-only colours
-— is ordinary implementation work that does not touch any of the nine fixed
-brand hexes.
+Every other finding in this document was ordinary implementation work that did
+not touch any of the nine fixed brand hexes, and **all of it is now fixed**: the
+missing `<main>` landmark and the ungrouped page regions (#3, #4), the drawer's
+role, focus and keyboard behaviour (#2, #5, #6, #7, #9), and the table's missing
+keyboard affordances (#10). What remains is the near-miss platinum-only colours
+recorded above as measurements rather than findings, and Finding 1 itself.
 
 ## What this assessment did NOT cover
 
