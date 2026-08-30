@@ -14,7 +14,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startDashboard } from "./harness.mjs";
+import { InputUnavailable, withDashboard } from "./input.mjs";
 
 const ui = process.env.UI_LIVE === "1";
 
@@ -34,56 +34,6 @@ function describeActive(page) {
     return `${el.tagName.toLowerCase()}.${String(el.className || "").trim()}` +
       `[${(el.textContent || "").trim().slice(0, 30)}]`;
   });
-}
-
-/**
- * Raised when the browser did not deliver an input, as distinct from the
- * application doing the wrong thing with one.
- *
- * These are not the same failure and must not be treated the same way. Every
- * spurious failure this suite produced while it was being written was of this
- * kind - a click that did not open a <details>, a Tab press that produced no
- * focus change for four seconds, a selector that never appeared - and never
- * once an assertion that was wrong about the app. Measured on the app's own
- * page; the identical presses against a trivial page in the same browser, with
- * the same flags, are perfectly reliable, so this is the page's weight (130
- * focusable elements, per-section IntersectionObserver reveals, an open
- * EventSource), not the fix under test.
- */
-class InputUnavailable extends Error {}
-
-/**
- * Run a keyboard scenario against a fresh dashboard, retrying ONLY when the
- * browser failed to deliver an input.
- *
- * An AssertionError is never retried - if the app gets focus wrong, that fails
- * on the first attempt and stays failed, which is the whole point. Retrying
- * only InputUnavailable means the suite cannot hide a regression; it can only
- * decline to report the browser's own unreliability as one.
- *
- * Five attempts rather than three because three was measured to be too few: a
- * full `npm run test:ui` run - where this file executes seventh, after several
- * minutes of other browsers starting and stopping - failed both table subtests
- * with all three attempts exhausted on InputUnavailable, while the same file run
- * on its own passed repeatedly with no retries at all. Nothing leaked (puppeteer
- * Chrome processes: zero before the run, zero after), so this is pressure during
- * a long run, not a harness defect to fix here.
- */
-async function withDashboard(run, attempts = 5) {
-  let last;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const app = await startDashboard();
-    try {
-      return await run(app);
-    } catch (err) {
-      if (!(err instanceof InputUnavailable)) throw err;
-      last = err;
-      console.log(`  (attempt ${attempt}/${attempts}: ${err.message} - retrying)`);
-    } finally {
-      await app.close();
-    }
-  }
-  throw last;
 }
 
 /**
