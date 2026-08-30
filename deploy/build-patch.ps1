@@ -63,8 +63,24 @@ Copy-Item -Recurse -Force `
   "$Repo/package.json", "$Repo/package-lock.json" "$Stage/app/"
 Copy-Item -Recurse -Force "$Repo/client/dist" "$Stage/app/client/dist"
 
-# A patch runs install.ps1 -Patch, which sources lib/common.ps1.
-Copy-Item "$Here/install.ps1" "$Stage/"
+<#
+  Host-side scripts a patch ships.
+
+  Must stay in step with build-bundle.ps1's $HostScripts and with
+  Install-GcioHostTooling in install.ps1, which is what copies them onto the
+  host. They drifted once already: uninstall.ps1 was added to the bundle's list
+  and to the installer's, but not here - so a patch had nothing to install, the
+  deploy reported health=OK, and the host simply never gained the script.
+
+  Missing STOPS the build, for the same reason the bundle's list does.
+#>
+$HostScripts = 'install.ps1', 'uninstall.ps1'
+foreach ($f in $HostScripts) {
+  if (-not (Test-Path "$Here/$f")) {
+    Stop-Gcio "host script '$f' is on the patch ship list but is not in deploy/. Fix the name or remove it from `$HostScripts - do not let it silently not ship."
+  }
+  Copy-Item "$Here/$f" "$Stage/"
+}
 Copy-Item -Recurse -Force "$Here/lib" "$Stage/lib"
 
 # The overlay must never carry node_modules: it would be enormous, and it would
