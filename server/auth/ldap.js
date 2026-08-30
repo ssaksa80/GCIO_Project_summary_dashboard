@@ -31,6 +31,28 @@ function upnFromBaseDN(baseDN) {
  * Turn a bare username into something bindable, so people do not have to type
  * the domain. Already-qualified input is returned unchanged.
  */
+/**
+ * Could this bind failure only be a network problem?
+ *
+ * Deliberately conservative: anything not confidently a connection failure
+ * falls through to bad_credentials. Guessing "unreachable" on an unfamiliar
+ * error would leak that the account exists but the password was wrong, which is
+ * precisely the disclosure the surrounding code exists to prevent. A wrong
+ * guess in this direction costs only the old, less helpful message.
+ *
+ * @param {any} err
+ * @returns {boolean}
+ */
+function isUnreachable(err) {
+  const code = String(err?.code || "");
+  if (["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EHOSTUNREACH",
+       "ENETUNREACH", "ECONNRESET", "EAI_AGAIN", "EPIPE"].includes(code)) {
+    return true;
+  }
+  const msg = String(err?.message || "").toLowerCase();
+  return /connect(ion)? (timeout|refused|reset|failed)|getaddrinfo|socket hang up|unable to connect|host unreachable|network is unreachable/.test(msg);
+}
+
 export function bindIdentity(user, config = {}) {
   const s = String(user || "");
   if (!s || s.includes("\\") || s.includes("@")) return s;
@@ -82,8 +104,17 @@ export async function authenticate({ username, password }, config, deps = {}) {
   try {
     try {
       await client.bind(identity, password);
-    } catch {
-      /* Never disclose whether it was the account or the password. */
+    } catch (err) {
+      /* Never disclose whether it was the account or the password -- but a
+         directory we could not REACH is a different answer entirely. Telling
+         someone whose domain controller is down to "check the username and
+         password" sends them to retype passwords and escalate to the wrong
+         team; it was doing exactly that, verified against the live deployment.
+
+         Only connection-class failures are separated out. Everything else
+         stays indistinguishable, so a wrong password and a missing account
+         still look identical -- which is what the non-disclosure is for. */
+      if (isUnreachable(err)) throw directoryUnavailable(err?.message || "connection failed");
       throw badCredentials();
     }
 

@@ -820,6 +820,52 @@ not on a value, since the process cannot report its own absence.
 
 ---
 
+## 7a. Editing .env does NOT change a running service
+
+**This surprises everyone once. Read it before changing any setting.**
+
+`install-service.ps1` copies every `NAME=VALUE` pair from `.env` into the
+service's NSSM `AppEnvironmentExtra` **at install time**. Those values are then
+injected into the process environment on every start, and `dotenv` does not
+overwrite a variable that is already set. So the file on disk is not what the
+service is running with:
+
+```
+.env on disk                 LDAP_URL=ldaps://dc02.example.local:636
+what the service uses        LDAP_URL=ldaps://dc01.example.local:636
+```
+
+That is a real reading taken from this host on 2026-08-30, after editing `.env`
+and restarting the service. The restart changed nothing, because the stale value
+comes from the service definition rather than the file.
+
+**To change a setting, edit `.env` AND re-run the installer** (elevated):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\gcio\install-service.ps1
+```
+
+Re-running is safe and is the supported path - it removes and reinstalls the
+service, re-reading `.env` as it goes.
+
+**To see what the service is actually running with:**
+
+```powershell
+& C:\gciountime
+ssm.exe get GCIOProjectIntelligence AppEnvironmentExtra
+```
+
+Compare that against `.env` whenever a setting appears not to take effect. The
+two diverging silently is exactly what DEDB's `Check-DedbDeployReady` exists to
+catch, and GCIO has no equivalent yet - see
+`docs/deploy-script-comparison.md`.
+
+This also applies to `DATA_DIR` and `VAULT_DIR`: section 3a tells you to set
+them before a bundle install, and on an already-installed host that means
+re-running the installer too, not just editing the file.
+
+---
+
 ## 8. Known limitations
 
 - **A dead ingest leader is not replaced until someone restarts it.** When

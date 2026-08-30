@@ -275,3 +275,63 @@ test("me reports signed out before sign-in", async () => {
   const res = await request(app).get("/api/me");
   assert.equal(res.body.authenticated, false);
 });
+
+/*
+ * A directory that cannot be REACHED must not be reported as a bad password.
+ *
+ * The bind was wrapped in a bare `catch { throw badCredentials() }`, whose
+ * comment gives the right reason - never disclose whether it was the account or
+ * the password - but applies it too widely. A network failure is not a
+ * disclosure concern, and conflating the two tells an operator whose domain
+ * controller is down to "check the username and password". They retype
+ * passwords, escalate to the wrong team, and never suspect the directory.
+ *
+ * Verified against the live deployment before fixing: with LDAP_URL pointed at
+ * an unreachable host, a sign-in returned the identical 401 bad_credentials it
+ * returns for a genuinely wrong password.
+ *
+ * The non-disclosure property is preserved exactly: a wrong password and a
+ * missing account are still indistinguishable (the test above pins that). Only
+ * connection-class failures are separated out.
+ */
+test("an unreachable directory is 503, not a bad password", async () => {
+  const cfg = { url: "ldaps://no-such-dc.example:636", baseDN: "DC=x" };
+
+  const cases = [
+    ["ECONNREFUSED", Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:636"), { code: "ECONNREFUSED" })],
+    ["ENOTFOUND",    Object.assign(new Error("getaddrinfo ENOTFOUND no-such-dc"), { code: "ENOTFOUND" })],
+    ["ETIMEDOUT",    Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" })],
+    ["connect timeout (no code)", new Error("connection timeout")],
+  ];
+
+  for (const [label, err] of cases) {
+    class UnreachableClient {
+      async bind() { throw err; }
+      async search() { return { searchEntries: [] }; }
+      async unbind() {}
+    }
+    const result = await authenticate({ username: "u", password: "p" }, cfg, { ClientCtor: UnreachableClient })
+      .catch((e) => e);
+    assert.equal(result.code, "directory_unavailable", `${label} should report the directory, not the credentials`);
+    assert.equal(result.status, 503, `${label} should be 503, not 401`);
+  }
+});
+
+test("a credential rejection is still 401, and still indistinguishable from a missing account", async () => {
+  /*
+   * The classifier must default to bad_credentials for anything it cannot
+   * confidently call a network failure. Guessing "unreachable" on an unfamiliar
+   * error would leak that the account exists but the password was wrong.
+   */
+  const cfg = { url: "ldap://x", baseDN: "DC=x" };
+  for (const message of ["invalid credentials", "80090308: LdapErr: DSID-0C0903A9", "something unfamiliar"]) {
+    class RejectingClient {
+      async bind() { throw new Error(message); }
+      async search() { return { searchEntries: [] }; }
+      async unbind() {}
+    }
+    const r = await authenticate({ username: "u", password: "bad" }, cfg, { ClientCtor: RejectingClient }).catch((e) => e);
+    assert.equal(r.code, "bad_credentials", `"${message}" must stay bad_credentials - defaulting to unreachable would leak account existence`);
+    assert.equal(r.status, 401);
+  }
+});
