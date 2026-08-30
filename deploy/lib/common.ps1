@@ -940,3 +940,81 @@ function Test-GcioVersionGate {
   }
   return & $mk $true 'upgrade' "will move $Installed -> $Artifact"
 }
+
+# ---------------------------------------------------------------- sql pre-check
+
+<#
+  Is SQL Server reachable, checked BEFORE the first mutation?
+
+  Run before the copy-backup and before the stop, so a database that is down
+  aborts a deploy having changed nothing - rather than the deploy proceeding,
+  failing its health check, and rolling back for a reason that has nothing to do
+  with the patch.
+
+  GCIO needs this more than it appears. /healthz reports process liveness and
+  never consults the store, so the health gate cannot distinguish "the new code
+  is broken" from "SQL is unreachable": it sees no answer either way and rolls
+  back. This host has already had exactly that failure - SQL Server crashed
+  mid-deploy on 2026-08-28 (System event 7034).
+
+  The probe is the application's OWN scripts/db-check.mjs, which builds its
+  connection through server/db/pool.js's buildConfig. A pass therefore means the
+  app's configuration is right, not merely that some connection string
+  somewhere works. It runs with the working directory at the INSTALL ROOT
+  because dotenv reads .env from the working directory and .env lives there,
+  while the script lives under app\scripts.
+
+  THE ASYMMETRY IS THE DESIGN. Only a DEFINITIVE failure - the probe ran and
+  said no - returns Ok=$false. Everything the probe cannot establish (no node,
+  no script, no .env, a store that is not SQL, a probe that throws) returns
+  Ok=$true with Inconclusive=$true. A pre-check that blocks a deploy because it
+  could not run is worse than none: it teaches operators to pass
+  -SkipSqlPrecheck permanently, and then it protects nobody.
+
+  Returns { Ok; Inconclusive; Reason }.
+#>
+function Test-GcioSqlReady {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [scriptblock]$Invoke = $null
+  )
+  $mk = { param($ok, $incon, $reason) [pscustomobject]@{ Ok = [bool]$ok; Inconclusive = [bool]$incon; Reason = "$reason" } }
+
+  $envFile = Join-Path $InstallDir '.env'
+  if (-not (Test-Path $envFile)) {
+    return & $mk $true $true "no .env at $envFile - STORE is unknown, so nothing is claimed either way"
+  }
+  $store = ''
+  foreach ($line in (Get-Content $envFile)) { if ($line -match '^\s*STORE\s*=\s*(\S+)') { $store = $Matches[1] } }
+  if ($store -ne 'mssql') {
+    return & $mk $true $true "STORE=$store does not use SQL Server - nothing to probe"
+  }
+
+  $node = Join-Path $InstallDir 'runtime\node\node.exe'
+  if (-not (Test-Path $node)) {
+    return & $mk $true $true "no bundled runtime at $node - cannot probe, proceeding"
+  }
+  $probe = Join-Path $InstallDir 'app\scripts\db-check.mjs'
+  if (-not (Test-Path $probe)) {
+    return & $mk $true $true "no db-check.mjs in this install - cannot probe, proceeding"
+  }
+
+  $invoke = if ($Invoke) { $Invoke } else {
+    { param($nodeExe, $scriptPath, $cwd)
+      Push-Location $cwd
+      try {
+        $out = & $nodeExe $scriptPath 2>&1 | ForEach-Object { "$_" }
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($out -join "`n") }
+      } finally { Pop-Location } }
+  }
+
+  $result = $null
+  try { $result = & $invoke $node $probe $InstallDir }
+  catch { return & $mk $true $true "the probe could not run ($($_.Exception.Message)) - proceeding" }
+
+  if ($null -eq $result) { return & $mk $true $true 'the probe returned nothing - proceeding' }
+  if ([int]$result.ExitCode -eq 0) { return & $mk $true $false 'SQL Server is reachable with this configuration' }
+
+  # The one blocking verdict: the probe ran and said no.
+  return & $mk $false $false "SQL Server is NOT reachable: $($result.Output)"
+}

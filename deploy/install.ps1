@@ -33,7 +33,8 @@ param(
   [string]$InstallDir  = 'C:\gcio',
   [string]$ServiceName = 'GCIOProjectIntelligence',
   [int]$Port = 0,
-  [switch]$SkipHealthGate
+  [switch]$SkipHealthGate,
+  [switch]$SkipSqlPrecheck
 )
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -184,6 +185,28 @@ if ($Patch) {
   $oldVer = $compat.Installed
   $newVer = $compat.PatchVersion
   Write-GcioLog "patching GCIO $oldVer -> $newVer (dependencies and schema verified; node_modules and runtime preserved)"
+
+  <#
+    SQL pre-check, BEFORE the first mutation.
+
+    A bare health gate cannot catch this. /healthz reports process liveness and
+    never consults the store, so a dead database looks identical to broken code:
+    no answer, roll back, and an operator sent to read the service error log
+    about a patch that was never the problem. This host has already had it - SQL
+    crashed mid-deploy on 2026-08-28.
+
+    Only a DEFINITIVE failure aborts. Anything the probe could not establish
+    warns and proceeds, because a pre-check that blocks a deploy for being
+    unable to run gets switched off permanently and then protects nobody.
+  #>
+  if (-not $SkipSqlPrecheck) {
+    $sql = Test-GcioSqlReady -InstallDir $InstallDir
+    if (-not $sql.Ok) {
+      Stop-Gcio "PRE-CHECK FAILED: $($sql.Reason)`n`nNOTHING has been changed - this ran before the backup and before the service was stopped. Fix SQL, then re-run. Use -SkipSqlPrecheck to override."
+    }
+    if ($sql.Inconclusive) { Write-GcioWarn "SQL pre-check inconclusive (proceeding): $($sql.Reason)" }
+    else { Write-GcioLog "SQL pre-check OK: $($sql.Reason)" }
+  }
 
   # Copy-backup while the old version is still serving: off the downtime clock.
   Backup-GcioAppCopy -InstallDir $InstallDir -Ts $Ts

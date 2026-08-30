@@ -207,7 +207,8 @@ if (-not (Test-Path $installer)) { Fail "no install.ps1 inside $dest - this arti
 # legal but shadows the caller's arguments in ways that bite much later.
 $installArgs = @('-InstallDir', $InstallDir)
 if ($Port -gt 0)     { $installArgs += @('-Port', "$Port") }
-if ($SkipHealthGate) { $installArgs += '-SkipHealthGate' }
+if ($SkipHealthGate)  { $installArgs += '-SkipHealthGate' }
+if ($SkipSqlPrecheck) { $installArgs += '-SkipSqlPrecheck' }
 if ($isPatch) { $installArgs += '-Patch' } else { $installArgs += '-Bundle' }
 
 Info "install.ps1 $($installArgs -join ' ')"
