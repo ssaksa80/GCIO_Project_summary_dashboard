@@ -81,6 +81,48 @@ $null = Wait-GcioCleanStop -InstallDir 'C:\gcio' -Port 8130 -GraceSec 1 -BindAdd
   -KillProc { param($id) } -Sleep { param($ms) }
 Check ($script:seenAddr -eq '10.1.2.3') 'the bound address is passed to the port probe (co-tenant safety)'
 
+<#
+  Resolving the bind address from .env.
+
+  The -BindAddr parameter above was declared, documented and tested for two
+  weeks while NOTHING passed it. The guard looked wired, tested as if wired, and
+  every port probe was in fact unscoped. These tests pin the resolution so that
+  cannot recur silently.
+
+  Scoping is SAFE here even if the resolved address is wrong, because the
+  process check under the install directory is the primary guard: a listener we
+  fail to match still shows up as a live node process under InstallDir, and the
+  stop is reported not-clean. The address filter only ever makes the port probe
+  more precise, never blinder.
+#>
+$envRoot = Join-Path ([IO.Path]::GetTempPath()) ("gcio-ba-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force $envRoot | Out-Null
+try {
+  [IO.File]::WriteAllText("$envRoot/.env", "STORE=mssql`nHOST=10.20.30.40`nPORT=8130`n")
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '10.20.30.40') 'a pinned IPv4 in HOST is resolved and returned'
+
+  [IO.File]::WriteAllText("$envRoot/.env", "HOST=0.0.0.0`nPORT=8130`n")
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '') 'a wildcard bind returns empty - scoping to 0.0.0.0 would match nothing useful'
+
+  [IO.File]::WriteAllText("$envRoot/.env", "PORT=8130`n")
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '') 'no HOST at all returns empty (unscoped)'
+
+  [IO.File]::WriteAllText("$envRoot/.env", "HOST=127.0.0.1`nPORT=8130`n")
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '127.0.0.1') 'loopback IS scoped - another application can bind the same port on a different address'
+
+  Remove-Item "$envRoot/.env"
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '') 'a missing .env returns empty rather than throwing'
+
+  # A hostname must resolve to an address: Get-NetTCPConnection reports numeric
+  # LocalAddress, so an unresolved name would match nothing and silently unscope.
+  [IO.File]::WriteAllText("$envRoot/.env", "HOST=localhost`nPORT=8130`n")
+  $r = Get-GcioBindAddress -InstallDir $envRoot
+  Check ($r -match '^\d{1,3}(\.\d{1,3}){3}$' -or $r -eq '') 'a hostname resolves to an IPv4, or returns empty rather than a name the probe cannot match'
+
+  [IO.File]::WriteAllText("$envRoot/.env", "HOST=no-such-host-anywhere.invalid`nPORT=8130`n")
+  Check ((Get-GcioBindAddress -InstallDir $envRoot) -eq '') 'an unresolvable hostname returns empty (unscoped) rather than a useless filter'
+} finally { Remove-Item -Recurse -Force $envRoot -ErrorAction SilentlyContinue }
+
 # ---------------------------------------------------------------- service state
 
 $script:states = @('StopPending', 'StopPending', 'Stopped')

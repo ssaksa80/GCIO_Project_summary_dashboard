@@ -114,7 +114,10 @@ if (-not (Test-Path $NssmExe)) { $NssmExe = '' }
 function Stop-GcioService {
   try { & sc.exe stop $ServiceName 2>&1 | Out-Null } catch { }
   [void](Wait-GcioServiceState -State 'Stopped' -ServiceName $ServiceName -TimeoutSec 30)
-  return Wait-GcioCleanStop -InstallDir $InstallDir -Port $Port -GraceSec 12
+  # Scope the port probe to the address this install actually binds. Without
+  # this the probe is unscoped and a neighbour's listener on the same port looks
+  # like our own service failing to let go.
+  return Wait-GcioCleanStop -InstallDir $InstallDir -Port $Port -GraceSec 12 -BindAddr (Get-GcioBindAddress -InstallDir $InstallDir)
 }
 
 function Start-GcioService {

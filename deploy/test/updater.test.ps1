@@ -79,6 +79,68 @@ Check ($g.Proceed -and $g.Code -eq 'forced') '-Force allows a downgrade'
 
 Check ((Test-GcioVersionGate -Installed '1.9.0' -Artifact '1.10.0').Code -eq 'upgrade') 'the gate compares numerically too (1.10.0 > 1.9.0)'
 
+# ---------------------------------------------------------------- outer package
+
+<#
+  The outer-package auto-extract.
+
+  One zip per release can carry the artifact plus the updater and docs, and
+  operators do copy the whole thing across without unzipping it. code-update.ps1
+  handles that: finding no loose artifact, it expands every GCIO-*.zip that is
+  not itself an artifact and surfaces what it contains.
+
+  That was ported from DEDB, shipped in the updater, and had NO TEST - and has
+  never run in anger, because every deploy on this host used a loose artifact.
+  Shipped-and-unexercised is exactly the combination worth pinning.
+
+  The extraction itself is exercised here directly rather than by running
+  code-update.ps1, which now requires service-control rights.
+#>
+$pkgRoot = Join-Path ([IO.Path]::GetTempPath()) ("gcio-pkg-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force "$pkgRoot/release", "$pkgRoot/build/docs" | Out-Null
+try {
+  # Build an inner artifact, then an OUTER package containing it plus a doc.
+  New-Item -ItemType Directory -Force "$pkgRoot/build/inner" | Out-Null
+  [IO.File]::WriteAllText("$pkgRoot/build/inner/marker.txt", 'inner artifact')
+  Compress-Archive -Path "$pkgRoot/build/inner/*" -DestinationPath "$pkgRoot/build/gcio-patch-1.6.0-win-x64.zip" -Force
+  [IO.File]::WriteAllText("$pkgRoot/build/docs/RELEASE-NOTES.md", 'notes')
+  Compress-Archive -Path "$pkgRoot/build/gcio-patch-1.6.0-win-x64.zip", "$pkgRoot/build/docs" `
+    -DestinationPath "$pkgRoot/release/GCIO-1.6.0-Release.zip" -Force
+
+  Check ((@(Get-ChildItem "$pkgRoot/release" -Filter 'gcio-patch-*.zip')).Count -eq 0) 'the release folder starts with NO loose artifact - only the outer package'
+
+  # The extraction, as code-update.ps1 performs it.
+  $here = "$pkgRoot/release"
+  $pkgs = @(Get-ChildItem $here -Filter 'GCIO-*.zip' | Where-Object { $_.Name -notmatch '^gcio-(patch|bundle)-' })
+  Check ($pkgs.Count -eq 1) 'the outer package is recognised as a package'
+  Check ($pkgs[0].Name -eq 'GCIO-1.6.0-Release.zip') 'and it is the right one'
+
+  foreach ($pkg in $pkgs) {
+    $ex = Join-Path $here ('_pkg-' + [IO.Path]::GetFileNameWithoutExtension($pkg.Name))
+    Expand-Archive -Path $pkg.FullName -DestinationPath $ex -Force
+    $inner = @(Get-ChildItem $ex -Recurse -File | Where-Object { $_.Name -match '^gcio-(patch|bundle)-.*\.zip$' })
+    foreach ($z in $inner) { Copy-Item -LiteralPath $z.FullName -Destination $here -Force }
+  }
+
+  $surfaced = @(Get-ChildItem $here -Filter 'gcio-patch-*.zip')
+  Check ($surfaced.Count -eq 1) 'the inner artifact is surfaced beside the updater'
+  Check ($surfaced[0].Name -eq 'gcio-patch-1.6.0-win-x64.zip') 'with its original name, so normal detection then works'
+
+  # And the normal chooser picks it up, which is the whole point.
+  $d = Select-GcioArtifact -Names @($surfaced | ForEach-Object { $_.Name })
+  Check ($d -and $d.Kind -eq 'patch' -and "$($d.Version)" -eq '1.6.0') 'the surfaced artifact flows into the normal chooser'
+
+  <#
+    An artifact must never be mistaken for a package. The filter excludes names
+    starting gcio-patch-/gcio-bundle-, and it is CASE-INSENSITIVE by default in
+    PowerShell - which matters because a lower-case artifact beside an
+    upper-case package is the normal arrangement.
+  #>
+  $mixed = @('GCIO-1.6.0-Release.zip', 'gcio-patch-1.6.0-win-x64.zip', 'GCIO-PATCH-1.6.0-WIN-X64.ZIP')
+  $asPkgs = @($mixed | Where-Object { $_ -like 'GCIO-*.zip' -and $_ -notmatch '^gcio-(patch|bundle)-' })
+  Check ($asPkgs.Count -eq 1 -and $asPkgs[0] -eq 'GCIO-1.6.0-Release.zip') 'an artifact is never treated as an outer package, whatever its case'
+} finally { Remove-Item -Recurse -Force $pkgRoot -ErrorAction SilentlyContinue }
+
 # ---------------------------------------------------------------- the script itself
 
 <#

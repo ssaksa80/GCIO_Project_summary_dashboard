@@ -1259,3 +1259,53 @@ function Test-GcioCanControlService {
 
   return [pscustomobject]@{ Can = $false; Why = 'not elevated, and the service does not grant this account start/stop' }
 }
+
+<#
+  The address this install binds to, for scoping a port probe.
+
+  Wait-GcioCleanStop has taken a -BindAddr parameter since it was written, with
+  a comment and a test. NOTHING PASSED IT: the only occurrence outside tests was
+  the declaration, so every port probe was unscoped while appearing to be
+  scoped. This is the missing half.
+
+  Returns '' when the probe should NOT be scoped:
+    - no .env, or no HOST setting
+    - a wildcard bind (0.0.0.0 / ::) - scoping to it matches nothing useful
+    - a hostname that does not resolve - Get-NetTCPConnection reports numeric
+      addresses, so an unresolved name would filter everything out and silently
+      unscope anyway, but loudly wrong instead of quietly right
+
+  Loopback IS scoped, unlike DEDB, which treats it as "single-service, do not
+  bother". Another application can bind the same port on a different address on
+  this host family, and scoping to 127.0.0.1 is strictly more precise.
+
+  Getting this wrong is SAFE in one direction only, and that is why it is worth
+  doing: if the address is wrong the port probe matches nothing, but the process
+  check under the install directory still sees a live node and reports the stop
+  not-clean. The filter can only make the probe more precise, never blinder.
+#>
+function Get-GcioBindAddress {
+  param([Parameter(Mandatory)][string]$InstallDir)
+  $envFile = Join-Path $InstallDir '.env'
+  if (-not (Test-Path $envFile)) { return '' }
+
+  $bindHost = ''
+  foreach ($line in (Get-Content $envFile)) {
+    if ($line -match '^\s*HOST\s*=\s*(\S+)') { $bindHost = $Matches[1] }
+  }
+  if (-not $bindHost) { return '' }
+  if ($bindHost -eq '0.0.0.0' -or $bindHost -eq '::' -or $bindHost -eq '*') { return '' }
+
+  # Already numeric IPv4 - use it as-is.
+  if ($bindHost -match '^\d{1,3}(\.\d{1,3}){3}$') { return $bindHost }
+
+  # A name: resolve to IPv4, because the probe compares against numeric
+  # LocalAddress values. Unresolvable means unscoped rather than a filter that
+  # silently matches nothing.
+  try {
+    $ip = [System.Net.Dns]::GetHostAddresses($bindHost) |
+      Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1
+    if ($ip) { return $ip.IPAddressToString }
+  } catch { }
+  return ''
+}

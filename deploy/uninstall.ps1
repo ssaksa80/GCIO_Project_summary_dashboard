@@ -114,7 +114,7 @@ if ($svc) {
   if (Test-Path $envFile) {
     foreach ($line in Get-Content $envFile) { if ($line -match '^\s*PORT\s*=\s*(\d+)\s*$') { $port = [int]$Matches[1] } }
   }
-  $stop = Wait-GcioCleanStop -InstallDir $InstallDir -Port $port -GraceSec 12
+  $stop = Wait-GcioCleanStop -InstallDir $InstallDir -Port $port -GraceSec 12 -BindAddr (Get-GcioBindAddress -InstallDir $InstallDir)
   if (-not $stop.Clean) { Write-GcioWarn "the service did not release cleanly: $($stop.Reason)" }
   if ($stop.Killed.Count) { Write-GcioWarn "force-killed leftover process(es): $($stop.Killed -join ', ')" }
 
