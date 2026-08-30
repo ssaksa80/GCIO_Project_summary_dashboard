@@ -211,8 +211,13 @@ async function openDrawer(page) {
      and the fetch is slow or broken; clicking again would hit the backdrop and
      close the drawer, so that case waits, then gives up. */
   for (let attempt = 1; attempt <= 3; attempt++) {
-    await page.click("[data-section='priorities'] .pname");
-    const mounted = await page.waitForSelector("[role='dialog']", { timeout: 6000 })
+    /* Only click when no dialog is present. "The wrapper did not appear within
+       the timeout" is not the same as "the wrapper is absent" - if it mounted
+       just after that window, a second click hits the backdrop and closes the
+       drawer, turning a slow open into a reported failure to open. */
+    const alreadyOpen = await page.$("[role='dialog']");
+    if (!alreadyOpen) await page.click("[data-section='priorities'] .pname");
+    const mounted = await page.waitForSelector("[role='dialog']", { timeout: 10_000 })
       .then(() => true).catch(() => false);
     if (!mounted) continue;
     const loaded = await page.waitForSelector("[role='dialog'] h2", { timeout: 20_000 })

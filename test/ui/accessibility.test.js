@@ -241,8 +241,17 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
       */
       let opened = false;
       for (let attempt = 1; attempt <= 3 && !opened; attempt++) {
-        await clickWhenStill(app.page, "[data-section='priorities'] .pname");
-        const mounted = await app.page.waitForSelector("[role='dialog']", { timeout: 6000 })
+        /* Never click while a dialog is present. An earlier version of this
+           loop re-clicked whenever the wrapper had not appeared within its
+           timeout, which is not the same claim as the wrapper being absent: if
+           the drawer had in fact opened a moment after that window elapsed, the
+           second click landed on the backdrop and CLOSED it, so the retry
+           destroyed a working open and reported "the drawer never opened".
+           Checking for the wrapper first makes the re-click safe in the way the
+           original comment only assumed it was. */
+        const alreadyOpen = await app.page.$("[role='dialog']");
+        if (!alreadyOpen) await clickWhenStill(app.page, "[data-section='priorities'] .pname");
+        const mounted = await app.page.waitForSelector("[role='dialog']", { timeout: 10_000 })
           .then(() => true).catch(() => false);
         if (!mounted) continue;
         /* 30s, matching the default this replaced - the retry loop is here to
