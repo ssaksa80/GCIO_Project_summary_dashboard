@@ -125,7 +125,7 @@ if (-not $SkipRuntimeFetch) {
 # drops a script from every future release with nothing to say so. Missing here
 # stops the build.
 
-$HostScripts = 'install.ps1', 'install-service.ps1'
+$HostScripts = 'install.ps1', 'install-service.ps1', 'uninstall.ps1'
 foreach ($f in $HostScripts) {
   if (-not (Test-Path "$Here/$f")) {
     Stop-Gcio "host script '$f' is on the ship list but is not in deploy/. Fix the name or remove it from `$HostScripts - do not let it silently not ship."

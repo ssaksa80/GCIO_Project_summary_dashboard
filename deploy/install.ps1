@@ -73,7 +73,7 @@ function Get-InstalledVersion {
   lags the artifact that last touched it.
 #>
 function Install-GcioHostTooling {
-  foreach ($f in 'install.ps1', 'install-service.ps1', 'VERSION', 'versions.json') {
+  foreach ($f in 'install.ps1', 'install-service.ps1', 'uninstall.ps1', 'VERSION', 'versions.json') {
     $src = Join-Path $Here $f
     if (Test-Path $src) { Copy-Item -Force $src (Join-Path $InstallDir $f) }
   }

@@ -1119,3 +1119,98 @@ function Show-GcioFailureLog {
   }
   return $lines
 }
+
+# ---------------------------------------------------------------- uninstall
+
+<#
+  What an uninstall would remove. Pure - computes a plan, deletes nothing - so
+  what-gets-destroyed is asserted by tests without destroying anything, and so
+  the operator can be shown the list before it happens.
+
+  DEDB has a single -Purge that takes the application and its data together.
+  GCIO splits it deliberately, because the two are not comparable losses:
+
+    app/, runtime/   reproducible from any release artifact
+    app.bak-*        copies of the above; useless once app/ is gone
+    vault/           THE AUDIT TRAIL. What makes "what did that workbook
+                     actually say" answerable later. Nothing else holds it.
+    data/            the live drop folder
+    .env             holds the database password; not reproducible
+
+  So removing the service destroys nothing, removing the application is a
+  separate switch, and destroying state is a third that has to say out loud what
+  it is taking.
+
+  Returns { Valid; RemovesService; DestroysState; Paths; Warnings; Summary }.
+#>
+<#
+  Join two path segments as TEXT.
+
+  Join-Path validates that the drive exists, which a pure planning function must
+  not do - a plan for D:\elsewhere has to be computable on a machine with no D:
+  drive, and a test that can only run against real directories is not testing
+  the planner.
+#>
+function Join-GcioPathLiteral {
+  param([string]$Base, [string]$Leaf)
+  # [char]92 is a backslash. Written as a codepoint on purpose: this line has
+  # been silently emptied twice by tooling that ate the escape, producing
+  # "C:\gcioapp" with no separator - and the test that was meant to catch it
+  # used a prefix glob, which "C:\gcioapp" still matches. Assert the separator.
+  $sep = [string][char]92
+  return ($Base.TrimEnd($sep) + $sep + $Leaf)
+}
+
+function Get-GcioUninstallPlan {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [switch]$RemoveApp,
+    [switch]$PurgeData
+  )
+  $paths = @()
+  $warnings = @()
+  $valid = $true
+  $summary = 'stop and remove the Windows service; nothing on disk is deleted'
+
+  if ($PurgeData -and -not $RemoveApp) {
+    return [pscustomobject]@{
+      Valid = $false; RemovesService = $true; DestroysState = $false
+      Paths = @(); Warnings = @()
+      Summary = '-PurgeData requires -RemoveApp: leaving the application installed with its drop folder and vault deleted is not a state anyone wants.'
+    }
+  }
+
+  if ($RemoveApp) {
+    $paths += (Join-GcioPathLiteral $InstallDir 'app')
+    $paths += (Join-GcioPathLiteral $InstallDir 'runtime')
+    # Backups are copies of app/. Keeping them after deleting app/ leaves
+    # hundreds of megabytes of directories nothing can restore into.
+    $paths += (Join-GcioPathLiteral $InstallDir 'app.bak-*')
+    $paths += (Join-GcioPathLiteral $InstallDir 'lib')
+    foreach ($f in 'install.ps1', 'install-service.ps1', 'VERSION', 'versions.json') {
+      $paths += (Join-GcioPathLiteral $InstallDir $f)
+    }
+    $summary = 'remove the service and the installed application; .env, the drop folder, the vault and the audit directory are KEPT'
+  }
+
+  if ($PurgeData) {
+    $paths += (Join-GcioPathLiteral $InstallDir 'data')
+    $paths += (Join-GcioPathLiteral $InstallDir 'vault')
+    $paths += (Join-GcioPathLiteral $InstallDir 'audit')
+    $paths += (Join-GcioPathLiteral $InstallDir 'logs')
+    $paths += (Join-GcioPathLiteral $InstallDir '.env')
+    $warnings += 'This DESTROYS the vault - the audit trail of every workbook ever ingested, and the only copy of those bytes. It cannot be reconstructed from the database or from a release artifact.'
+    $warnings += 'It also destroys the drop folder, the audit directory, .env (which holds the database password), and the deploy log.'
+    $warnings += 'The SQL database is NOT touched: the portfolio itself survives, and a fresh install pointed at the same database will serve it again.'
+    $summary = 'remove the service, the application, AND all local state including the vault'
+  }
+
+  return [pscustomobject]@{
+    Valid = $valid
+    RemovesService = $true
+    DestroysState = [bool]$PurgeData
+    Paths = $paths
+    Warnings = $warnings
+    Summary = $summary
+  }
+}
