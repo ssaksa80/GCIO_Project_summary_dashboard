@@ -4,12 +4,25 @@
 **Fixes:** `test/ui/harness.mjs` leaving `puppeteer_dev_chrome_profile-*`
 directories behind in `%LOCALAPPDATA%\Temp`. Measured 2026-08-30 after a session
 of repeated UI runs: 14 directories, 256 MB.
-**Out of scope:** the 2240 `gcio-*` directories (1759 MB) left by
-`test/vault.test.js`, `test/audit/fileAudit.test.js`, `test/ingest/watcher.test.js`,
+**Out of scope:** the 2282 `gcio-*` directories left by `test/vault.test.js`,
+`test/audit/fileAudit.test.js`, `test/ingest/watcher.test.js`,
 `test/db/live.test.js` and `test/api/app.test.js`, which use the same
 `fs.mkdtempSync(os.tmpdir(), ...)` pattern with no removal; and the four
 `scripts/*.mjs` puppeteer launch sites, which leak the same way. Both are real
 and both are noted here so the next person does not have to rediscover them.
+
+An earlier draft of this spec put those `gcio-*` directories at 1759 MB. That
+was wrong by a factor of about 2200, and the error is worth recording because
+the tool produced it silently. `du -sm` rounds every directory up to at least
+1 MB, so summing its per-directory output across thousands of near-empty
+directories yields a total that tracks the directory *count*, not any size.
+Measured properly - recursing each directory and summing file lengths - they
+hold 1945 files totalling 0.77 MB, with 496 of the directories completely
+empty. So this is directory-entry clutter, not a disk problem. Still worth
+fixing on its merits, since 2282 directories is 2282 more things for a scanner
+to walk and it feeds the ~65,000 entries in that folder, but it is not the
+1.7 GB the first number implied, and it should not be prioritised as if it
+were. Do not size these with `du`.
 
 ## Why it leaks
 
@@ -40,31 +53,43 @@ at all. The leak source is removed rather than swept up after.
 uses.
 
 This departs from the repo's existing `os.tmpdir()` convention for test scratch
-space, and does so deliberately. That convention is what produced the 2240
+space, and does so deliberately. That convention is what produced the 2282
 stranded `gcio-*` directories. More importantly, a repo-owned directory can be
 swept wholesale by a rule this code fully controls, whereas sweeping inside the
 user's `Temp` would mean prefix-matching against roughly 65,000 entries
 belonging to other software - a much worse thing to get wrong.
 
-There turns out to be a stronger reason still, reported by a parallel session
-working on this suite's flakiness and recorded here as its measurement rather
-than mine. This box runs Defender for Endpoint, and the UI suites are badly
+There is a second consideration, and it is worth setting out carefully because
+the first draft of this section overstated it. All of it is reported by a
+parallel session working on this suite's flakiness, and recorded here as that
+session's measurement rather than this one's.
+
+This box runs Defender for Endpoint, and the UI suites are badly
 degraded by it: a browser intermittently stops delivering keyboard and mouse
 events to a page mid-test and never resumes for that page, with listeners
 seeing trusted events arrive normally and then stop dead, while
 `document.activeElement` still reports the field as focused. Full runs go from
-29 pass / 0 fail on a quiet box to 11 pass / 12 fail under load. A Defender
-exclusion for the repo directory fixed it.
+29 pass / 0 fail on a quiet box to 11 pass / 12 fail under load.
+
+**A repo-path exclusion has not been shown to fix that, and this design does not
+claim it will.** An earlier draft said it had. The same session later measured
+again: with the exclusion for the repo directory applied, `mssense` was still at
+169% of a core and `msmpeng` at 82%, and the UI suites failed exactly as before.
+MDE on this box appears to be centrally managed and indifferent to local
+exclusions. The flakiness cause remains unestablished.
 
 The matching exclusion for the profile directories under `Temp` could only have
 been written as a wildcard, and was blocked by AMSI - correctly, because a
 wildcard exclusion under a user's Temp is a standard malware-persistence move.
 That block is not to be worked around, and nothing in this design does.
 
-A profile directory inside the repo needs no Temp exclusion at all: it inherits
-the repo exclusion that already exists. So the choice made here for
-sweepability also removes a measured cause of UI-suite flakiness, and removes it
-without asking anyone to weaken a security control.
+What survives all that is a weaker claim, and it is the one this design rests
+on: a profile directory inside the repo needs no Temp exclusion at all, because
+it inherits whatever exclusion the repo carries. A `%TEMP%` path is one nobody
+can legitimately exclude, so repo-local is strictly the better position to be in
+if exclusions ever do start mattering here. That is a reason to prefer it. It is
+not a promise that the suites get less flaky, and no such promise should be made
+on the strength of it.
 
 This is worth connecting to something `harness.mjs` already says. Its
 focus-emulation block records that `Emulation.setFocusEmulationEnabled` was
@@ -110,8 +135,10 @@ mode that produced the 14 directories in the first place.
 **The sweep must be safe under concurrency, and pid-liveness is what makes it
 safe.** `npm run test:ui` passes `--test-concurrency=1`, so UI files run
 serially - but `npm test` globs `test/**/*.test.js` with default concurrency,
-and that glob includes `test/ui/**`. Under `npm test` several UI files therefore
-run in parallel processes against the same `.tmp/ui-profiles/`. A sweep that
+and that glob includes `test/ui/**`. Every UI file self-skips unless `UI_LIVE=1`,
+so the case that matters is `UI_LIVE=1 npm test`, which `docs/accessibility-assessment.md`
+documents as a supported way to run these suites. There, several UI files run in
+parallel processes against the same `.tmp/ui-profiles/`. A sweep that
 deleted every directory it found would delete a sibling's live profile. Keying
 on pid liveness makes that impossible: a sibling's pid is alive, so its
 directory is never a candidate.
