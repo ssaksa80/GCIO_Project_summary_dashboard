@@ -125,12 +125,24 @@ Whatever that gives up on is left to the boot sweep, which is the mechanism this
 design already nominates for exactly this case. A profile directory that will
 not delete is a disk problem; it must never turn a passing test red.
 
-**This makes the sweep load-bearing rather than a backstop.** On the machine
-this was developed against, `browser.close()` timed out on six boots out of six,
-so every teardown took the tree-kill path. The header comment in `harness.mjs`
-describes that hang as intermittent and load-triggered; here it is universal.
-The sweep is therefore not the rare-crash safety net it was designed as - it is
-the routine cleanup path, and should be read that way.
+**How often the tree-kill path runs depends entirely on machine load, and an
+earlier draft of this section got that badly wrong.** It reported that
+`browser.close()` timed out on six boots out of six here, concluded the hang was
+universal rather than intermittent, and declared the sweep the routine cleanup
+path rather than a backstop.
+
+All six of those boots were measured while an unrelated `vitest` suite was
+running on the same box. Measured again after that cleared, `close()` resolved
+normally on most boots - 680ms, 517ms - with one timeout across two instrumented
+runs. The header comment in `harness.mjs` was right all along: the hang is
+intermittent and load-triggered, and "universal" was simply what load looks like.
+
+So the sweep is the backstop it was designed as, and on an unloaded machine
+teardown's own removal lands on the first attempt. Under load the tree-kill path
+becomes common and the sweep does correspondingly more work. Both statements
+about the sweep are load-dependent, and neither should be written down without
+the machine conditions attached - which is the mistake worth remembering here,
+more than the specific number.
 
 ## Two backstops, matching the layering already in the file
 
