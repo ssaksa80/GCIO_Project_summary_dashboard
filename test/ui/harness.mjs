@@ -11,7 +11,9 @@
  *   - startDashboard(opts)        boot the app, sign in, return a page
  *   - startDashboardSignedOut()   boot the app, stop at the sign-in screen
  *
- * Both start functions resolve to { page, baseUrl, close }. `close()` does
+ * Both start functions resolve to { page, baseUrl, close, userDataDir }.
+ * `userDataDir` is Chrome's profile directory, which this harness owns and
+ * removes rather than leaving to puppeteer - see PROFILE_ROOT below. `close()` does
  * not resolve until the spawned server process has actually exited -
  * killing it is not the same thing, and a leaked node process per test file
  * is how a suite ends up unable to bind a port.
@@ -136,6 +138,68 @@ function ensureSwept() {
   sweepStaleProfiles();
 }
 
+/** One directory per booted app. The sequence counts within the process,
+ *  because a single test file boots many apps; the pid is what the sweep
+ *  keys on. */
+let profileSeq = 0;
+function newProfileDir() {
+  const dir = path.join(PROFILE_ROOT, `run-${process.pid}-${profileSeq++}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Wait until `pid` is genuinely gone, bounded. A tree-kill returns once it has
+ *  issued the terminations, so the process is usually still dying when
+ *  taskkill's own output claims success. Returns whether it actually went. */
+async function waitForPidGone(pid, ms) {
+  if (!pid) return true;
+  const deadline = Date.now() + ms;
+  const t0 = Date.now();
+  while (pidAlive(pid)) {
+    if (Date.now() >= deadline) {
+      dlog(`pid ${pid} still alive after ${Date.now() - t0}ms, giving up on waiting`);
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  dlog(`pid ${pid} gone after ${Date.now() - t0}ms`);
+  return true;
+}
+
+/**
+ * Remove a profile directory, retrying.
+ *
+ * On a clean `browser.close()` this lands on the first attempt. On the
+ * tree-kill path it frequently does not land at all, and the budget here is
+ * deliberately modest rather than heroic because of what was measured: the
+ * process is gone within a millisecond, rmSync still returns EPERM five seconds
+ * later, and the same directory deletes without complaint a minute after that.
+ * Windows releases the profile's handles on its own schedule, and teardown
+ * cannot usefully outwait it - spending thirty seconds per hung close would
+ * cost more than the leak does.
+ *
+ * So this tries for a couple of seconds and then gives up to the boot sweep,
+ * which is the mechanism the design nominates for precisely this case. A final
+ * failure is logged and swallowed: a profile directory that will not delete is
+ * a disk problem, and it must never turn a passing test red.
+ */
+async function removeProfileDir(dir) {
+  if (!dir) return;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      dlog(`removed profile dir ${dir} on attempt ${attempt}`);
+      return;
+    } catch (err) {
+      if (attempt === 8) {
+        dlog(`could not remove profile dir ${dir} after ${attempt} attempts:`, err.message);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
 /**
  * `node:test`'s own after() is registered at most once per process, the
  * first time anything boots. It is the primary net for "a test threw
@@ -228,6 +292,17 @@ process.on("exit", () => {
   for (const entry of active) {
     killProcessTree(entry.browser?.process()?.pid);
     killProcessTree(entry.server.pid);
+    /* One synchronous attempt, no retry. Exit handlers must not block, and
+       handles are very likely still open a millisecond after a tree-kill, so
+       this will often fail. That is fine - the boot sweep, not this, is the
+       mechanism being relied on. */
+    if (entry.userDataDir) {
+      try {
+        fs.rmSync(entry.userDataDir, { recursive: true, force: true });
+      } catch {
+        /* Next run's sweep will get it. */
+      }
+    }
   }
 });
 
@@ -244,9 +319,9 @@ process.on("exit", () => {
  */
 async function teardown(entry) {
   const { server, browser } = entry;
+  const browserPid = browser?.process()?.pid;
 
   if (browser) {
-    const browserPid = browser.process()?.pid;
     const t0 = Date.now();
     try {
       await withTimeout(browser.close(), 5_000, "browser.close()");
@@ -273,6 +348,16 @@ async function teardown(entry) {
       });
     }
   }
+
+  /* Last, and only once the browser is genuinely gone.
+     `taskkill /T /F` returns when it has *issued* the terminations, not when
+     Windows has finished them - measured: removal on the tree-kill path failed
+     five straight attempts with EPERM while the process was still dying. Since
+     the tree-kill path is the entire reason this leaked in the first place,
+     removing without confirming the exit would have left the one case that
+     matters still broken. */
+  await waitForPidGone(browserPid, 10_000);
+  await removeProfileDir(entry.userDataDir);
 }
 
 /**
@@ -466,6 +551,8 @@ async function boot({ role = "admin", stubs = null } = {}) {
     throw new Error("client/dist is missing - run `npm run build` first, then re-run the UI suite.");
   }
 
+  ensureSwept();
+
   const port = await freePort();
   const server = spawn(process.execPath, ["server/index.js"], {
     cwd: ROOT,
@@ -481,7 +568,8 @@ async function boot({ role = "admin", stubs = null } = {}) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  const entry = { server, browser: null };
+  const userDataDir = newProfileDir();
+  const entry = { server, browser: null, userDataDir };
   active.add(entry);
   ensureAfterHook();
 
@@ -516,6 +604,7 @@ async function boot({ role = "admin", stubs = null } = {}) {
     const browser = await puppeteer.launch({
       executablePath: findBrowser(),
       headless: "new",
+      userDataDir,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
     entry.browser = browser;
@@ -571,7 +660,7 @@ async function boot({ role = "admin", stubs = null } = {}) {
     }
     entry.close = close;
 
-    return { page, baseUrl, close };
+    return { page, baseUrl, close, userDataDir };
   } catch (err) {
     /* Boot did not finish, so nobody will ever receive a close() to call.
        Tear down whatever got created before letting the failure propagate. */
@@ -586,7 +675,7 @@ async function boot({ role = "admin", stubs = null } = {}) {
  * @param {{role?: "viewer"|"pm"|"admin", stubs?: object}} [options] stubs are
  *        applied via a request interceptor, so a test can render states the
  *        sample data cannot produce - history, a specific change, etc.
- * @returns {Promise<{page: object, baseUrl: string, close: () => Promise<void>}>}
+ * @returns {Promise<{page: object, baseUrl: string, close: () => Promise<void>, userDataDir: string}>}
  */
 export async function startDashboard({ role = "admin", stubs = null } = {}) {
   const app = await boot({ role, stubs });
@@ -607,7 +696,7 @@ export async function startDashboard({ role = "admin", stubs = null } = {}) {
  * Boot the app and stop at the sign-in screen, for tests of the sign-in
  * gate itself (Task 4). No credentials are submitted.
  * @param {{role?: "viewer"|"pm"|"admin"}} [options]
- * @returns {Promise<{page: object, baseUrl: string, close: () => Promise<void>}>}
+ * @returns {Promise<{page: object, baseUrl: string, close: () => Promise<void>, userDataDir: string}>}
  */
 export async function startDashboardSignedOut({ role = "admin" } = {}) {
   const app = await boot({ role, stubs: null });
