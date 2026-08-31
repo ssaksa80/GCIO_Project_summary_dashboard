@@ -7,7 +7,7 @@ export default function AttentionList({ items, onOpen }) {
     <section className="card panel" aria-label="Needs executive attention">
       <div className="panel-head">
         <span className="micro">Needs executive attention</span>
-        <span className="micro" style={{ color: items.length ? "var(--critical)" : "var(--good)" }}>
+        <span className="micro" style={{ color: items.length ? "var(--critical-ink)" : "var(--good)" }}>
           {items.length || "none"}
         </span>
       </div>

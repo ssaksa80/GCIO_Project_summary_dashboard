@@ -159,7 +159,7 @@ export default function ProjectDrawer({ id, onClose, onNavigate, period, date })
       >
         <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">✕</button>
 
-        {error && <div style={{ color: "var(--critical)", marginTop: 30 }}>{error}</div>}
+        {error && <div style={{ color: "var(--critical-ink)", marginTop: 30 }}>{error}</div>}
         {!data && !error && (
           <div style={{ display: "grid", gap: 12, marginTop: 34 }}>
             <div className="skeleton" style={{ height: 60 }} />
@@ -191,13 +191,13 @@ export default function ProjectDrawer({ id, onClose, onNavigate, period, date })
               </div>
               <div className="cellstat">
                 <span className="micro">{c.daysRemaining !== null && c.daysRemaining < 0 ? "Days overdue" : "Days remaining"}</span>
-                <b style={c.daysRemaining !== null && c.daysRemaining < 0 ? { color: "var(--critical)" } : undefined}>
+                <b style={c.daysRemaining !== null && c.daysRemaining < 0 ? { color: "var(--critical-ink)" } : undefined}>
                   {c.daysRemaining === null ? "—" : Math.abs(c.daysRemaining)}
                 </b>
               </div>
               <div className="cellstat">
                 <span className="micro">Budget used</span>
-                <b style={c.budgetUtilizationPct > 100 ? { color: "var(--critical)" } : undefined}>{Math.round(c.budgetUtilizationPct)}%</b>
+                <b style={c.budgetUtilizationPct > 100 ? { color: "var(--critical-ink)" } : undefined}>{Math.round(c.budgetUtilizationPct)}%</b>
               </div>
             </div>
 

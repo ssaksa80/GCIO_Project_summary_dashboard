@@ -40,7 +40,7 @@ a { color: var(--info); }
 .strong { font-weight: 700; }
 .push { margin-left: auto; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
-.critical-ink { color: var(--critical); }
+.critical-ink { color: var(--critical-ink); }
 .empty-line { font-size: 12.5px; color: var(--muted); padding: 10px 0; margin: 0; }
 .foot-note { margin-top: 10px; }
 .gap-top { margin-top: 12px; }
@@ -236,7 +236,25 @@ a.btn { text-decoration: none; }
 }
 .chip.good { color: var(--good); }
 .chip.warn { color: var(--warn); }
-.chip.critical { color: var(--critical); }
+/* Two critical chips, two inks, and the difference is measured rather than
+   stylistic. On a plain surface the text-safe red clears 4.5:1 (4.54-5.50
+   across the four themes). Over the solid variant's own 15% tint it does not
+   (4.04-4.40), because the tint lifts the background toward the text. So the
+   solid chip drops to --ink, which measures 11.35-13.08:1, and keeps the brand
+   red on its edge, dot and fill where the 3:1 non-text bar applies instead. */
+.chip.critical { color: var(--critical-ink); border-color: var(--critical); }
+.chip.critical > i { background: var(--critical); }
+/* The label reads in --ink while the dot, border and tint keep the brand red.
+   currentColor drove all four, so Pantone 192 C was carrying a job it cannot do:
+   at 4.5:1 it fails on every dark surface (2.59:1 to 3.08:1 measured). Splitting
+   the roles keeps the mandated colour visible and makes the words legible -
+   11.35:1 to 13.08:1 across the three dark themes. */
+.chip.solid.critical {
+  color: var(--ink);
+  border-color: var(--critical);
+  background: color-mix(in srgb, var(--critical) 15%, transparent);
+}
+.chip.solid.critical > i { background: var(--critical); }
 .chip.info { color: var(--info); }
 .chip.muted { color: var(--muted); }
 .chip.solid { background: color-mix(in srgb, currentColor 15%, transparent); }
@@ -581,7 +599,7 @@ table.projects th .th-sort { width: 100%; white-space: nowrap; }
 .signin .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 18px -6px var(--glow-accent); }
 .signin-submit { justify-content: center; margin-top: 4px; padding: 9px 14px; }
 .signin-error {
-  font-size: 12.5px; color: var(--critical); background: color-mix(in srgb, var(--critical) 10%, transparent);
+  font-size: 12.5px; color: var(--critical-ink); background: color-mix(in srgb, var(--critical) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--critical) 40%, transparent);
   border-radius: var(--radius-sm); padding: 8px 11px; margin: 0;
 }
@@ -600,7 +618,7 @@ table.projects th .th-sort { width: 100%; white-space: nowrap; }
   background: none; border: none; cursor: pointer; color: var(--muted); font-size: 13px;
   padding: 0 4px; line-height: 1;
 }
-.who-out:hover { color: var(--critical); }
+.who-out:hover { color: var(--critical-ink); }
 
 /* Single sign-on is a distinct action from submitting the password form, so it
    is styled as its own control rather than a second primary button. */

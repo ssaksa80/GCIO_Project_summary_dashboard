@@ -102,6 +102,42 @@ noticed the measurement was broken.
 
 **1. The "critical" status colour (Pantone 192 C) fails text contrast against every dark theme's surfaces.**
 
+**Fixed 2026-08-31, and the assessment above understated it.** Re-measuring for
+the fix found that platinum fails too: `#c8003d` was recorded here as passing at
+5.96:1, but that was measured against white only. On the solid chip's own tinted
+background it is **4.20:1 on `--ground` and 4.19:1 on `--surface-2`** - failures.
+So this affected all four themes, not three.
+
+The fix separates two jobs the one token was doing. `--critical` stays the
+brand-derived status colour and is used only where the 3:1 non-text bar applies
+- chip borders and dots, timeline markers, bar fills, panel edges. A new
+`--critical-ink` carries every use that is actual text. Measured:
+
+| Theme | `--critical` (indicator, needs 3:1) | `--critical-ink` (text, needs 4.5:1) |
+| --- | --- | --- |
+| obsidian | `#e93069` 3.57:1 | `#ee5c89` 4.58:1 |
+| sapphire | `#e93069` 3.01:1 | `#f0759b` 4.56:1 |
+| emerald | `#e93069` 3.50:1 | `#ee5e8a` 4.54:1 |
+| platinum | `#c8003d` unchanged | `#c8003d` 5.50:1 |
+
+The solid chip is the one exception and the reason is measured, not stylistic:
+its 15% tint lifts the background toward the text, so `--critical-ink` only
+reaches 4.04-4.40:1 there. Solid chips therefore use `--ink` for the label -
+**11.35:1 to 13.08:1** - and keep the brand red on the edge, dot and fill.
+
+`#e93069` is Pantone 192 C lightened 19% toward white. That is a real departure
+from the mandated hex and was a deliberate decision, not an oversight: at the
+literal value the colour cannot clear even the 3:1 non-text floor in sapphire
+(2.59:1), so no arrangement of roles could have kept it everywhere. Nineteen
+percent is the smallest change that clears the floor in every dark theme; the
+alternative that keeps text red without splitting roles needed 58% (`#f494b1`),
+which is pink rather than the brand colour.
+
+Verified: axe reports **0 violations** on the sign-in page and the dashboard
+after the change, against 1 serious before, and the 58 critical chips on the
+dashboard were inspected directly to confirm they still render with the red on
+their borders and fills rather than having quietly disappeared.
+
 - **What:** `--critical` is defined as `var(--s192)` (`#e40046`) verbatim in
   the obsidian, sapphire, and emerald theme blocks (`client/src/themes.css`).
   It is used as small/bold text in `.chip.critical`, `.chip.solid.critical`,

@@ -153,19 +153,19 @@ function report(where, violations) {
    was wrong, and it cost real coverage: `todo` tolerates ANY failure, not
    just the known one, so when the drawer subtest started timing out before
    it ever reached axe, the run still reported green and nobody could tell
-   from the output that the drawer was no longer being audited at all. It had
-   not been audited for as long as the race existed (see clickWhenStill
-   above). A marker that hides the difference between "the known brand
-   finding" and "this test stopped working" is not a marker worth having.
+   from the output that the drawer was no longer being audited at all. A
+   marker that hides the difference between "the known brand finding" and
+   "this test stopped working" is not a marker worth having.
 
-   So the known finding is an expected VALUE instead. The subtests assert
-   their blocking violations equal exactly this list: the recorded finding
-   keeps them from failing, and anything else - a new violation, a harness
-   break, a timeout - fails loudly. When the palette is fixed these go red
-   with "expected [color-contrast], got []"; that is the intended signal that
-   the finding is closed, and the fix is to empty this list, not to silence
-   the test. */
-const KNOWN_BLOCKING = ["color-contrast"];
+   So the known finding became an expected VALUE instead - and on 2026-08-31
+   that mechanism did exactly what it was built to do. Finding 1 was fixed,
+   the subtests went red with "expected [color-contrast], got []", and the
+   list is now empty. It is deliberately kept rather than deleted: if a
+   contrast failure ever returns, an empty expected list fails on the first
+   run, which is the whole point. Do not add an id back to silence a
+   regression - an entry here is a decision that has been taken and written
+   down, not a way to get green. */
+const KNOWN_BLOCKING = [];   /* emptied 2026-08-31 - Finding 1 is fixed */
 
 /* Findings 3 and 4, now fixed: the app had no <main>, so landmark-one-main
    reported directly and `region` reported everything sitting loose in .shell as

@@ -62,7 +62,7 @@ export default function UploadPanel({ onClose, onDone }) {
             {results.map((r) => (
               <div key={`${r.file}-${r.note}`} className={`upload-result${r.ok ? "" : " err"}`}>
                 <b style={{ fontWeight: 560 }}>{r.file}</b>
-                <span style={{ color: r.ok ? "var(--good)" : "var(--critical)" }}>{r.note}</span>
+                <span style={{ color: r.ok ? "var(--good)" : "var(--critical-ink)" }}>{r.note}</span>
               </div>
             ))}
           </div>

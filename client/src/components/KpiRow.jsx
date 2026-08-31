@@ -53,7 +53,7 @@ export default function KpiRow({ kpis, period }) {
       {tiles.map((t) => (
         <div key={t.label} className="card kpi">
           <span className="micro">{t.label}</span>
-          <span className="hero-num" style={t.alert ? { color: "var(--critical)" } : undefined}>{t.value}</span>
+          <span className="hero-num" style={t.alert ? { color: "var(--critical-ink)" } : undefined}>{t.value}</span>
           <span className="kpi-sub">{t.sub}</span>
           {t.bar !== undefined && (
             <span className="kpi-bar"><i style={{ width: `${t.bar}%` }} /></span>

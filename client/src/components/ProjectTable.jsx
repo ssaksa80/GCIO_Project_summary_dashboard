@@ -148,7 +148,7 @@ export default function ProjectTable({ meta, onOpen, refreshTick }) {
                   </span>
                   <span className="num" style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}>{Math.round(p.percentComplete)}%</span>
                 </td>
-                <td className="num" style={p.overdue ? { color: "var(--critical)", fontWeight: 600 } : undefined}>
+                <td className="num" style={p.overdue ? { color: "var(--critical-ink)", fontWeight: 600 } : undefined}>
                   {fmtDate(p.targetEndDate)}{p.overdue ? " ⚠" : ""}
                 </td>
               </tr>
