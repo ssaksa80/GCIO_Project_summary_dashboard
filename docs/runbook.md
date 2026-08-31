@@ -1011,10 +1011,10 @@ the dashboard and an open drawer.
 UI_LIVE=1 npm run test:ui
 ```
 
-**Use `test:ui`, not `UI_LIVE=1 npm test`.** Both run these files, but only
-`test:ui` passes `--test-concurrency=1`, and the bare `test` script's glob also
-matches `test/ui` — so the short form starts every UI file at once, a Chrome and
-a server per test, in parallel.
+**Use `test:ui`, or `npm run test:all` for everything.** `npm test` no longer
+runs these files at all: its glob excludes `test/ui`, because it does not pass
+`--test-concurrency=1` and the short form therefore used to start every UI file
+at once, a Chrome and a server per test, in parallel.
 
 These suites need a real browser and are sensitive to machine load. When the box
 is busy they fail on lost clicks and keystrokes rather than on anything about the

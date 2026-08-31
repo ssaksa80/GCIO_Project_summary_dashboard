@@ -34,10 +34,14 @@ test("the harness boots the real app in a real browser and signs in", { skip: !u
 
 /**
  * The sweep's whole safety property is that it deletes by pid liveness rather
- * than by "everything I find". `UI_LIVE=1 npm test` runs test/ui files in
- * parallel processes against one shared PROFILE_ROOT, so a sweep that deleted
- * indiscriminately would pull a live browser's profile out from under a
- * sibling test file.
+ * than by "everything I find". Several processes can share one PROFILE_ROOT -
+ * two sessions in the same worktree, or a direct `node --test test/ui/...`
+ * bypassing the npm scripts - so a sweep that deleted indiscriminately would
+ * pull a live browser's profile out from under a sibling.
+ *
+ * `UI_LIVE=1 npm test` used to be the headline case and no longer is: that
+ * script's glob now excludes test/ui. See sweepStaleProfiles() in harness.mjs
+ * for why the check is not obsolete regardless.
  *
  * 999999 is not a valid Windows pid - they are multiples of 4 and far smaller -
  * so process.kill(999999, 0) reliably reports ESRCH.
