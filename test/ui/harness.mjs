@@ -59,6 +59,84 @@ const ROOT = path.resolve(__dirname, "../..");
 const active = new Set();
 
 /**
+ * Where Chrome's profile lives. Owned by this harness, not by puppeteer.
+ *
+ * Given no `userDataDir`, puppeteer creates a temporary profile and removes it
+ * on a clean `browser.close()` - a promise this harness cannot keep, because it
+ * deliberately tree-kills a close that hangs under load (see the header). A
+ * tree-killed Chrome never cleans up after itself, and a `close()` that never
+ * returned never cleans up either, so the directory ends up owned by nobody:
+ * fourteen of them, 256MB, after one session of repeated runs.
+ *
+ * Inside the repo rather than under %TEMP% for a second reason. This machine
+ * runs Defender for Endpoint, and a profile directory here inherits whatever
+ * exclusion the repo already carries. The equivalent exclusion for %TEMP% could
+ * only be written as a wildcard, which is a malware-persistence pattern and is
+ * correctly refused - so a Temp path is one nobody can legitimately exclude.
+ */
+const PROFILE_ROOT = path.join(ROOT, ".tmp", "ui-profiles");
+export { PROFILE_ROOT };
+
+/** Is this pid still running? `process.kill(pid, 0)` sends no signal and only
+ *  probes: ESRCH means gone, EPERM means alive but not ours to touch. */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return true; // unparseable: treat as live, never delete
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== "ESRCH";
+  }
+}
+
+/**
+ * Reclaim profile directories from runs that never reached teardown() - a
+ * Ctrl-C, a crashed node, a machine that went down mid-suite.
+ *
+ * Only directories whose owning pid is gone are touched, and that is the whole
+ * safety argument. The two ways to run these suites do not agree about
+ * concurrency: `npm run test:ui` passes --test-concurrency=1, the `test` script
+ * does not, and its recursive glob over test/ includes test/ui. So
+ * `UI_LIVE=1 npm test` - the obvious command, and one
+ * docs/accessibility-assessment.md presents as supported - runs these files in
+ * parallel processes sharing this one directory. A sweep that deleted
+ * everything it found would then delete a sibling's profile out from under a
+ * running browser. Do not replace this pid check with a wholesale delete.
+ *
+ * Best-effort throughout. A sweep that throws must not stop a boot: a leaked
+ * directory costs disk, a failed boot costs the whole suite.
+ */
+export function sweepStaleProfiles() {
+  let entries;
+  try {
+    entries = fs.readdirSync(PROFILE_ROOT, { withFileTypes: true });
+  } catch {
+    return; // not created yet, which is the common case
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const match = /^run-(\d+)-\d+$/.exec(entry.name);
+    if (!match) continue;
+    if (pidAlive(Number(match[1]))) continue;
+    try {
+      fs.rmSync(path.join(PROFILE_ROOT, entry.name), { recursive: true, force: true });
+      dlog(`swept stale profile dir ${entry.name}`);
+    } catch (err) {
+      dlog(`could not sweep ${entry.name}:`, err.message);
+    }
+  }
+}
+
+/** Once per process, before the first launch - same guard shape as
+ *  ensureAfterHook() below. */
+let sweptThisProcess = false;
+function ensureSwept() {
+  if (sweptThisProcess) return;
+  sweptThisProcess = true;
+  sweepStaleProfiles();
+}
+
+/**
  * `node:test`'s own after() is registered at most once per process, the
  * first time anything boots. It is the primary net for "a test threw
  * before calling close()": node:test awaits this before it considers the
