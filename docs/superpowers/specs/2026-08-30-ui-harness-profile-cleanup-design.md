@@ -46,6 +46,34 @@ swept wholesale by a rule this code fully controls, whereas sweeping inside the
 user's `Temp` would mean prefix-matching against roughly 65,000 entries
 belonging to other software - a much worse thing to get wrong.
 
+There turns out to be a stronger reason still, reported by a parallel session
+working on this suite's flakiness and recorded here as its measurement rather
+than mine. This box runs Defender for Endpoint, and the UI suites are badly
+degraded by it: a browser intermittently stops delivering keyboard and mouse
+events to a page mid-test and never resumes for that page, with listeners
+seeing trusted events arrive normally and then stop dead, while
+`document.activeElement` still reports the field as focused. Full runs go from
+29 pass / 0 fail on a quiet box to 11 pass / 12 fail under load. A Defender
+exclusion for the repo directory fixed it.
+
+The matching exclusion for the profile directories under `Temp` could only have
+been written as a wildcard, and was blocked by AMSI - correctly, because a
+wildcard exclusion under a user's Temp is a standard malware-persistence move.
+That block is not to be worked around, and nothing in this design does.
+
+A profile directory inside the repo needs no Temp exclusion at all: it inherits
+the repo exclusion that already exists. So the choice made here for
+sweepability also removes a measured cause of UI-suite flakiness, and removes it
+without asking anyone to weaken a security control.
+
+This is worth connecting to something `harness.mjs` already says. Its
+focus-emulation block records that `Emulation.setFocusEmulationEnabled` was
+measured before and after and did not improve input flakiness, and
+`test/ui/keyboard.test.js` retries on input loss for the same reason. A cause
+sitting outside the browser entirely would explain why a browser-side fix moved
+nothing. Offered as a plausible connection, not a diagnosis - this session has
+established none of it.
+
 **Naming.** `run-<node pid>-<seq>`, where `seq` counts within the process
 because one process boots many apps across a test file. The pid is what makes
 the sweep below exact.
