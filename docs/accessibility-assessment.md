@@ -16,7 +16,7 @@ bugs to patch.
 
 | Surface | Tool | What it covers |
 | --- | --- | --- |
-| Sign-in page | axe-core 4.13, `npm test`'s `UI_LIVE=1` suite | automatable WCAG/best-practice checks |
+| Sign-in page | axe-core 4.13, `UI_LIVE=1 npm run test:ui` | automatable WCAG/best-practice checks |
 | Dashboard (signed in, admin role, sample portfolio) | axe-core 4.13 | same |
 | An open project drawer | axe-core 4.13, audited separately from the page behind it | same |
 | All three surfaces, all four theme identities (obsidian, platinum, sapphire, emerald) | axe-core 4.13, ad hoc runs against the same harness | colour contrast only, cross-theme |
@@ -54,6 +54,14 @@ to leave alone.
 UI_LIVE=1 npm run test:ui         # runs it along with the other UI suites
 UI_LIVE=1 node --test --test-concurrency=1 test/ui/accessibility.test.js
 ```
+
+**Use `npm run test:ui`, not `UI_LIVE=1 npm test`.** Both run these files, but
+only `test:ui` passes `--test-concurrency=1`. The bare `test` script's glob also
+matches `test/ui`, so `UI_LIVE=1 npm test` starts every UI file at once - a
+Chrome and a server per test, in parallel. These suites are sensitive enough to
+machine load to fail wholesale under that (measured: 29 pass / 0 fail sequential
+on a quiet box against 11 pass / 12 fail while another project's suite ran), and
+nothing in the repo currently stops anyone typing the shorter command.
 
 ### A methodology note that belongs on the record
 
