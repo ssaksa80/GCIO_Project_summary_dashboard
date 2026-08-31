@@ -29,26 +29,26 @@ Do not weaken the assertion, the threshold, or the blocking-impact filter
 to make it pass.
 
 Given a choice between failing the whole suite on a known, unresolved brand
-question and quietly deleting the coverage, the decision made for Phase 4
-was neither: the two subtests that fail on this finding — **"the dashboard"**
-and **"an open project drawer"** — are marked `{ todo: "..." }` in
-`test/ui/accessibility.test.js`, naming this finding and this document as the
-reason. `todo` still runs axe against the real page on every invocation and
-still prints the full violation report via `console.log` — nothing about what
-is measured changed, only how `node --test` classifies a result it already
-expected to be red. `npm run test:ui` exits 0 with these two `todo`, which is
-what makes it usable as a gate again without the finding disappearing from
-view. The third subtest, **"the sign-in page"**, passes today on its own
-merits and is not marked `todo` — a future regression there must still fail
-the run.
+question and quietly deleting the coverage, the arrangement is neither: the
+finding is carried as an expected *value*. `test/ui/accessibility.test.js`
+defines `KNOWN_BLOCKING = ["color-contrast"]`, and the two subtests that hit
+this finding — **"the dashboard"** and **"an open project drawer"** — assert
+their blocking violations equal exactly that list. The recorded finding keeps
+them from failing; anything else fails loudly. The third subtest, **"the
+sign-in page"**, expects `[]` and reports no violations at all.
 
-**If "the dashboard" or "an open project drawer" ever reports as `todo` but
-passing** (`node --test` prints passing `todo` tests distinctly from failing
-ones — watch for `# TODO` next to `ok`, not `not ok`), that means the
-underlying colour was changed and this finding was fixed, not that the test
-flaked. Treat it as a signal to remove the `todo` option from that subtest
-in `test/ui/accessibility.test.js` and update this document, not as a result
-to leave alone.
+**If the palette is ever fixed, these two go red** with "expected
+[color-contrast], got []". That is the intended signal that the finding is
+closed: empty `KNOWN_BLOCKING` and update this document. It is not a flake and
+must not be silenced.
+
+This was previously carried as node:test's `todo` on both subtests, and that
+was a mistake worth recording, because `todo` tolerates *any* failure rather
+than the specific known one. When the drawer subtest later began timing out
+before it ever reached axe, the run still reported green and nothing in the
+output revealed that the drawer had stopped being audited at all. A marker
+that cannot distinguish "the known brand finding" from "this test stopped
+working" is not worth having.
 
 ```
 UI_LIVE=1 npm run test:ui         # runs it along with the other UI suites
