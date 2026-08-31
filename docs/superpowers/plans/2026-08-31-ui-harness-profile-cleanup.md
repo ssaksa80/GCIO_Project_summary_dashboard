@@ -229,9 +229,14 @@ function pidAlive(pid) {
  * Ctrl-C, a crashed node, a machine that went down mid-suite.
  *
  * Only directories whose owning pid is gone are touched, and that is the whole
- * safety argument: `UI_LIVE=1 npm test` globs test/ui at default concurrency,
- * so several processes share PROFILE_ROOT at once, and a sweep that deleted
- * everything it found would delete a sibling's live profile.
+ * safety argument. The two ways to run these suites do not agree about
+ * concurrency: `npm run test:ui` passes --test-concurrency=1, the `test` script
+ * does not, and its `test/**/*.test.js` glob includes test/ui. So
+ * `UI_LIVE=1 npm test` - the obvious command, and one
+ * docs/accessibility-assessment.md presents as supported - runs these files in
+ * parallel processes sharing this one directory. A sweep that deleted
+ * everything it found would then delete a sibling's profile out from under a
+ * running browser. Do not replace this pid check with a wholesale delete.
  *
  * Best-effort throughout. A sweep that throws must not stop a boot: a leaked
  * directory costs disk, a failed boot costs the whole suite.
@@ -597,6 +602,16 @@ it created under `.tmp/ui-profiles/`.
 attempted and blocked by AMSI, correctly - a wildcard exclusion under a user's
 Temp is a standard malware-persistence move. The repo-local profile directory is
 the legitimate way to get the same benefit, and it needs no new exclusion.
+
+**Measure with `npm run test:ui`, not `UI_LIVE=1 npm test`.** The two disagree
+about concurrency - `test:ui` passes `--test-concurrency=1`, `test` does not,
+and its glob includes `test/ui`. The session that has been working on these
+suites reports its notes say they must run sequentially, and that every run it
+has done was `npm run test:ui` or a single file. So the parallel command is a
+footgun independent of anything in this plan: it is the obvious thing to type,
+it is presented as supported, and it runs suites that are documented as needing
+to be sequential. Worth someone's attention separately; do not let it
+contaminate the Task 4 numbers by using it here.
 
 **Do not claim this fixes the UI suites' flakiness.** A repo-path Defender
 exclusion has already been applied on this machine and the suites still failed
