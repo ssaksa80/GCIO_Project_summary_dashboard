@@ -8,10 +8,18 @@
  * Tab presses that produce no focus change for seconds. It is the page's weight
  * rather than the browser - the same presses against a trivial page in the same
  * browser with the same flags are perfectly reliable - and it gets sharply
- * worse when something else heavy is running on the machine (a full UI run
- * measured 29 pass / 0 fail on a quiet box and 11 pass / 12 fail alongside
- * another project's database suite, with individual tests taking 210s against a
- * normal 10-40s, on identical code).
+ * worse under machine load. On identical code, a full UI run measured 29 pass /
+ * 0 fail on an unloaded run and 11 pass / 12 fail on a heavily loaded one, with
+ * individual tests taking 210s against a normal 10-40s.
+ *
+ * What that load consisted of was never established, and an earlier version of
+ * this comment attributed it to another project's test suite running at the
+ * time. That attribution is withdrawn: a peer session later established that
+ * stopping a background `npm run` does not kill the node tree underneath it, so
+ * runs of THIS suite that had been stopped were probably still alive and
+ * contributing. The load is real and the effect is real; the cause was assumed
+ * rather than measured, and 35 node processes were counted at the time without
+ * anyone checking whose they were.
  *
  * Left untreated, every one of those arrives as a bare 30-second selector
  * timeout naming some element, which reads exactly like a defect in whatever

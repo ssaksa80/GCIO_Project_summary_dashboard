@@ -59,9 +59,12 @@ UI_LIVE=1 node --test --test-concurrency=1 test/ui/accessibility.test.js
 only `test:ui` passes `--test-concurrency=1`. The bare `test` script's glob also
 matches `test/ui`, so `UI_LIVE=1 npm test` starts every UI file at once - a
 Chrome and a server per test, in parallel. These suites are sensitive enough to
-machine load to fail wholesale under that (measured: 29 pass / 0 fail sequential
-on a quiet box against 11 pass / 12 fail while another project's suite ran), and
-nothing in the repo currently stops anyone typing the shorter command.
+machine load to fail wholesale under that (measured on identical code: 29 pass /
+0 fail sequential on an unloaded run, against 11 pass / 12 fail on a heavily
+loaded one), and nothing in the repo currently stops anyone typing the shorter
+command. What that load consisted of was not established - see the note in
+`test/ui/input.mjs`, which withdraws an earlier attribution of it to another
+project's suite.
 
 ### A methodology note that belongs on the record
 
