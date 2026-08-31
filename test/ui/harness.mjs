@@ -96,14 +96,23 @@ function pidAlive(pid) {
  * Ctrl-C, a crashed node, a machine that went down mid-suite.
  *
  * Only directories whose owning pid is gone are touched, and that is the whole
- * safety argument. The two ways to run these suites do not agree about
- * concurrency: `npm run test:ui` passes --test-concurrency=1, the `test` script
- * does not, and its recursive glob over test/ includes test/ui. So
- * `UI_LIVE=1 npm test` - the obvious command, and one
- * docs/accessibility-assessment.md presents as supported - runs these files in
- * parallel processes sharing this one directory. A sweep that deleted
- * everything it found would then delete a sibling's profile out from under a
- * running browser. Do not replace this pid check with a wholesale delete.
+ * safety argument. Several processes can share this one directory:
+ *
+ *   - Two sessions working in the same worktree. Not hypothetical - this
+ *     happened here on 2026-08-31, one session running the UI suites while
+ *     another edited this file.
+ *   - A direct `node --test test/ui/...`, which bypasses the npm scripts
+ *     entirely. docs/accessibility-assessment.md shows such a command.
+ *
+ * A sweep that deleted everything it found would delete a sibling's profile out
+ * from under a running browser. Do not replace this pid check with a wholesale
+ * delete.
+ *
+ * `npm test` used to be the headline reason here, running every UI file at once
+ * because it does not pass --test-concurrency=1. Its glob now excludes test/ui,
+ * so that specific route is closed - but the check is not therefore obsolete,
+ * and the reasons above are why. An npm script cannot constrain a process that
+ * never ran through it.
  *
  * Best-effort throughout. A sweep that throws must not stop a boot: a leaked
  * directory costs disk, a failed boot costs the whole suite.
