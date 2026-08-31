@@ -851,7 +851,8 @@ service, re-reading `.env` as it goes.
 **To see what the service is actually running with:**
 
 ```powershell
-& C:\gciountime
+& C:\gcio
+untime
 ssm.exe get GCIOProjectIntelligence AppEnvironmentExtra
 ```
 
@@ -950,3 +951,75 @@ re-running the installer too, not just editing the file.
   but no user has ever completed a sign-in against it. The authentication path
   is covered by the in-process suites with a fake directory; it has not been
   proved end to end against a real one.
+
+## 9. Accessibility, and one deliberate departure from the brand palette
+
+The full assessment, with every measurement, is `docs/accessibility-assessment.md`.
+This section carries only what an operator needs: what changed, what someone
+will ask about, and how to check it.
+
+### The critical red is no longer the literal Pantone 192 C on dark themes
+
+**Expect to be asked about this.** Anyone comparing the running dashboard
+against the brand guidelines will notice that the "critical" red on the
+obsidian, sapphire and emerald themes is `#e93069` rather than the mandated
+`#e40046`. That is Pantone 192 C lightened 19% toward white, and it was a
+deliberate decision, not drift.
+
+The reason is that the mandated hex cannot legally carry the job it had. As
+text it measured **2.59:1 to 3.08:1** against those themes' own surfaces, where
+WCAG requires 4.5:1. Worse, in sapphire it fails even the **3:1 floor that
+applies to non-text indicators** (2.59:1) — so there was no arrangement in
+which the literal value could stay, not even as a dot or a border. Nineteen
+percent is the smallest change that clears the non-text floor in all three dark
+themes. Keeping the red as readable *text* instead would have needed 58%
+(`#f494b1`), which is pink rather than the brand colour.
+
+Platinum is untouched: it already used its own derived `#c8003d`.
+
+If the brand owner rules that the mandated hex must be restored exactly, that
+is their call to make, but it cannot be done without either accepting a WCAG
+failure or darkening the theme surfaces, which are derived from Pantone 281 C
+and would move the whole interface. Do not "fix" it by editing one token back.
+
+### Which token to edit
+
+Two tokens now, in `client/src/themes.css`, and the split is the whole point:
+
+| Token | Used for | Bar it must clear |
+| --- | --- | --- |
+| `--critical` | indicator only — chip borders and dots, timeline markers, bar fills, panel edges | 3:1 (non-text) |
+| `--critical-ink` | every use that is actual text | 4.5:1 |
+
+Solid chips are the one exception: their own 15% tint lifts the background
+toward the text, so their labels use `--ink` instead and keep the brand red on
+the edge and fill. If you change either token, re-run the check below — the
+suite fails on any contrast regression, which is exactly what it is for.
+
+### What else changed
+
+Keyboard and screen-reader operation that previously did not work: the project
+drawer is a real modal dialog that takes focus, traps Tab, and returns focus to
+whatever opened it; the all-projects table can be sorted and opened from the
+keyboard and reports its sort direction; and both the dashboard and the sign-in
+page have a `main` landmark. axe reports **0 violations** on the sign-in page,
+the dashboard and an open drawer.
+
+### Running the check
+
+```bash
+UI_LIVE=1 npm run test:ui
+```
+
+**Use `test:ui`, not `UI_LIVE=1 npm test`.** Both run these files, but only
+`test:ui` passes `--test-concurrency=1`, and the bare `test` script's glob also
+matches `test/ui` — so the short form starts every UI file at once, a Chrome and
+a server per test, in parallel.
+
+These suites need a real browser and are sensitive to machine load. When the box
+is busy they fail on lost clicks and keystrokes rather than on anything about the
+application, and they say so: a failure reading `typing into input[type='search']
+never landed (field holds "")` or `the drawer never opened, so the audit below
+never ran` is the browser dropping input, not a defect. A failure naming an axe
+violation or an assertion is real. Re-run on a quiet machine before investigating
+the first kind.
