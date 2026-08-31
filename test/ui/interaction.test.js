@@ -12,7 +12,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { startDashboard, startDashboardSignedOut } from "./harness.mjs";
-import { clickUntil, typeUntil } from "./input.mjs";
 
 const ui = process.env.UI_LIVE === "1";
 
@@ -43,9 +42,9 @@ test("a user can open a project, read it, and get back", { skip: !ui }, async (t
      retry, the retry caused more transport failure. Test durations went from
      ~12s to 151-263s.
 
-     clickUntil and typeUntil already retry in place, against the page that is
-     already open, which is both cheaper and sufficient - what was actually
-     dropped is a single click or keystroke, not the whole session. */
+     This file no longer drives real mouse or key input at all, so there is
+     nothing left for a retry to rescue: each action either dispatches through
+     the DOM or does not happen. */
   const app = await startDashboard();
   t.after(() => app.close());
   {
@@ -56,13 +55,41 @@ test("a user can open a project, read it, and get back", { skip: !ui }, async (t
       const name = await page.$eval("[data-section='priorities'] .pname",
         (el) => el.textContent.trim());
 
-      /* A click that never lands is not an empty drawer, and must not be
-         reported as one. clickUntil waits on the wrapper - which ProjectDrawer
-         mounts synchronously - so this separates "the click was lost" from
-         everything the assertions below are actually about. */
-      await clickUntil(page, "[data-section='priorities'] .pname",
-        () => !!document.querySelector("[role='dialog']"),
-        { what: "a project in Priorities" });
+      /*
+        Two claims, separated, because together they depended on the least
+        reliable thing this machine does.
+
+        The first is reachability: that nothing covers the button, which is the
+        property a coordinate click actually tests. document.elementFromPoint at
+        the button's own centre answers it as a DOM query, with no input event
+        to be dropped. If something ever does cover the trigger, this fails and
+        says so.
+
+        The second is behaviour, driven by el.click(). That dispatches a real
+        click event through React's handler, so everything the assertions below
+        care about - the right project opening, the drawer not being empty - is
+        exercised exactly as before.
+
+        What is given up is the browser's own mouse hit-testing, which is the
+        browser's job rather than this application's, and which measured as
+        unreliable enough here to fail the test roughly half the time for
+        reasons that had nothing to do with the app. Real key dispatch is still
+        driven, and still asserted, in keyboard.test.js - where it is the
+        subject rather than the transport.
+      */
+      await page.waitForSelector("[data-section='priorities'] .pname");
+      const reachable = await page.$eval("[data-section='priorities'] .pname", (el) => {
+        el.scrollIntoView({ block: "center" });
+        const r = el.getBoundingClientRect();
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { hit: !!top && (top === el || el.contains(top) || top.contains(el)),
+                 covering: top ? top.tagName.toLowerCase() + "." + String(top.className).split(/\s+/)[0] : "(nothing)" };
+      });
+      assert.ok(reachable.hit,
+        `the project trigger is not clickable at its own centre - ${reachable.covering} is on top of it`);
+
+      await page.$eval("[data-section='priorities'] .pname", (el) => el.click());
+      await page.waitForSelector("[role='dialog']", { timeout: 15_000 });
 
       /* Wait for the drawer's own heading, not merely the dialog wrapper - the
          wrapper mounts immediately on click, before its fetch to
@@ -101,8 +128,8 @@ test("a user can open a project, read it, and get back", { skip: !ui }, async (t
 });
 
 test("the all-projects table filters", { skip: !ui }, async (t) => {
-  /* Same reasoning as above: the in-place retries in clickUntil and typeUntil
-     are what this needs, not a whole fresh browser per attempt. */
+  /* Same reasoning as above: one dashboard for the whole test, no per-attempt
+     browser, and nothing here depends on an input event surviving the trip. */
   const app = await startDashboard();
   t.after(() => app.close());
   {
@@ -117,13 +144,16 @@ test("the all-projects table filters", { skip: !ui }, async (t) => {
      the panel closed. Open it first, the same way a real user would click
      the summary to see the table at all.
 
-     clickUntil rather than click-then-wait, and this is the case that most
-     needs it: a <summary> is a toggle, so a blind retry would close what the
-     first click opened. clickUntil checks the outcome before acting and so
-     never clicks a disclosure that is already open. */
-  await clickUntil(page, ".all-projects summary",
+     The open check happens inside the same evaluate as the click, because a
+     <summary> is a toggle: acting without first testing the outcome is how a
+     retry closes what the previous attempt opened. */
+  await page.waitForSelector(".all-projects summary");
+  await page.$eval(".all-projects summary", (el) => {
+    if (!el.closest("details").hasAttribute("open")) el.click();
+  });
+  await page.waitForFunction(
     () => document.querySelector(".all-projects")?.hasAttribute("open") === true,
-    { what: "the all-projects disclosure" });
+    { timeout: 10_000 });
 
   /* Scoped to the portfolio table specifically (its own "projects" class,
      an existing hook - not a new one) rather than a bare "table tbody tr":
@@ -139,10 +169,9 @@ test("the all-projects table filters", { skip: !ui }, async (t) => {
   /* Narrowing must actually narrow. A filter that silently does nothing looks
      identical to one that matched everything.
 
-     typeUntil rather than type, because a dropped keystroke leaves the search
-     box short or empty and the only symptom is that the table never narrows -
-     which times out on the next line and reads as a broken filter rather than
-     as a lost keypress. */
+     The value is set through React's own input path rather than typed, so a
+     dropped keystroke cannot leave the box holding half a word and make a
+     working filter look broken. */
   /* Short on purpose. ProjectTable debounces its refetch by 200ms, and a longer
      string takes long enough to type that the refetch lands mid-way - after
      which this browser stops delivering key events to the page entirely (no
@@ -150,7 +179,21 @@ test("the all-projects table filters", { skip: !ui }, async (t) => {
      recovers). Four characters complete well inside the debounce, so the
      refetch happens after typing rather than during it. "zzzz" matches no
      project, which is all the assertion below needs. */
-  await typeUntil(page, "input[type='search']", "zzzz");
+  /* Driven through React's own input path rather than by pressed keys: the
+     prototype's value setter, then an `input` event, which is exactly what a
+     keystroke produces once the browser has translated it. Measured working -
+     the field holds the text and the table goes 59 rows to 1 - where pressed
+     keys on this machine stop being delivered mid-word, leaving "zz" of "zzzz"
+     and a filter that looks broken when it is not. The key-to-input translation
+     that is skipped here is the browser's, not this application's. */
+  await page.$eval("input[type='search']", (el) => {
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, "value").set;
+    setValue.call(el, "zzzz");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction((sel) => document.querySelector(sel)?.value === "zzzz",
+    { timeout: 10_000 }, "input[type='search']");
   await page.waitForFunction((n) => document.querySelectorAll("table.projects tbody tr").length < n, {}, before);
   assert.ok(await rows() < before, "the filter did not narrow the table");
   }
