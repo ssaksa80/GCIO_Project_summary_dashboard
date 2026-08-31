@@ -249,8 +249,22 @@ test("the dashboard is accessible enough to use", { skip: !ui }, async (t) => {
            destroyed a working open and reported "the drawer never opened".
            Checking for the wrapper first makes the re-click safe in the way the
            original comment only assumed it was. */
+        /* el.click() rather than a coordinate click, and this is a deliberate
+           narrowing of what this test depends on. Its job is to audit an OPEN
+           drawer; how the drawer got opened is incidental, and proving that a
+           synthetic mouse event can land is interaction.test.js's job, which
+           asserts it directly. Coordinate dispatch is the single least reliable
+           thing on this machine - measured: with mssense at 126% of a core, the
+           drawer failed to open on five consecutive attempts through
+           page.click(), while el.click() opened it every time with the fetch
+           returning 200 and the heading rendering. Depending on the flakiest
+           available mechanism to reach the thing under test meant the audit
+           simply did not run, which is worse than any coverage this bought. */
         const alreadyOpen = await app.page.$("[role='dialog']");
-        if (!alreadyOpen) await clickWhenStill(app.page, "[data-section='priorities'] .pname");
+        if (!alreadyOpen) {
+          await app.page.waitForSelector("[data-section='priorities'] .pname");
+          await app.page.$eval("[data-section='priorities'] .pname", (el) => el.click());
+        }
         const mounted = await app.page.waitForSelector("[role='dialog']", { timeout: 10_000 })
           .then(() => true).catch(() => false);
         if (!mounted) continue;
