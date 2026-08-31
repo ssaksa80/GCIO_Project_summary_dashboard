@@ -3,8 +3,10 @@
  * the server boots, the browser signs in, a known element is on the page,
  * and close() actually tears both down.
  *
- * Self-skips unless UI_LIVE=1, exactly like the live SQL suite, so `npm test`
- * stays hermetic:
+ * Self-skips unless UI_LIVE=1, exactly like the live SQL suite. That skip is no
+ * longer what keeps `npm test` hermetic, though: its glob excludes test/ui
+ * outright, so it never reaches this file either way. Run it directly, or via
+ * `npm run test:ui`:
  *
  *     UI_LIVE=1 node --test test/ui/harness.test.js
  */
