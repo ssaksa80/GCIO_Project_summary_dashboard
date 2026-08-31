@@ -12,7 +12,8 @@
     "sample-data": "node scripts/generate-sample-data.js",
     "test:db": "node --test test/db/live.test.js",
     "test:ui": "node --test --test-concurrency=1 \"test/ui/**/*.test.js\"",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/!(ui)/**/*.test.js\" \"test/*.test.js\"",
+    "test:all": "npm test && npm run test:ui"
   },
   "dependencies": {
     "@azure/msal-browser": "^3.28.1",
