@@ -259,7 +259,14 @@ It needs Chrome or Edge on the machine — set `CHROME_PATH` if it is not in
 the usual install location — and it starts its own server on an ephemeral
 port, so nothing needs to be running first and it will not collide with
 whatever else is on 8123. Like the live SQL suite, it self-skips without its
-flag, so plain `npm test` stays hermetic and fast.
+flag - but `npm test` also leaves `test/ui` out of its glob entirely, since it
+does not pass `--test-concurrency=1` and would otherwise start every UI file,
+and its browser, at once. Use `npm run test:all` to run both halves in sequence.
+
+That exclusion matches `test/ui` exactly, one level under `test/`. A browser
+suite put anywhere else - `test/ui-helpers/`, `test/integration/ui/` - rejoins
+`npm test` at full concurrency with nothing to warn you, so keep them directly
+under `test/ui/`.
 
 It also needs a built client — run `npm run build` first if `client/dist`
 does not exist yet. The harness checks for this itself and fails immediately

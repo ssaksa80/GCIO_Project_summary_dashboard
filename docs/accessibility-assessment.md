@@ -55,14 +55,13 @@ UI_LIVE=1 npm run test:ui         # runs it along with the other UI suites
 UI_LIVE=1 node --test --test-concurrency=1 test/ui/accessibility.test.js
 ```
 
-**Use `npm run test:ui`, not `UI_LIVE=1 npm test`.** Both run these files, but
-only `test:ui` passes `--test-concurrency=1`. The bare `test` script's glob also
-matches `test/ui`, so `UI_LIVE=1 npm test` starts every UI file at once - a
-Chrome and a server per test, in parallel. These suites are sensitive enough to
+**Use `npm run test:ui`, or `npm run test:all` for everything.** `npm test` no
+longer runs these files at all: its glob excludes `test/ui`, because it does not
+pass `--test-concurrency=1` and `UI_LIVE=1 npm test` therefore used to start
+every UI file at once - a Chrome and a server per test, in parallel. These suites are sensitive enough to
 machine load to fail wholesale under that (measured on identical code: 29 pass /
 0 fail sequential on an unloaded run, against 11 pass / 12 fail on a heavily
-loaded one), and nothing in the repo currently stops anyone typing the shorter
-command. What that load consisted of was not established - see the note in
+loaded one). What that load consisted of was not established - see the note in
 `test/ui/input.mjs`, which withdraws an earlier attribution of it to another
 project's suite.
 
