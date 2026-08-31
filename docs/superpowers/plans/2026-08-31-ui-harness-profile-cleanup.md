@@ -533,9 +533,18 @@ ls "$LOCALAPPDATA/Temp" | grep -c '^puppeteer_dev_chrome_profile-'
 ls .tmp/ui-profiles 2>/dev/null | wc -l
 ```
 
-Expected: the `%TEMP%` count is unchanged from Step 1, and `.tmp/ui-profiles`
-is empty. A `%TEMP%` count that grew means `userDataDir` is not reaching
+Expected: the `%TEMP%` count has not grown from Step 1. That is the criterion
+that matters, and a count that grew means `userDataDir` is not reaching
 `puppeteer.launch()`.
+
+`.tmp/ui-profiles` is **not** expected to be empty, and an empty-folder check
+here would be wrong. `node --test` runs a process per file, the sweep only
+reclaims directories whose owning pid is dead, and a process cannot sweep its
+own - so each file cleans up after the ones before it and the last file's
+directories survive to the next run. Removal also routinely loses the handle
+race on the tree-kill path. Check instead that everything present is named
+`run-<pid>-<seq>` with a dead pid, and that the count is not growing run over
+run.
 
 - [ ] **Step 4: Verify the crash path**
 
@@ -572,10 +581,11 @@ criteria, substituting the numbers actually observed:
 ```bash
 git commit --allow-empty -m "test(ui): verify the profile leak is closed
 
-Full UI suite, quiet box: <N> pass / <M> fail, unchanged from before.
-puppeteer_dev_chrome_profile-* in %TEMP%: <X> before, <X> after.
-.tmp/ui-profiles empty at the end. Interrupted run stranded <K> dirs;
-the next boot's sweep removed them."
+Full UI suite: <N> pass / <M> fail, unchanged from before.
+puppeteer_dev_chrome_profile-* in %TEMP%: <X> before, <Y> after, no growth.
+.tmp/ui-profiles held <K> dirs at the end, all run-<pid>-<seq> with dead
+pids - the last file's own, which the next boot sweeps. Interrupted run
+stranded <J> dirs; the next boot's sweep removed them."
 ```
 
 ---

@@ -104,14 +104,33 @@ because one process boots many apps across a test file. The pid is what makes
 the sweep below exact.
 
 **Removal, and its ordering.** `teardown()` removes the directory *after* the
-existing browser-close and tree-kill sequence, never before. `taskkill /T /F`
-returns before Windows has released Chrome's file handles, so a bare `rmSync`
-immediately after it meets `EBUSY` or `EPERM`. Removal is therefore
-`fs.rmSync(dir, { recursive: true, force: true })` retried up to five times
-at 100ms intervals - half a second of patience, which is far more than handle
-release needs and far less than anyone would notice - with a final failure
-reported through `dlog` and swallowed. A profile directory that will not
-delete is a disk problem; it must never turn a passing test red.
+existing browser-close and tree-kill sequence, never before, and only once the
+browser pid is confirmed gone. `taskkill /T /F` returns when it has *issued* the
+terminations, not when Windows has finished them, so deleting straight after it
+is deleting into a live process tree.
+
+Confirming the exit is necessary and nowhere near sufficient, which the first
+draft of this section got wrong. It claimed five attempts over half a second was
+"far more than handle release needs". Measured, on the tree-kill path: the
+process is gone within **1ms**, `rmSync` still returns `EPERM` **five seconds**
+later, and the same directory deletes without complaint **a minute after that**.
+Windows releases the profile's handles on its own schedule, and teardown cannot
+usefully outwait it - spending thirty seconds per hung close would cost more
+than the leak does.
+
+So the budget is deliberately modest rather than heroic: `fs.rmSync(dir,
+{ recursive: true, force: true })` retried up to eight times at 250ms intervals,
+about two seconds, with a final failure reported through `dlog` and swallowed.
+Whatever that gives up on is left to the boot sweep, which is the mechanism this
+design already nominates for exactly this case. A profile directory that will
+not delete is a disk problem; it must never turn a passing test red.
+
+**This makes the sweep load-bearing rather than a backstop.** On the machine
+this was developed against, `browser.close()` timed out on six boots out of six,
+so every teardown took the tree-kill path. The header comment in `harness.mjs`
+describes that hang as intermittent and load-triggered; here it is universal.
+The sweep is therefore not the rare-crash safety net it was designed as - it is
+the routine cleanup path, and should be read that way.
 
 ## Two backstops, matching the layering already in the file
 
@@ -169,29 +188,62 @@ direct measurement, recorded here rather than pretended into a test.
 
 Asserted in `test/ui/harness.test.js`:
 
-1. After a normal `startDashboard()` / `close()` cycle, the profile directory
-   that boot created no longer exists.
-2. No `puppeteer_dev_chrome_profile-*` directory appears in `os.tmpdir()` across
+1. No `puppeteer_dev_chrome_profile-*` directory appears in `os.tmpdir()` across
    a boot - a count before and after, since other software may hold pre-existing
-   ones and an absolute count would be wrong.
-3. The sweep deletes a planted `run-<dead pid>-0` directory and leaves a planted
+   ones and an absolute count would be wrong. This is the assertion that pins
+   the actual bug. The leak was never that a directory outlived a test; it was
+   that puppeteer created one in `%TEMP%` that nobody owned.
+2. The profile lives under `PROFILE_ROOT`, and exists while the browser runs.
+3. Anything `teardown()` could not remove is still named `run-<pid>-<seq>`, so
+   the sweep will reclaim it.
+4. The sweep deletes a planted `run-<dead pid>-0` directory and leaves a planted
    `run-<own pid>-0` directory alone. This is the concurrency-safety property,
    and it is testable directly without booting anything.
 
+**What is deliberately not asserted: that `close()` always removes the
+directory.** The first draft of this section listed exactly that, and it was
+wrong - measurement above shows removal on the tree-kill path routinely loses to
+Windows' handle release. Asserting it would be asserting that teardown wins a
+race it does not control, which is how a suite acquires a flaky test that
+everyone learns to re-run and eventually to ignore. Assertion 3 is the honest
+version of the same concern: not "cleanup happened now", but "nothing escaped
+the backstop".
+
 Measured by hand and recorded in the commit message:
 
-4. Count `puppeteer_dev_chrome_profile-*` in `%TEMP%` and entries in
-   `.tmp/ui-profiles/` before and after a full `npm run test:ui`. Expect zero
-   new directories in `%TEMP%` and an empty `.tmp/ui-profiles/` at the end.
-5. Crash case: interrupt a run mid-flight, confirm a directory is stranded,
+5. Count `puppeteer_dev_chrome_profile-*` in `%TEMP%` before and after a full
+   `npm run test:ui`. Expect no growth.
+6. Crash case: interrupt a run mid-flight, confirm a directory is stranded,
    then confirm the next boot removes it.
 
 Each assertion is to be seen failing before the fix lands, so it is known to be
-capable of failing.
+capable of failing. Assertion 4 additionally gets a mutation check: replacing
+the pid test with a pass-through must fail it.
 
 ## Success criteria
 
-A full `npm run test:ui` adds no `puppeteer_dev_chrome_profile-*` directory to
-`%TEMP%` and leaves `.tmp/ui-profiles/` empty; an interrupted run's directory is
-reclaimed by the next boot; parallel UI files under `npm test` do not delete one
-another's profiles; and the existing UI suite passes unchanged.
+1. A full `npm run test:ui` adds no `puppeteer_dev_chrome_profile-*` directory
+   to `%TEMP%`. This is the one that matters - it is the reported bug, and it is
+   the difference between unbounded growth in a directory shared with 65,000
+   entries of other software and growth that is bounded and self-clearing.
+2. `.tmp/ui-profiles/` stays **bounded and self-reclaiming**, not empty.
+3. An interrupted run's directories are reclaimed by the next boot.
+4. Parallel UI files under `UI_LIVE=1 npm test` do not delete one another's
+   profiles.
+5. The existing UI suite passes unchanged.
+
+**Criterion 2 replaces "leaves `.tmp/ui-profiles/` empty", which was wrong.**
+`node --test` runs a process per file, and the sweep only reclaims directories
+whose owning pid is *dead* - which is precisely what makes it safe to run while
+sibling files hold live browsers. A process cannot sweep its own directories, so
+each file cleans up after the files before it and the last file's directories
+survive until the next run. Combined with removal routinely losing the handle
+race, a clean run can legitimately end with a small number of directories still
+present.
+
+That is the design working, not leaking. The right check is that the count does
+not grow run over run, and that everything present is named `run-<pid>-<seq>`
+with a dead pid - both of which mean the next boot will take it. An empty-folder
+check would fail on a perfectly healthy run, and the person who wrote it would
+then either delete a good assertion or, worse, "fix" the sweep by making it
+delete indiscriminately, which is the one change that would make it unsafe.
