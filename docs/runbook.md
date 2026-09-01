@@ -1023,3 +1023,56 @@ never landed (field holds "")` or `the drawer never opened, so the audit below
 never ran` is the browser dropping input, not a defect. A failure naming an axe
 violation or an assertion is real. Re-run on a quiet machine before investigating
 the first kind.
+
+### Two harness defects that waste a day if you do not know them
+
+Both are in the harness, not the application, and neither is fixed.
+
+**The boot is flaky, roughly one boot in thirty.** Every test starts its own
+server and its own Chrome, and occasionally that startup just fails. It dies
+inside `page.goto`, so the stack is the giveaway — always these two frames, and
+never an assertion:
+
+```
+at async boot (test/ui/harness.mjs:641)
+at async startDashboard (test/ui/harness.mjs:681)
+```
+
+Two forms have been seen: `TimeoutError: Navigation timeout of 30000 ms exceeded`
+and `net::ERR_ABORTED at http://127.0.0.1:<port>`.
+
+**The test name in a boot failure is noise.** The failure lands on whichever test
+happened to draw it. Two clean runs on a quiet machine gave 31 tests, 29 passing,
+one boot failure each — on a *different* test each time. Bisecting by test name
+sends you hunting a defect in whatever subtest drew the short straw; it has
+happened, and it costs hours. Read the stack, not the title.
+
+This is separable from the load-related input failures above, and cheaply: a boot
+failure dies before a single assertion runs, so it has no interaction evidence at
+all. `server did not start within 30s`, `Navigation timeout`, and a drawer that
+never opened *with no listener evidence* are boot failures. A booted page with a
+live listener that then stops receiving input is the load problem, and a quiet
+machine fixes that one. A quiet machine does not fix this one.
+
+The one-in-thirty figure comes from two runs. Treat "occasionally, and the name is
+noise" as the finding; the rate is not pinned.
+
+This cannot redden a release. `deploy/test/*.test.ps1` and `preflight-release.ps1`
+are pure PowerShell — they never launch a browser, so no release gate can fail
+this way.
+
+**Killing the runner does not kill the browsers.** Stop a UI run — Ctrl-C, a
+harness timeout, a killed task — and the `node --test` tree survives its parent
+and keeps booting Chrome. One orphan ran unnoticed for nearly forty minutes and
+silently degraded every run started after it, which reads as a sudden crop of
+timeouts in unrelated tests. After stopping a UI run, check and clear it:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -like '*test/ui/*' } |
+  ForEach-Object { taskkill /PID $_.ProcessId /T /F }
+```
+
+A run that takes far longer than usual is the symptom worth checking first: the
+suite is about 4½ minutes on a quiet machine and was measured at over 11 with an
+orphan competing for the box.
