@@ -1,0 +1,7 @@
+# Document fixtures are compared byte for byte by the extraction tests, so no
+# platform may rewrite their line endings. Git auto-detects the real PDFs as
+# binary today, but corrupt.pdf is ASCII by design and git already announced it
+# would convert LF to CRLF on the next checkout. Pin all of them rather than
+# rely on heuristics: a mangled fixture fails as "the parser is broken", which
+# is the most expensive kind of wrong.
+test/fixtures/documents/** binary
