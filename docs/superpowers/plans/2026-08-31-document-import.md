@@ -92,13 +92,26 @@ reason to widen this build.
     "pdfjs-dist": "^4.10.38",
 ```
 
-- [ ] **Step 2: Install without the optional canvas binary**
+- [ ] **Step 2: Install**
 
-Run: `npm install --omit=optional`
+Run: `npm install`
 
-Expected: completes; `node_modules/pdfjs-dist` present, `node_modules/@napi-rs` absent.
+Expected: completes; `node_modules/pdfjs-dist` present at a `4.x` version.
 
-`@napi-rs/canvas` is 37 MB and is only needed for rendering. Text extraction does not need it. Note `pdfjs-dist@6` *breaks* without it (`ReferenceError: DOMMatrix is not defined` at module load); v4 degrades correctly, which is why the version is pinned to `^4.10`. Forgetting `--omit=optional` costs disk only, never function.
+**Do not use `npm install --omit=optional` here.** An earlier draft of this plan
+said to, on the grounds that it drops `@napi-rs/canvas` (37 MB, needed only for
+rendering, not for text extraction). That was checked and is wrong: `--omit` is
+a **global** switch over the whole dependency tree, and esbuild ships its
+platform binaries as `optionalDependencies` — `@esbuild/win32-x64` is what
+`vite build` runs on. Omitting optional deps therefore breaks the client build.
+
+So the canvas binary comes along and sits unused. That is a disk cost, not a
+correctness one, and it is the cheaper mistake.
+
+The version pin still matters for a different reason: `pdfjs-dist@6`
+hard-requires the canvas package even for text-only extraction and dies at
+module load with `ReferenceError: DOMMatrix is not defined` if it is ever
+absent. v4 degrades correctly. Pin `^4.10`.
 
 - [ ] **Step 3: Verify the pin holds**
 
@@ -519,7 +532,7 @@ git commit -m "test(documents): committed fixtures and their generator"
 
 Three constraints, all established by measurement:
 
-1. **Lazy import.** Loading `pdfjs-dist` costs 69 ms (v4 without canvas). Doing it at boot puts that into process start and re-triggers the class of false slow-parse warning fixed in `4013ff6`.
+1. **Lazy import.** Loading `pdfjs-dist` costs 69 ms measured without canvas, and up to 655 ms with it. Doing it at boot puts that into process start and re-triggers the class of false slow-parse warning fixed in `4013ff6`.
 2. **Warnings go to stdout.** `Cannot polyfill DOMMatrix` and friends print via `console.warn` at module load and must be suppressed, or they pollute the service log.
 3. **Teardown is `loadingTask.destroy()`**, not `doc.destroy()` — the latter does not exist. An undestroyed task keeps a worker alive and stops Node exiting.
 
