@@ -587,6 +587,75 @@ function postureSection(payload) {
   return out;
 }
 
+/**
+ * Documents — the imported source files and the sentences pulled out of them.
+ *
+ * Absent or unavailable renders nothing at all, exactly as postureSection does
+ * above: a briefing for a portfolio with no imported documents should not
+ * carry an empty chapter about them.
+ *
+ * Two contract details shape what is printed:
+ *   - `pageCount` and a sentence's `page` are null for Word, text and Markdown,
+ *     which have no pages until something renders them. A page is cited only
+ *     when there genuinely is one — "page null", or a coerced "page 0", would
+ *     be a fabricated citation in a document people forward.
+ *   - `summary` can be empty while `warnings` is not (a scanned PDF with no
+ *     text layer). That document still gets its heading and its warning; it
+ *     must not silently vanish into "nothing was imported".
+ *
+ * The label over the sentences is "Extracted from the document", never
+ * "Summary" — these are the document's own words, selected, not written.
+ */
+function documentsSection(payload) {
+  const sec = SECTIONS_OF(payload).documents;
+  if (!sec || !sec.available) return [];
+
+  const paged = (v) => v !== null && v !== undefined && v !== "";
+  const out = [cioHeading(6, "Documents"), goldRule()];
+  out.push(body(str(sec.headline, ""), { bold: true, size: 24, after: 160 }));
+
+  for (const d of arr(sec.documents)) {
+    if (!d || typeof d !== "object") continue;
+    out.push(heading(str(d.title, "Untitled document"), HeadingLevel.HEADING_2, 26));
+
+    const pages = paged(d.pageCount)
+      ? ` · ${num(d.pageCount)} page${num(d.pageCount) === 1 ? "" : "s"}`
+      : "";
+    out.push(body(
+      `${str(d.fileName, "")} · ${str(d.kind, "")}${pages} · ${num(d.wordCount)} words · imported ${fmtDate(d.extractedAt)}`,
+      { color: INK_SOFT, size: 18, after: 100 }
+    ));
+
+    for (const w of arr(d.warnings)) {
+      out.push(body(str(w, ""), { bullet: true, italic: true, color: SEVERITY_COLOR.warning, after: 60 }));
+    }
+
+    const summary = arr(d.summary);
+    if (summary.length) {
+      /* Gold and bold like sectionLabel above, but deliberately NOT routed
+         through it: sectionLabel uppercases, and this heading is a claim
+         about where the sentences came from, meant to be read as the
+         sentence it is rather than as chrome. */
+      out.push(body("Extracted from the document", { bold: true, color: GOLD, size: 18, after: 60 }));
+      for (const s of summary) {
+        out.push(body(`“${str(s.text, "")}”`, { italic: true, after: 20 }));
+        /* Provenance is its own paragraph rather than a suffix on the quote:
+           it is the citation, not part of what the document said. */
+        out.push(body(
+          `— ${str(s.heading, "document")}${paged(s.page) ? `, page ${num(s.page)}` : ""}`,
+          { color: INK_SOFT, size: 18, after: 120 }
+        ));
+      }
+    }
+
+    const refs = arr(d.projectRefs);
+    if (refs.length) {
+      out.push(body(`Mentions: ${refs.join(", ")} (reported, not linked)`, { size: 18, after: 160 }));
+    }
+  }
+  return out;
+}
+
 /** KPI 2-column table. */
 function kpiSection(payload) {
   const kpis = (payload.summary && payload.summary.kpis) || {};
@@ -824,6 +893,7 @@ export async function buildWord(payload) {
     ...prioritiesSection(safe),
     ...roadmapSection(safe),
     ...postureSection(safe),
+    ...documentsSection(safe),
     ...chartsSection(safe),
     ...projectBriefPages(safe),
   ];

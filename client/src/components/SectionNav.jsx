@@ -1,4 +1,4 @@
-/** Sticky section rail — the CIO's four sections, always in order. */
+/** Sticky section rail — the CIO's sections, always in order. */
 import { scrollToSection, useScrollSpy } from "../lib/motion.jsx";
 
 export const SECTIONS = [
@@ -7,6 +7,7 @@ export const SECTIONS = [
   { id: "priorities", n: 3, label: "Priorities" },
   { id: "roadmap", n: 4, label: "Roadmap / Planned" },
   { id: "posture", n: 5, label: "Security Posture" },
+  { id: "documents", n: 6, label: "Documents" },
 ];
 
 const IDS = SECTIONS.map((s) => s.id);

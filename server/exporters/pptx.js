@@ -18,6 +18,9 @@ const range = (s) => (s.rangeStart === s.rangeEnd ? fmtDate(s.rangeStart) : `${f
 /* The writer wraps and measures text, so these caps only exist to stop one
    pathological row from eating a whole slide — they are deliberately loose. */
 const clip = (text, n = 150) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
+/* A page number that is genuinely there. Documents with no page concept carry
+   null, and 0 is never a real page — printing either is a false citation. */
+const paged = (v) => v !== null && v !== undefined && v !== "";
 
 /**
  * Compact change marker. The writer re-measures whatever text it is given, so
@@ -60,7 +63,7 @@ function noHistoryLine(summary) {
 export function buildPptxDeck(payload) {
   const { summary, meta = {} } = payload;
   const { kpis, sections } = summary;
-  const { successes, qri, priorities, roadmap, posture } = sections;
+  const { successes, qri, priorities, roadmap, posture, documents } = sections;
 
   const slides = [];
 
@@ -210,6 +213,61 @@ export function buildPptxDeck(payload) {
           + (d.linkedProject ? `\nRemediation: ${clip(d.linkedProject.name, 70)} (${d.linkedProject.health}, ${Math.round(d.linkedProject.percentComplete)}%)` : ""),
       })),
       note: posture.headline,
+    });
+  }
+
+  /* 6 — Documents, and only when something has actually been imported.
+     Same rule as Posture above: an empty chapter is worse than no chapter. */
+  if (documents?.available) {
+    const shown = documents.documents.slice(0, 5);
+    const rest = documents.documents.length - shown.length;
+    const sentences = documents.documents.reduce((n, d) => n + (d.summary?.length || 0), 0);
+    const flagged = documents.documents.filter((d) => d.warnings?.length).length;
+
+    slides.push({
+      eyebrow: "Section 6",
+      title: "Documents",
+      dense: true,
+      kpis: [
+        { lab: "Imported", val: String(documents.documents.length) },
+        { lab: "Sentences extracted", val: String(sentences) },
+        { lab: "Needing a look", val: String(flagged) },
+      ],
+      bullets: shown.map((d) => {
+        /* pageCount and a sentence's page are null for .docx/.txt/.md, which
+           have no pages before something renders them. Say so in words rather
+           than printing a page that does not exist. */
+        const pages = paged(d.pageCount)
+          ? `${d.pageCount} page${d.pageCount === 1 ? "" : "s"}`
+          : "no page numbers";
+        /* Every entry here becomes its OWN line, because pptx-lite splits a
+           bullet's .sub on "\n" into separate <a:p> paragraphs. A line feed
+           left inside a single <a:t> is ignored by OOXML and PowerPoint runs
+           the two lines together — which is why provenance, which must sit
+           under its sentence, goes through .sub and never through .text. */
+        const lines = [`${d.fileName} · ${pages} · ${d.wordCount} words · imported ${fmtDate(d.extractedAt)}`];
+        for (const w of d.warnings || []) lines.push(`⚠ ${clip(w, 120)}`);
+
+        const summary = d.summary || [];
+        if (summary.length) {
+          lines.push("Extracted from the document:");
+          for (const s of summary.slice(0, 2)) {
+            lines.push(`“${clip(s.text, 160)}”`);
+            lines.push(`— ${s.heading || "document"}${paged(s.page) ? `, page ${s.page}` : ""}`);
+          }
+        }
+        if (d.projectRefs?.length) lines.push(`Mentions ${d.projectRefs.join(", ")} (reported, not linked)`);
+
+        return {
+          tag: d.kind,
+          tone: d.warnings?.length ? "warn" : "info",
+          text: clip(d.title || d.fileName, 80),
+          sub: lines.join("\n"),
+        };
+      }),
+      note: rest > 0
+        ? `${documents.headline} ${rest} further document${rest === 1 ? "" : "s"} in the dashboard.`
+        : documents.headline,
     });
   }
 

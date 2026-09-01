@@ -316,6 +316,45 @@ export const MIGRATIONS = [
         ALTER TABLE dbo.IngestRun ADD IsColdStart BIT NOT NULL CONSTRAINT DF_IngestRun_ColdStart DEFAULT (0);
     `,
   },
+  {
+    id: 12,
+    name: "document_extract",
+    sql: `
+      /* Imported documents. Deliberately hangs off dbo.SourceFile rather than
+         duplicating it: SourceFile never assumed a workbook -- FileName,
+         Sha256, Bytes, VaultPath -- so documents reuse it, and with it the
+         MERGE in sourceFiles.record that already makes re-import idempotent.
+
+         PageCount is NULL-able because .docx and .txt have no pages before
+         they are rendered, and a 0 there would be a lie rather than a gap.
+
+         ExtractJson holds the whole extract as one document instead of being
+         normalised into block and fact tables. Nothing queries across
+         documents by block or fact -- an extract is always read whole to
+         render one section -- so normalising would buy nothing and cost a
+         migration every time the extract shape changed. If cross-document
+         querying is ever wanted, that is the moment to normalise, not now. */
+      IF OBJECT_ID('dbo.DocumentExtract', 'U') IS NULL
+      CREATE TABLE dbo.DocumentExtract (
+        DocumentExtractId BIGINT IDENTITY(1,1) PRIMARY KEY,
+        SourceFileId      BIGINT         NOT NULL
+          REFERENCES dbo.SourceFile (SourceFileId),
+        Kind              VARCHAR(8)     NOT NULL,
+        Title             NVARCHAR(400)  NOT NULL,
+        PageCount         INT            NULL,
+        WordCount         INT            NOT NULL,
+        ExtractJson       NVARCHAR(MAX)  NOT NULL,
+        ExtractedAt       DATETIME2(3)   NOT NULL
+      );
+
+      /* Idempotent re-import enforced by the database, not by the caller
+         remembering to check first -- the same reason UX_SourceFile_Name_Sha
+         exists. */
+      IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_DocumentExtract_SourceFile')
+        CREATE UNIQUE INDEX UX_DocumentExtract_SourceFile
+          ON dbo.DocumentExtract (SourceFileId);
+    `,
+  },
 ];
 
 const LEDGER = `

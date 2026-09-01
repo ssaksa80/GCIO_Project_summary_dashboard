@@ -1,7 +1,22 @@
 import { useRef, useState } from "react";
 import { uploadWorkbooks } from "../lib/api.js";
 
-const ACCEPT = ".xlsx,.xls,.xlsm,.csv";
+/* Workbooks and documents go through one route: /api/ingest/upload forks on
+   the extension, so widening the picker is all the client has to do. Keep in
+   step with DOCUMENT_EXTENSIONS in server/documents/extract.js. */
+const ACCEPT = ".xlsx,.xls,.xlsm,.csv,.pdf,.docx,.txt,.md";
+
+/**
+ * The two forks of the upload route report different things: a workbook comes
+ * back with a project count, a document with the title it was read as and any
+ * warnings. Reading `r.projects` off a document printed "undefined projects
+ * ingested", so the shape is what decides which sentence is true.
+ */
+function noteFor(result) {
+  if (typeof result.projects === "number") return `${result.projects} projects ingested`;
+  const title = result.document ? `imported as "${result.document}"` : "imported";
+  return result.warnings?.length ? `${title} · ${result.warnings.join(" · ")}` : title;
+}
 
 export default function UploadPanel({ onClose, onDone }) {
   const [over, setOver] = useState(false);
@@ -16,7 +31,7 @@ export default function UploadPanel({ onClose, onDone }) {
     try {
       const res = await uploadWorkbooks(files);
       setResults([
-        ...res.ingested.map((r) => ({ file: r.file, ok: true, note: `${r.projects} projects ingested` })),
+        ...res.ingested.map((r) => ({ file: r.file, ok: true, note: noteFor(r) })),
         ...res.errors.map((r) => ({ file: r.file, ok: false, note: r.error })),
       ]);
       if (res.ingested.length) onDone();
@@ -33,7 +48,7 @@ export default function UploadPanel({ onClose, onDone }) {
       <div className="card modal-card">
         <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">✕</button>
         <span className="micro">Data ingestion</span>
-        <h2 className="display" style={{ fontSize: 21, margin: "6px 0 14px" }}>Upload portfolio workbooks</h2>
+        <h2 className="display" style={{ fontSize: 21, margin: "6px 0 14px" }}>Upload workbooks and documents</h2>
 
         <div
           className={`dropzone${over ? " over" : ""}`}
@@ -45,8 +60,8 @@ export default function UploadPanel({ onClose, onDone }) {
           tabIndex={0}
           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && inputRef.current?.click()}
         >
-          <b>{busy ? "Ingesting…" : "Drop Excel files here, or click to browse"}</b>
-          <p>Single or bulk · .xlsx, .xls, .xlsm, .csv · up to 20 files · headers are matched intelligently</p>
+          <b>{busy ? "Ingesting…" : "Drop workbooks or documents here, or click to browse"}</b>
+          <p>Single or bulk · .xlsx, .xls, .xlsm, .csv · .pdf, .docx, .txt, .md · up to 20 files · workbook headers are matched intelligently</p>
           <input
             ref={inputRef}
             type="file"
@@ -69,8 +84,10 @@ export default function UploadPanel({ onClose, onDone }) {
         )}
 
         <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 16, lineHeight: 1.55 }}>
-          Files are stored in the watched <code>data/</code> folder — the dashboard also ingests anything dropped
-          there directly, 24×7. Need the canonical format? <a href="/api/template" style={{ color: "var(--accent)" }}>Download the template</a>.
+          Workbooks are stored in the watched <code>data/</code> folder — the dashboard also ingests anything dropped
+          there directly, 24×7. Documents are kept separately and read for their dates, amounts and key sentences;
+          they appear in the Documents section. Need the canonical workbook format?{" "}
+          <a href="/api/template" style={{ color: "var(--accent)" }}>Download the template</a>.
         </p>
       </div>
     </div>

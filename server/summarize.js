@@ -104,18 +104,38 @@ export async function loadHistoryStart(store) {
 }
 
 /**
+ * Imported documents, or an empty list if this deployment has no document
+ * store. Mirrors loadChanges: a failure here must not take down the briefing,
+ * which is still correct without the Documents section.
+ *
+ * @param {object|null} documentsStore backends.documents
+ * @returns {Promise<object[]>} stored extracts, newest first, or []
+ */
+export async function loadDocuments(documentsStore) {
+  if (!documentsStore || typeof documentsStore.list !== "function") return [];
+  try {
+    return await documentsStore.list();
+  } catch (err) {
+    console.error(`[documents] could not load imported documents: ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Build the full summary payload for a period (SPEC §5 shape).
  * @param {import('./store.js').Store} store
  * @param {"daily"|"weekly"|"monthly"|"yearly"} period
  * @param {string} dateISO anchor date (yyyy-mm-dd)
- * @param {{changes?: Map<string, object>|null, historyStartedAt?: string|null}} [opts]
- *        changes computed by loadChanges and historyStartedAt computed by
- *        loadHistoryStart, both already resolved by the caller and passed
- *        straight through onto the returned payload. Both default to null so
- *        every existing three-argument caller keeps working unchanged and
- *        sees nothing annotated and no history start date.
+ * @param {{changes?: Map<string, object>|null, historyStartedAt?: string|null, documents?: object[]}} [opts]
+ *        changes computed by loadChanges, historyStartedAt computed by
+ *        loadHistoryStart and documents computed by loadDocuments, all already
+ *        resolved by the caller and passed straight through. The first two
+ *        default to null and documents to [], so every existing
+ *        three-argument caller keeps working unchanged and sees nothing
+ *        annotated, no history start date, and an unavailable Documents
+ *        section rather than an error.
  */
-export function buildSummary(store, period, dateISO, { changes = null, historyStartedAt = null } = {}) {
+export function buildSummary(store, period, dateISO, { changes = null, historyStartedAt = null, documents = [] } = {}) {
   const anchor = dayjs(dateISO);
   const { start, end } = periodWindow(period, dateISO);
   const todayISO = dayjs().format("YYYY-MM-DD");
@@ -176,7 +196,7 @@ export function buildSummary(store, period, dateISO, { changes = null, historySt
     changes: summariseChanges(changes, new Set(projects.map((p) => p.id))),
     historyStartedAt,
     sections: annotateChanges(
-      buildSections(projects, { period, start, end, todayISO, postureRows: store.posture() }),
+      buildSections(projects, { period, start, end, todayISO, postureRows: store.posture(), documents }),
       changes
     ),
     narrative: buildNarrative({ period, anchor, end, projects, active, kpis, completedIn, approvedIn, overdue, criticalRisks, allMilestones, todayISO }),

@@ -14,15 +14,19 @@ import multer from "multer";
 import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
+import { extractDocument, DOCUMENT_EXTENSIONS } from "./documents/extract.js";
+import { extractFacts } from "./documents/facts.js";
+import { summariseDocument } from "./documents/summarise.js";
+import { hashBytes } from "./ingest/hash.js";
 import { renderMetrics } from "./metrics.js";
-import { buildSummary, loadChanges, loadHistoryStart, toRow, computeDetail } from "./summarize.js";
+import { buildSummary, loadChanges, loadHistoryStart, loadDocuments, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
 import { buildExcel } from "./exporters/excel.js";
 import { buildWord } from "./exporters/word.js";
 import { buildHtml } from "./exporters/html.js";
 import { buildPptxDeck } from "./exporters/pptx.js";
 import { buildTemplate, TEMPLATE_FILENAME } from "./template.js";
-import { looksLikeWorkbook } from "./uploadGuard.js";
+import { looksLikeSupportedFile } from "./uploadGuard.js";
 import { attachSession, requireSession, requireRole } from "./auth/session.js";
 import { authRoutes } from "./auth/routes.js";
 import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
@@ -37,6 +41,9 @@ const PERIODS = new Set(["daily", "weekly", "monthly", "yearly"]);
  *   roleMapping: object,
  *   audit: {append: Function},
  *   ingestRuns?: {recent: Function}|null,
+ *   documents?: {list: Function, add: Function, remove: Function}|null,
+ *   sourceFiles?: {record: Function}|null,
+ *   vault?: {store: Function}|null,
  *   ldapAuthenticate?: Function,
  *   dataDir?: string,
  *   clientDist?: string,
@@ -60,6 +67,23 @@ export function createApp(deps) {
   const startedAt = deps.startedAt || Date.now();
   const audit = deps.audit || { append: async () => {} };
   const ingestRuns = deps.ingestRuns || null;
+  /* Optional like ingestRuns: a deployment or a test that wires no document
+     store gets an unavailable Documents section, not an error. */
+  const documents = deps.documents || null;
+  /* The vault ledger. Optional for the same reason: an uploaded document is
+     recorded here before it is extracted, and a deployment without it cannot
+     import documents at all -- which the route says out loud rather than
+     failing on a property of null. */
+  const sourceFiles = deps.sourceFiles || null;
+  /* An explicit dependency, NOT store.vault.
+     Only SqlStore holds a vault, and it holds it privately -- it vaults inside
+     applyFile and nothing above it has ever reached into store internals. The
+     in-memory Store has none at all, so `store.vault.store(...)` would throw
+     on STORE=memory, which is every hermetic test and every dev run. Passing
+     it in keeps app.js store-agnostic and makes "no vault" an ordinary,
+     supported configuration: the document still imports, it just has no
+     provenance copy. index.js hands the real one over for STORE=mssql. */
+  const vault = deps.vault || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
   /* A function, not a plain boolean: STORE=mssql's leader status can flip to
@@ -91,19 +115,21 @@ export function createApp(deps) {
 
   /**
    * Both /api/summary and /api/export/:format need the same summary, built
-   * the same way: history and its start date loaded concurrently -- each
-   * already swallows its own failure, so there is nothing here for Promise.all
-   * to obscure -- then handed to buildSummary. Concurrency (not two sequential
-   * awaits) matters most exactly when the database is degraded: that is when
-   * both guards are doing their job, and sequential awaits would make the
-   * request sit out two connection timeouts back to back before answering.
+   * the same way: history, its start date and the imported documents loaded
+   * concurrently -- each already swallows its own failure, so there is nothing
+   * here for Promise.all to obscure -- then handed to buildSummary.
+   * Concurrency (not sequential awaits) matters most exactly when the database
+   * is degraded: that is when all three guards are doing their job, and
+   * sequential awaits would make the request sit out three connection timeouts
+   * back to back before answering.
    */
   const summarize = async (period, dateISO) => {
-    const [changes, historyStartedAt] = await Promise.all([
+    const [changes, historyStartedAt, docs] = await Promise.all([
       loadChanges(store, period, dateISO),
       loadHistoryStart(store),
+      loadDocuments(documents),
     ]);
-    return buildSummary(store, period, dateISO, { changes, historyStartedAt });
+    return buildSummary(store, period, dateISO, { changes, historyStartedAt, documents: docs });
   };
 
   /* Monitoring must not need a session. */
@@ -319,12 +345,79 @@ export function createApp(deps) {
     const errors = [];
     for (const f of files) {
       const safe = path.basename(f.originalname).replace(/[^\w.\- ()]/g, "_");
-      const verdict = looksLikeWorkbook(f.buffer, safe);
+      const verdict = looksLikeSupportedFile(f.buffer, safe);
       if (!verdict.ok) {
         errors.push({ file: safe, error: verdict.reason });
         await auditFrom(req, { actor: req.session.principal, action: "upload.rejected", subject: `${safe}: ${verdict.reason}` });
         continue;
       }
+
+      /* Documents fork here, before ingestBuffer.
+         A workbook is written into the watched folder and the watcher owns
+         the upsert. A document cannot take that route: the watcher handles
+         workbooks only, and a document has no projects to upsert. So it is
+         vaulted, recorded and extracted inline, then read back by the
+         briefing. Nothing below this branch ever sees a document. */
+      if (DOCUMENT_EXTENSIONS.has(path.extname(safe).toLowerCase())) {
+        if (!documents || !sourceFiles) {
+          errors.push({ file: safe, error: "this deployment cannot import documents" });
+          await auditFrom(req, { actor: req.session.principal, action: "upload.rejected", subject: `${safe}: no document store` });
+          continue;
+        }
+        try {
+          const extracted = await extractDocument(f.buffer, safe);
+
+          /* Without a vault the document still imports; it just has no
+             provenance copy. The hash is computed either way, because it is
+             what makes a re-import of identical bytes the same document
+             rather than a second one. */
+          const vaulted = vault
+            ? vault.store(f.buffer, safe)
+            : { hash: hashBytes(f.buffer), vaultPath: null, bytes: f.buffer.length };
+
+          const { sourceFileId } = await sourceFiles.record({
+            fileName: safe,
+            sha256: vaulted.hash,
+            bytes: vaulted.bytes,
+            vaultPath: vaulted.vaultPath,
+            uploadedBy: req.session.principal,
+          });
+
+          await documents.add({
+            sourceFileId,
+            fileName: safe,
+            kind: extracted.kind,
+            title: extracted.title,
+            pageCount: extracted.pageCount,
+            wordCount: extracted.wordCount,
+            extract: {
+              blocks: extracted.blocks,
+              facts: extractFacts(extracted.blocks),
+              summary: summariseDocument(extracted.blocks),
+              warnings: extracted.warnings,
+            },
+          });
+
+          ingested.push({ file: safe, document: extracted.title, warnings: extracted.warnings });
+          await auditFrom(req, {
+            actor: req.session.principal,
+            action: "upload.document",
+            subject: `${safe} (${extracted.wordCount} words)`,
+          });
+        } catch (err) {
+          /* Per file, not per batch: one unreadable PDF in a drop of ten must
+             cost that one file and nothing else. Outside this try the first
+             bad file would abandon every file after it. */
+          errors.push({ file: safe, error: err.message });
+          await auditFrom(req, {
+            actor: req.session.principal,
+            action: "upload.rejected",
+            subject: `${safe}: ${err.message}`,
+          });
+        }
+        continue;
+      }
+
       const parsed = ingestBuffer(f.buffer, safe, dayjs().format("YYYY-MM-DD"));
       if (!parsed.ok) {
         errors.push({ file: safe, error: parsed.error });
@@ -341,7 +434,33 @@ export function createApp(deps) {
     }
     res.json({ ok: errors.length === 0, ingested, errors });
   }));
-  
+
+  /* Exists so testing with demo files does not mean hand-editing the database.
+
+     The vault copy is deliberately left in place, which is where this departs
+     from the design note: the vault is content-addressed, it is the provenance
+     record, and deleting it would break any other row that happens to
+     reference the same bytes -- two documents holding identical bytes share
+     one file. The SourceFile ledger row stays for the same reason: it is what
+     names those retained bytes. Only the extract is removed, and re-importing
+     the file brings the document back. */
+  app.delete("/api/documents/:sourceFileId", requireRole("pm"), wrap(async (req, res) => {
+    const id = Number(req.params.sourceFileId);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: "not a document id" });
+
+    /* Same optional dependency as everywhere else: a deployment that wired no
+       document store holds no documents, so every id is a miss. Reaching
+       through the null would answer 500 to a question whose honest answer is
+       "there is no such document". */
+    const removed = documents ? await documents.remove(id) : false;
+    if (!removed) return res.status(404).json({ error: "no such imported document" });
+
+    await auditFrom(req, {
+      actor: req.session.principal, action: "document.removed", subject: String(id),
+    });
+    res.json({ ok: true });
+  }));
+
   // ---------- exports ----------
   const EXPORT_META = {
     xlsx: { ext: "xlsx", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
