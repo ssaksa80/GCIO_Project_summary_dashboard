@@ -80,7 +80,20 @@ try {
   $bumped = Join-Path $tmp 'real-bumped.json'
   $orig = [IO.File]::ReadAllText($realLock)
   $pkgVer = (Get-Content -Raw (Join-Path $repo 'package.json') | ConvertFrom-Json).version
-  [IO.File]::WriteAllText($bumped, ($orig -replace [regex]::Escape("`"version`": `"$pkgVer`""), '"version": "9.9.9"'))
+  # Bump ONLY the app's own version, which lives in the header before the first
+  # "node_modules/" entry. A whole-file replace looks equivalent and is not: the
+  # app's version string is not unique in a lockfile, and any dependency pinned
+  # at the same version would be rewritten too. Those sit inside the deps-hash
+  # window, so the fixture would change the very thing the assertion says it
+  # leaves alone, and the test would fail while the code under test was correct.
+  # Found for real at 1.5.1, which @napi-rs/lzma-linux-x64-gnu and base64-js
+  # both happen to be pinned to.
+  $nmAt = $orig.IndexOf('"node_modules/')
+  if ($nmAt -lt 0) { throw 'lockfile has no node_modules/ entries - fixture assumption broken' }
+  $head = $orig.Substring(0, $nmAt)
+  $tail = $orig.Substring($nmAt)
+  $head = $head -replace [regex]::Escape("`"version`": `"$pkgVer`""), '"version": "9.9.9"'
+  [IO.File]::WriteAllText($bumped, ($head + $tail))
   Assert-Eq (Get-GcioLockDepsHash $realLock) (Get-GcioLockDepsHash $bumped) 'bumping only the app version in the REAL lockfile leaves the deps hash unchanged'
 
   $depTouched = Join-Path $tmp 'real-dep.json'
