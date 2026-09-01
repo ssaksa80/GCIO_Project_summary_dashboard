@@ -355,6 +355,63 @@ function buildPostureSheet(wb, payload) {
   return ws;
 }
 
+/**
+ * Documents — one row per extracted sentence, not one row per document.
+ *
+ * A workbook exists to be filtered and sorted; a single cell holding every
+ * sentence a document yielded cannot be filtered by page, by heading or by
+ * phrase, which is the whole reason someone opens the xlsx rather than the
+ * HTML. So the sentence is the row, and the document repeats down the
+ * Document/File columns.
+ *
+ * Contract details that shape the cells:
+ *   - `page` is null for Word, text and Markdown, which have no pages before
+ *     they are rendered. Those rows carry an em-dash, never a coerced 0 and
+ *     never the string "null" — a page number is a citation and a wrong one
+ *     is worse than none. PDFs get a real number so the column stays sortable.
+ *   - A document whose `summary` is empty but whose `warnings` is not (a
+ *     scanned PDF) still gets a row, carrying the warning. Dropping it would
+ *     make an imported document look like it was never imported.
+ *
+ * Absent or unavailable adds no sheet at all, exactly as buildPostureSheet does.
+ */
+function buildDocumentsSheet(wb, payload) {
+  const sec = ((payload.summary || {}).sections || {}).documents || {};
+  if (!sec.available) return null;
+
+  const paged = (v) => v !== null && v !== undefined && v !== "";
+  const rows = [];
+  for (const d of arr(sec.documents)) {
+    if (!d || typeof d !== "object") continue;
+    const title = str(d.title, "Untitled document");
+    const file = str(d.fileName, "");
+    const warnings = arr(d.warnings).join(" · ");
+    const summary = arr(d.summary);
+
+    if (!summary.length) {
+      /* No sentences came out of this one — it still gets a row so the
+         document is visible, with the warning saying why it is empty. */
+      rows.push([title, file, "—", "—", "—", warnings || "No sentences could be extracted."]);
+      continue;
+    }
+    summary.forEach((s, i) => {
+      rows.push([
+        title,
+        file,
+        paged(s.page) ? num(s.page) : "—",
+        str(s.heading, "—"),
+        str(s.text, ""),
+        i === 0 ? warnings : "",
+      ]);
+    });
+  }
+
+  return sectionSheet(wb, "6 Documents", `6 · Documents — ${str(sec.headline, "")}`,
+    ["Document", "File", "Page", "Heading", "Extracted sentence", "Warnings"],
+    rows.length ? rows : [["—", "", "—", "—", "No documents imported", ""]],
+    [34, 28, 8, 26, 82, 40]);
+}
+
 function buildSuccessesSheet(wb, payload) {
   const sec = ((payload.summary || {}).sections || {}).successes || {};
   const rows = [
@@ -707,6 +764,7 @@ export async function buildExcel(payload) {
   buildPrioritiesSheet(wb, safe);
   buildRoadmapSheet(wb, safe);
   buildPostureSheet(wb, safe);
+  buildDocumentsSheet(wb, safe);
   buildPortfolioSheet(wb, safe);
   buildProjectsDetailSheet(wb, safe);
   buildChartsSheet(wb, safe);

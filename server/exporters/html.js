@@ -376,6 +376,49 @@ function renderPosture(sec) {
 </section>`;
 }
 
+/**
+ * Documents — imported source files and the sentences pulled out of them.
+ *
+ * Two contract details drive the shape here:
+ *   - `pageCount` and a sentence's `page` are null for Word, text and Markdown,
+ *     which have no pages before they are rendered. A page is printed only when
+ *     there genuinely is one; "page null" (or a coerced "page 0") would be a
+ *     fabricated citation.
+ *   - `summary` can be empty while `warnings` is not — a scanned PDF with no
+ *     text layer. That document still gets its block, carrying the warning,
+ *     because silently dropping it reads as "nothing was imported".
+ *
+ * The heading over the sentences is "Extracted from the document", never
+ * "Summary": these are the document's own words, selected, not written.
+ */
+function renderDocuments(sec) {
+  if (!sec || !sec.available) return "";
+  const documents = arr(sec.documents);
+  const paged = (v) => v !== null && v !== undefined && v !== "";
+  return `
+<section class="block">
+  ${sectionHead(6, "Documents", str(sec.headline, ""))}
+  ${documents.map((d) => `
+  <article class="doc">
+    <h3>${esc(str(d.title, "Untitled document"))}</h3>
+    <p class="doc-meta">${esc(str(d.fileName, ""))} · ${esc(str(d.kind, ""))}${
+      paged(d.pageCount) ? ` · ${num(d.pageCount)} page${num(d.pageCount) === 1 ? "" : "s"}` : ""
+    } · ${num(d.wordCount)} words</p>
+    ${arr(d.warnings).length ? `<ul class="doc-warn">${
+      arr(d.warnings).map((w) => `<li>${esc(w)}</li>`).join("")
+    }</ul>` : ""}
+    ${arr(d.summary).length ? `<h4>Extracted from the document</h4><ul class="doc-quotes">${
+      arr(d.summary).map((s) => `<li><q>${esc(str(s.text, ""))}</q> <span class="prov">${
+        esc(str(s.heading, "document"))}${paged(s.page) ? `, page ${num(s.page)}` : ""
+      }</span></li>`).join("")
+    }</ul>` : ""}
+    ${arr(d.projectRefs).length
+      ? `<p class="doc-refs">Mentions: ${esc(arr(d.projectRefs).join(", "))} (reported, not linked)</p>`
+      : ""}
+  </article>`).join("")}
+</section>`;
+}
+
 function renderCharts(images) {
   const usable = images
     .filter((im) => im && im.dataUrl)
@@ -652,6 +695,25 @@ export function buildHtml(payload) {
   .minibar-fill { display: block; height: 100%; background: var(--navy); }
   .minibar.over .minibar-fill { background: var(--critical); }
   .minibar-num { font-size: 11px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+  article.doc {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 12px;
+    padding: 14px 18px 12px; margin: 10px 0;
+  }
+  article.doc h3 { margin: 0 0 3px; font-size: 16px; font-weight: 650; color: var(--navy); }
+  /* Deliberately NOT text-transform: uppercase like .section-label above.
+     This heading is a claim about where the sentences came from, and it is
+     meant to be read as the sentence it is, not as chrome. */
+  article.doc h4 {
+    font-size: 11.5px; font-weight: 700; letter-spacing: .01em;
+    color: var(--gold); margin: 12px 0 5px;
+  }
+  .doc-meta { margin: 0; font-size: 11.5px; color: var(--muted); }
+  ul.doc-warn { margin: 8px 0 0; padding-left: 20px; color: var(--serious); font-size: 12.5px; }
+  ul.doc-quotes { margin: 0; padding-left: 20px; }
+  ul.doc-quotes li { margin-bottom: 6px; }
+  ul.doc-quotes q { font-style: italic; }
+  .prov { color: var(--muted); font-size: 11px; }
+  .doc-refs { margin: 10px 0 0; font-size: 12px; color: var(--ink-2); }
   .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   figure.chart {
     margin: 0; background: var(--card); border: 1px solid var(--hairline);
@@ -687,7 +749,7 @@ export function buildHtml(payload) {
   @media print {
     body { background: #fff; }
     .sheet { max-width: none; padding: 0; }
-    .project-section { page-break-inside: avoid; break-inside: avoid; }
+    .project-section, article.doc { page-break-inside: avoid; break-inside: avoid; }
     .block { page-break-inside: auto; }
     section.block + section.project-section { page-break-before: always; break-before: page; }
     table { page-break-inside: auto; }
@@ -719,6 +781,7 @@ export function buildHtml(payload) {
   ${renderPriorities(sections.priorities)}
   ${renderRoadmap(sections.roadmap)}
   ${renderPosture(sections.posture)}
+  ${renderDocuments(sections.documents)}
   ${renderCharts(images)}
   ${renderPortfolio(projects)}
   ${renderProjectSections(details)}
