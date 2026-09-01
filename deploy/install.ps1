@@ -71,9 +71,23 @@ function Get-InstalledVersion {
 
   Refreshed by a patch as well as a bundle, so the tooling on the host never
   lags the artifact that last touched it.
+
+  code-update.ps1 and Update-GCIO.cmd are on this list because the sentence
+  above was aspirational until they were. They also ship BESIDE the archive,
+  which is how a host with nothing bootstraps - but a host that had only ever
+  been patched ended up with no updater at all, so `Update-GCIO.cmd -Rollback`,
+  the command every refusal message names, did not exist where those messages
+  tell operators to run it. Found on the live host after deploying 1.5.1.
+
+  The copy below is guarded by Test-Path, which is what kept the gap silent: a
+  file the artifact does not carry is skipped, the deploy still reports
+  health=OK, and the host quietly never gains the script.
+  deploy/test/host-tooling.test.ps1 drives a real installer run end to end so
+  this list and the builders' $HostScripts cannot drift apart unnoticed again.
 #>
 function Install-GcioHostTooling {
-  foreach ($f in 'install.ps1', 'install-service.ps1', 'uninstall.ps1', 'VERSION', 'versions.json') {
+  foreach ($f in 'install.ps1', 'install-service.ps1', 'uninstall.ps1',
+                 'code-update.ps1', 'Update-GCIO.cmd', 'VERSION', 'versions.json') {
     $src = Join-Path $Here $f
     if (Test-Path $src) { Copy-Item -Force $src (Join-Path $InstallDir $f) }
   }
