@@ -253,9 +253,17 @@ document is therefore a no-op, consistent with workbook behaviour.
 ### Purge
 
 `DELETE /api/documents/:sourceFileId`, PM-gated, removes the `DocumentExtract`
-row and the `SourceFile` row, and deletes the vault copy. The UI exposes it per
-document in the Documents section. This exists so testing with demo files does
-not require hand-editing the database.
+row. The UI exposes it per document in the Documents section. This exists so
+testing with demo files does not require hand-editing the database.
+
+**The vault copy is deliberately kept, and so is the `SourceFile` row.** An
+earlier draft of this section said the purge deleted both; that was wrong, and
+the implementation does not do it. The vault is content-addressed, so two
+documents holding identical bytes are one file on disk — deleting it to purge
+one of them would break the other, and it is the provenance record besides. The
+`SourceFile` row is what names those retained bytes, so it stays with them.
+Removing the extract is enough for what the purge is for: the document leaves
+the briefing and the exports, and re-importing the same file brings it back.
 
 ## Presentation
 
@@ -338,7 +346,9 @@ present.
   good one and reports the bad one.
 - Idempotency: importing the same document twice leaves one `SourceFile` row,
   one `DocumentExtract` row, and does not change `ExtractedAt`.
-- Purge: delete removes both rows and the vault copy.
+- Purge: delete removes the extract row and the document leaves the briefing;
+  the other documents survive, and so does a vault copy whose bytes a surviving
+  document shares.
 - Lazy import: asserted by requiring the app and checking `pdfjs-dist` is absent
   from the module registry until a PDF is imported.
 

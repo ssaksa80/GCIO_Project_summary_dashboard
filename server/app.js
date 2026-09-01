@@ -434,7 +434,33 @@ export function createApp(deps) {
     }
     res.json({ ok: errors.length === 0, ingested, errors });
   }));
-  
+
+  /* Exists so testing with demo files does not mean hand-editing the database.
+
+     The vault copy is deliberately left in place, which is where this departs
+     from the design note: the vault is content-addressed, it is the provenance
+     record, and deleting it would break any other row that happens to
+     reference the same bytes -- two documents holding identical bytes share
+     one file. The SourceFile ledger row stays for the same reason: it is what
+     names those retained bytes. Only the extract is removed, and re-importing
+     the file brings the document back. */
+  app.delete("/api/documents/:sourceFileId", requireRole("pm"), wrap(async (req, res) => {
+    const id = Number(req.params.sourceFileId);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: "not a document id" });
+
+    /* Same optional dependency as everywhere else: a deployment that wired no
+       document store holds no documents, so every id is a miss. Reaching
+       through the null would answer 500 to a question whose honest answer is
+       "there is no such document". */
+    const removed = documents ? await documents.remove(id) : false;
+    if (!removed) return res.status(404).json({ error: "no such imported document" });
+
+    await auditFrom(req, {
+      actor: req.session.principal, action: "document.removed", subject: String(id),
+    });
+    res.json({ ok: true });
+  }));
+
   // ---------- exports ----------
   const EXPORT_META = {
     xlsx: { ext: "xlsx", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
