@@ -22,7 +22,7 @@ import { buildWord } from "./exporters/word.js";
 import { buildHtml } from "./exporters/html.js";
 import { buildPptxDeck } from "./exporters/pptx.js";
 import { buildTemplate, TEMPLATE_FILENAME } from "./template.js";
-import { looksLikeWorkbook } from "./uploadGuard.js";
+import { looksLikeSupportedFile } from "./uploadGuard.js";
 import { attachSession, requireSession, requireRole } from "./auth/session.js";
 import { authRoutes } from "./auth/routes.js";
 import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
@@ -319,7 +319,7 @@ export function createApp(deps) {
     const errors = [];
     for (const f of files) {
       const safe = path.basename(f.originalname).replace(/[^\w.\- ()]/g, "_");
-      const verdict = looksLikeWorkbook(f.buffer, safe);
+      const verdict = looksLikeSupportedFile(f.buffer, safe);
       if (!verdict.ok) {
         errors.push({ file: safe, error: verdict.reason });
         await auditFrom(req, { actor: req.session.principal, action: "upload.rejected", subject: `${safe}: ${verdict.reason}` });
