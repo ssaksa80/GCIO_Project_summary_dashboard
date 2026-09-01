@@ -1399,7 +1399,50 @@ export function memoryDocuments() {
     },
   };
 }
+
+/**
+ * The vault ledger without a database, matching sourceFilesRepo.record.
+ *
+ * Idempotent on (fileName, sha256) exactly as UX_SourceFile_Name_Sha makes the
+ * SQL one -- re-importing identical bytes must return the same id, or the
+ * document store would be handed a new key each time and keep duplicating a
+ * file that has not changed.
+ */
+export function memorySourceFiles() {
+  const idsByKey = new Map();
+  let nextId = 1;
+
+  return {
+    async record({ fileName, sha256 }) {
+      const key = `${fileName} ${sha256}`;
+      const existing = idsByKey.get(key);
+      if (existing) return { sourceFileId: existing, alreadySeen: true };
+
+      const sourceFileId = nextId++;
+      idsByKey.set(key, sourceFileId);
+      return { sourceFileId, alreadySeen: false };
+    },
+  };
+}
 ```
+
+Add a test for the idempotency, since the whole re-import guarantee rests on it:
+
+```js
+test("recording identical bytes twice returns the same id", async () => {
+  const files = memorySourceFiles();
+  const a = await files.record({ fileName: "x.pdf", sha256: "a".repeat(64) });
+  const b = await files.record({ fileName: "x.pdf", sha256: "a".repeat(64) });
+  assert.equal(b.sourceFileId, a.sourceFileId);
+  assert.equal(b.alreadySeen, true);
+
+  const c = await files.record({ fileName: "x.pdf", sha256: "b".repeat(64) });
+  assert.notEqual(c.sourceFileId, a.sourceFileId, "different bytes are a different file");
+});
+```
+
+Import `memorySourceFiles` alongside `memoryDocuments` at the top of
+`test/documents/memoryDocuments.test.js`.
 
 - [ ] **Step 5: Run to verify it passes**
 
@@ -1737,18 +1780,35 @@ and find the `buildSections(...)` call inside it, adding `documents` to the opti
 
 - [ ] **Step 6: Wire it in `server/app.js`**
 
-Add `loadDocuments` to the import on line 18. Then replace the `summarize` helper at lines 101-107:
+`createApp(deps)` takes a **flat deps object** and destructures what it needs
+near the top, with optional dependencies defaulting — e.g.
+`const ingestRuns = deps.ingestRuns || null;`. There is no `backends` object
+inside the app; that name exists only in `server/index.js`. Follow the existing
+pattern exactly.
+
+Add beside the other optional-dependency lines (near line 62):
+
+```js
+  const documents = deps.documents || null;
+```
+
+Add `loadDocuments` to the import on line 18. Then replace the `summarize`
+helper at lines 101-107:
 
 ```js
   const summarize = async (period, dateISO) => {
-    const [changes, historyStartedAt, documents] = await Promise.all([
+    const [changes, historyStartedAt, docs] = await Promise.all([
       loadChanges(store, period, dateISO),
       loadHistoryStart(store),
-      loadDocuments(backends.documents),
+      loadDocuments(documents),
     ]);
-    return buildSummary(store, period, dateISO, { changes, historyStartedAt, documents });
+    return buildSummary(store, period, dateISO, { changes, historyStartedAt, documents: docs });
   };
 ```
+
+`loadDocuments` already returns `[]` for a null store, so a deployment or test
+that passes no document store simply gets an unavailable Documents section
+rather than an error.
 
 - [ ] **Step 7: Run to verify it passes**
 
@@ -1796,10 +1856,54 @@ import { fileURLToPath } from "node:url";
 
 const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/documents");
 
-/* buildTestApp is the helper the existing upload tests already use; import it
-   the same way they do. It must be constructed with STORE=memory so no
-   database is touched. */
-import { buildTestApp } from "../helpers/app.js";
+/* There is no shared test-app helper in this project -- verified, it does not
+   exist. test/api/app.test.js builds the app inline, and this file does the
+   same rather than introducing a second harness. Copy that file's makeApp and
+   signedIn helpers, adding `documents: memoryDocuments()` and
+   `sourceFiles: memorySourceFiles()` to the createApp deps. */
+import request from "supertest";
+import { createApp } from "../../server/app.js";
+import { loadConfig } from "../../server/config.js";
+import { Store } from "../../server/store.js";
+import { memorySessions, memoryRoleMapping, devAuthenticate } from "../../server/devBackends.js";
+import { memoryDocuments, memorySourceFiles } from "../../server/documents/memoryDocuments.js";
+
+const config = loadConfig({ NODE_ENV: "test", STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
+
+/* Each app gets a throwaway data dir: the upload route writes accepted
+   workbooks into dataDir, and pointing that at the real data/ folder once
+   dropped a workbook into the running dashboard's watched directory. */
+const scratchDirs = [];
+function scratchDataDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-docs-test-"));
+  scratchDirs.push(dir);
+  return dir;
+}
+
+function makeApp(role = "pm") {
+  const app = createApp({
+    store: new Store(),
+    config,
+    sessions: memorySessions(),
+    roleMapping: memoryRoleMapping({ [`gcio-dashboard-${role}s`]: role }),
+    audit: { append: async () => {}, recent: async () => [] },
+    ldapAuthenticate: devAuthenticate(role),
+    documents: memoryDocuments(),
+    sourceFiles: memorySourceFiles(),
+    dataDir: scratchDataDir(),
+    clientDist: "client/dist",
+  });
+  return app;
+}
+
+async function signedIn(app) {
+  const agent = request.agent(app);
+  const res = await agent.post("/api/auth/login").send({ username: "tester", password: "anything" });
+  assert.equal(res.status, 200, `sign-in failed: ${JSON.stringify(res.body)}`);
+  return agent;
+}
+
+const buildTestApp = async ({ role }) => ({ agent: await signedIn(makeApp(role)) });
 
 test("a mixed batch imports the good files and reports the bad one", async () => {
   const { agent } = await buildTestApp({ role: "pm" });
@@ -1847,8 +1951,10 @@ test("a viewer cannot import documents", async () => {
 });
 ```
 
-If `test/helpers/app.js` does not exist, read the existing upload tests and
-reuse whatever construction they use; do not invent a second harness.
+The test file also needs `import fs from "node:fs"`, `import os from "node:os"`
+and `import path from "node:path"` for `scratchDataDir`. Read
+`test/api/app.test.js` and follow it — it is the reference for how an app under
+test is built in this project.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1863,7 +1969,24 @@ In `server/app.js`, add the imports:
 import { extractDocument, DOCUMENT_EXTENSIONS } from "./documents/extract.js";
 import { extractFacts } from "./documents/facts.js";
 import { summariseDocument } from "./documents/summarise.js";
+import { hashBytes } from "./ingest/hash.js";
 ```
+
+Then declare the three new optional dependencies beside the existing ones near
+line 62, following the `const ingestRuns = deps.ingestRuns || null;` pattern
+already in `createApp`:
+
+```js
+  const documents = deps.documents || null;
+  const sourceFiles = deps.sourceFiles || null;
+  const vault = deps.vault || null;
+```
+
+Wire them in `server/index.js` by passing `documents`, `sourceFiles` and `vault`
+into the `createApp({ ... })` call. In the SQL branch they are
+`repos.documents`, `repos.sourceFiles` and the same vault already built for
+`SqlStore`; in the memory branch they are `memoryDocuments()`,
+`memorySourceFiles()` and `null`.
 
 Inside the `for (const f of files)` loop, immediately after the guard verdict
 check and before `ingestBuffer`, insert:
@@ -1873,15 +1996,24 @@ check and before `ingestBuffer`, insert:
          workbooks only, and a document has no projects to upsert -- it is
          vaulted, recorded and extracted here, then read back by the briefing. */
       if (DOCUMENT_EXTENSIONS.has(path.extname(safe).toLowerCase())) {
+        if (!documents) {
+          errors.push({ file: safe, error: "this deployment cannot import documents" });
+          continue;
+        }
         try {
           const extracted = await extractDocument(f.buffer, safe);
-          const { hash, vaultPath, bytes } = store.vault.store(f.buffer, safe);
-          const { sourceFileId } = await backends.sourceFiles.record({
-            fileName: safe, sha256: hash, bytes, vaultPath,
-            uploadedBy: req.session.principal,
+
+          /* The vault is optional: only SqlStore has one, memory mode has
+             none, and app.js has never reached into store internals. When
+             there is no vault the document still imports -- it just has no
+             provenance copy, which is exactly the situation in the tests. */
+          const vaulted = vault ? vault.store(f.buffer, safe) : { hash: hashBytes(f.buffer), vaultPath: null, bytes: f.buffer.length };
+          const { sourceFileId } = await sourceFiles.record({
+            fileName: safe, sha256: vaulted.hash, bytes: vaulted.bytes,
+            vaultPath: vaulted.vaultPath, uploadedBy: req.session.principal,
           });
 
-          await backends.documents.add({
+          await documents.add({
             sourceFileId,
             fileName: safe,
             kind: extracted.kind,
@@ -1954,7 +2086,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildTestApp } from "../helpers/app.js";
+/* Same inline construction as test/documents/upload.test.js -- copy the
+   makeApp/signedIn/buildTestApp helpers from there. There is no shared test-app
+   helper in this project and this plan does not add one. */
 
 const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/documents");
 
@@ -2286,16 +2420,30 @@ from this plan.
 
 ## Notes for the implementer
 
-**Where this plan may be wrong.** It was written from reading the code, not from
-running most of it. The riskiest assumptions:
+**Three things were checked against the code after this plan was first drafted,
+and the plan was corrected. They are recorded here so nobody re-derives them:**
 
-- `test/helpers/app.js` may not exist. Tasks 12 and 13 assume a test app
-  builder. Read the existing upload tests first and reuse theirs.
-- `backends.sourceFiles` may not be exposed to the route. Task 12 says to check
-  and wire it; do that before writing the branch.
-- The `buildSections` call inside `buildSummary` needs `documents` threaded
-  through. Find the actual call rather than trusting the line numbers here.
+- **There is no `test/helpers/app.js`.** It does not exist. `test/api/app.test.js`
+  builds the app inline with `createApp`, `loadConfig`, `Store`, `memorySessions`,
+  `memoryRoleMapping` and `devAuthenticate`, driven by supertest's
+  `request.agent`. Tasks 12 and 13 now carry that construction directly. Do not
+  add a shared harness.
+- **`createApp(deps)` takes a flat deps object.** There is no `backends` object
+  inside `app.js` — that name exists only in `server/index.js`, which is why
+  Task 10 Step 7 legitimately refers to it and Tasks 11–13 do not. Optional
+  dependencies default near the top of `createApp`, e.g.
+  `const ingestRuns = deps.ingestRuns || null;`. `documents`, `sourceFiles` and
+  `vault` follow that pattern.
+- **`app.js` has never touched the vault.** Only `SqlStore` holds one
+  (`this.vault`, used inside `applyFile`); the memory `Store` has none. So the
+  vault is passed into `createApp` as an optional dep and the document branch
+  works without it — which is the case in every test.
 
-If any of these differ from what the plan says, follow the code and note the
+**Where this plan may still be wrong.** The `buildSections` call inside
+`buildSummary` needs `documents` threaded through; find the actual call rather
+than trusting line numbers here, since the peer session has been editing these
+files. Line numbers throughout are from `f79cb2c` and may have moved.
+
+If anything differs from what the plan says, follow the code and note the
 difference in your report. The plan is a starting position, not an authority
 over what is actually there.
