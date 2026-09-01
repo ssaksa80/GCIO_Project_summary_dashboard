@@ -99,20 +99,24 @@ test("me reports signed out, then signed in with the resolved role", async () =>
   assert.equal(me.body.role, "pm");
 });
 
-test("a signed-in viewer reads the portfolio and the four sections", async () => {
+test("a signed-in viewer reads the portfolio and the six sections", async () => {
   const { app } = makeApp({ role: "viewer" });
   const agent = await signedIn(app);
 
   const summary = await agent.get("/api/summary?period=weekly&date=2026-08-24");
   assert.equal(summary.status, 200);
-  /* The five sections the CIO asked for, in order. Not an exact key list:
+  /* The six sections the CIO asked for, in order. Not an exact key list:
      annotateChanges also records historyAvailable here, and pinning the whole
      shape means every future addition breaks a test about section order. */
   const sectionKeys = Object.keys(summary.body.sections);
   assert.deepEqual(sectionKeys.filter((k) => k !== "historyAvailable"),
-    ["successes", "qri", "priorities", "roadmap", "posture"]);
+    ["successes", "qri", "priorities", "roadmap", "posture", "documents"]);
   assert.equal(typeof summary.body.sections.historyAvailable, "boolean",
     "the summary must always say whether history was available");
+  /* This app is built with no document store wired, which is what a
+     deployment that never imported one looks like: the section is present and
+     says so, rather than being missing or throwing. */
+  assert.equal(summary.body.sections.documents.available, false);
 
   const projects = await agent.get("/api/projects");
   assert.equal(projects.status, 200);

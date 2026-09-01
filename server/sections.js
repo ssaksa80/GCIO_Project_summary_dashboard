@@ -1,10 +1,12 @@
 /**
- * The four CIO sections, in the order the CIO reads them:
+ * The CIO sections, in the order the CIO reads them:
  *
  *   1. Successes
  *   2. Questions, Risks & Issues
  *   3. Priorities
  *   4. Roadmap / Planned Projects
+ *   5. Security Posture
+ *   6. Documents
  *
  * Pure functions over the store's projects. Every ranking rule here is
  * deterministic and explainable — the dashboard shows the "why" beside each
@@ -462,14 +464,72 @@ export function buildRoadmap({ projects, end, todayISO, period }) {
   };
 }
 
-/* ---------------------------------------------------------------- all 4 */
+/* ------------------------------------------------------------------ 6 */
 
 /**
- * Build all four sections in CIO order.
- * @param {object[]} projects
- * @param {{period: string, start: import('dayjs').Dayjs, end: import('dayjs').Dayjs, todayISO: string}} ctx
+ * Section 6 — Documents. Imported PDFs, Word files and text, presented as what
+ * was read out of them.
+ *
+ * These are NOT projects and must never be made to look like one: a document
+ * has no health, no budget and no dates of its own, so every one of the other
+ * five sections would have to invent them.
+ *
+ * Each item keys on `documentId`, never `id` or `projectId`. annotateChanges
+ * walks every node on `node.projectId || node.id`, and its comment warns that
+ * a builder exposing an item's own id under one of those names gets silently
+ * annotated with a project's change. This is the builder that warning was
+ * about, so the convention is honoured here deliberately and pinned by test.
+ * The field NAME is the guard — do not lean on a sourceFileId being numeric
+ * while a project id is a string, which is an accident of the two stores and
+ * not a rule anything enforces.
+ *
+ * @param {object[]} stored rows from the documents store, in the store's order
  */
-export function buildSections(projects, { period, start, end, todayISO, postureRows = [] }) {
+export function buildDocumentsSection(stored = []) {
+  if (!stored.length) {
+    return {
+      available: false,
+      headline: "No documents have been imported yet.",
+      documents: [],
+    };
+  }
+
+  /* Order is the store's, untouched: both stores hand these back newest
+     first, and re-sorting here would put the two of them out of step. */
+  const documents = stored.map((d) => ({
+    documentId: d.sourceFileId,
+    title: d.title,
+    fileName: d.fileName,
+    kind: d.kind,
+    /* Carried through exactly as the extractor produced it. null means .docx
+       or .txt, which have no pages before they are rendered; ?? 0 here would
+       report a page count that is a lie rather than a gap. */
+    pageCount: d.pageCount,
+    wordCount: d.wordCount,
+    extractedAt: d.extractedAt,
+    summary: d.extract?.summary ?? [],
+    dates: d.extract?.facts?.dates ?? [],
+    money: d.extract?.facts?.money ?? [],
+    projectRefs: d.extract?.facts?.projectRefs ?? [],
+    warnings: d.extract?.warnings ?? [],
+  }));
+
+  const n = documents.length;
+  return {
+    available: true,
+    headline: `${n} document${n === 1 ? "" : "s"} imported.`,
+    documents,
+  };
+}
+
+/* ---------------------------------------------------------------- all 6 */
+
+/**
+ * Build all six sections in CIO order.
+ * @param {object[]} projects
+ * @param {{period: string, start: import('dayjs').Dayjs, end: import('dayjs').Dayjs, todayISO: string, postureRows?: object[], documents?: object[]}} ctx
+ */
+export function buildSections(projects, { period, start, end, todayISO, postureRows = [], documents = [] }) {
   const childCountById = new Map();
   for (const p of projects) {
     if (!p.parentId) continue;
@@ -485,7 +545,9 @@ export function buildSections(projects, { period, start, end, todayISO, postureR
     projectsById: new Map(projects.map((p) => [p.id, p])),
   });
 
-  return { successes, qri, priorities, roadmap, posture };
+  const documentsSection = buildDocumentsSection(documents);
+
+  return { successes, qri, priorities, roadmap, posture, documents: documentsSection };
 }
 
 export const SECTION_TITLES = [
@@ -494,6 +556,7 @@ export const SECTION_TITLES = [
   "Priorities",
   "Roadmap / Planned Projects",
   "Security Posture",
+  "Documents",
 ];
 
 /**

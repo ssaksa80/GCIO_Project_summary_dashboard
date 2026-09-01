@@ -325,12 +325,12 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await store.refresh();
 
     const summary = buildSummary(store, "weekly", "2026-08-25");
-    /* The five sections the CIO asked for, in order. Not an exact key list:
+    /* The six sections the CIO asked for, in order. Not an exact key list:
        annotateChanges also records historyAvailable here, and pinning the whole
        shape means every future addition breaks a test about section order. */
     const sectionKeys = Object.keys(summary.sections);
     assert.deepEqual(sectionKeys.filter((k) => k !== "historyAvailable"),
-      ["successes", "qri", "priorities", "roadmap", "posture"]);
+      ["successes", "qri", "priorities", "roadmap", "posture", "documents"]);
     assert.equal(typeof summary.sections.historyAvailable, "boolean",
       "the summary must always say whether history was available");
     assert.ok(summary.sections.priorities.items.length > 0, "no priorities came back from SQL");

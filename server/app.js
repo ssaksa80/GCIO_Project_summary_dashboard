@@ -15,7 +15,7 @@ import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
 import { renderMetrics } from "./metrics.js";
-import { buildSummary, loadChanges, loadHistoryStart, toRow, computeDetail } from "./summarize.js";
+import { buildSummary, loadChanges, loadHistoryStart, loadDocuments, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
 import { buildExcel } from "./exporters/excel.js";
 import { buildWord } from "./exporters/word.js";
@@ -37,6 +37,7 @@ const PERIODS = new Set(["daily", "weekly", "monthly", "yearly"]);
  *   roleMapping: object,
  *   audit: {append: Function},
  *   ingestRuns?: {recent: Function}|null,
+ *   documents?: {list: Function, add: Function, remove: Function}|null,
  *   ldapAuthenticate?: Function,
  *   dataDir?: string,
  *   clientDist?: string,
@@ -60,6 +61,9 @@ export function createApp(deps) {
   const startedAt = deps.startedAt || Date.now();
   const audit = deps.audit || { append: async () => {} };
   const ingestRuns = deps.ingestRuns || null;
+  /* Optional like ingestRuns: a deployment or a test that wires no document
+     store gets an unavailable Documents section, not an error. */
+  const documents = deps.documents || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
   /* A function, not a plain boolean: STORE=mssql's leader status can flip to
@@ -91,19 +95,21 @@ export function createApp(deps) {
 
   /**
    * Both /api/summary and /api/export/:format need the same summary, built
-   * the same way: history and its start date loaded concurrently -- each
-   * already swallows its own failure, so there is nothing here for Promise.all
-   * to obscure -- then handed to buildSummary. Concurrency (not two sequential
-   * awaits) matters most exactly when the database is degraded: that is when
-   * both guards are doing their job, and sequential awaits would make the
-   * request sit out two connection timeouts back to back before answering.
+   * the same way: history, its start date and the imported documents loaded
+   * concurrently -- each already swallows its own failure, so there is nothing
+   * here for Promise.all to obscure -- then handed to buildSummary.
+   * Concurrency (not sequential awaits) matters most exactly when the database
+   * is degraded: that is when all three guards are doing their job, and
+   * sequential awaits would make the request sit out three connection timeouts
+   * back to back before answering.
    */
   const summarize = async (period, dateISO) => {
-    const [changes, historyStartedAt] = await Promise.all([
+    const [changes, historyStartedAt, docs] = await Promise.all([
       loadChanges(store, period, dateISO),
       loadHistoryStart(store),
+      loadDocuments(documents),
     ]);
-    return buildSummary(store, period, dateISO, { changes, historyStartedAt });
+    return buildSummary(store, period, dateISO, { changes, historyStartedAt, documents: docs });
   };
 
   /* Monitoring must not need a session. */
