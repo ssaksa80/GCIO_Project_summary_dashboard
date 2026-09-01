@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getJSON, useLiveEvents, NotAuthenticated } from "./lib/api.js";
+import { getJSON, deleteJSON, useLiveEvents, NotAuthenticated } from "./lib/api.js";
 import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
@@ -10,6 +10,7 @@ import SectionQRI from "./components/SectionQRI.jsx";
 import SectionPriorities from "./components/SectionPriorities.jsx";
 import SectionRoadmap from "./components/SectionRoadmap.jsx";
 import SectionPosture from "./components/SectionPosture.jsx";
+import DocumentsSection from "./components/DocumentsSection.jsx";
 import ProjectTable from "./components/ProjectTable.jsx";
 import ProjectDrawer from "./components/ProjectDrawer.jsx";
 import UploadPanel from "./components/UploadPanel.jsx";
@@ -74,6 +75,18 @@ export default function App() {
   }, [font]);
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  /* Purging an imported document. Gated the same way every other write in
+     this client is: the server's requireRole("pm") admits pm and admin (see
+     auth/authz.js PRECEDENCE), and TopBar already hides the Upload button on
+     exactly that test. Failures are thrown on to DocumentsSection, which
+     reports them against the document that failed — the page-level banner
+     says "retrying on next refresh", which is not true of a delete. */
+  const removeDocument = useCallback(async (documentId) => {
+    await deleteJSON(`/api/documents/${encodeURIComponent(documentId)}`);
+    refresh();
+  }, [refresh]);
+  const canPurge = me?.role === "pm" || me?.role === "admin";
 
   useEffect(() => {
     getJSON("/api/me")
@@ -209,6 +222,7 @@ export default function App() {
             <SectionPriorities data={sections.priorities} onOpen={setDrawerId} />
             <SectionRoadmap data={sections.roadmap} theme={theme} onOpen={setDrawerId} />
             <SectionPosture data={sections.posture} onOpen={setDrawerId} />
+            <DocumentsSection data={sections.documents} canRemove={canPurge} onRemove={removeDocument} />
 
             <details className="all-projects" open={params().has("table")}>
               <summary>All projects — reference table ({health.projectCount})</summary>

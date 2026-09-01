@@ -40,6 +40,19 @@ export async function postJSON(url, body) {
   return res.json();
 }
 
+/** DELETE a resource. Same error envelope handling as getJSON/postJSON. */
+export async function deleteJSON(url) {
+  const res = await fetch(url, { method: "DELETE" });
+  if (res.status === 401) throw new NotAuthenticated();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(messageFrom(body, res));
+  }
+  /* 204 is a legitimate answer to a delete, and .json() on an empty body
+     throws — so an unparseable success is success, not a failure. */
+  return res.json().catch(() => ({ ok: true }));
+}
+
 /** POST an export request and trigger a browser download of the result. */
 export async function downloadExport(format, body) {
   const res = await fetch(`/api/export/${format}`, {
