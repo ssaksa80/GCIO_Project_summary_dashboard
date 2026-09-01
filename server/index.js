@@ -34,6 +34,8 @@ import { roleMappingRepo } from "./repos/roleMapping.js";
 import { sourceFilesRepo } from "./repos/sourceFiles.js";
 import { ingestRunsRepo } from "./repos/ingestRuns.js";
 import { projectVersionsRepo } from "./repos/projectVersions.js";
+import { documentExtractsRepo } from "./repos/documentExtracts.js";
+import { memoryDocuments } from "./documents/memoryDocuments.js";
 import { createVault } from "./vault.js";
 import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
@@ -88,6 +90,7 @@ if (config.store === "mssql") {
     sourceFiles: sourceFilesRepo(ex),
     ingestRuns: ingestRunsRepo(ex),
     projectVersions: projectVersionsRepo(ex),
+    documents: documentExtractsRepo(ex),
   };
 
   store = new SqlStore({
@@ -121,6 +124,7 @@ if (config.store === "mssql") {
     sessions: repos.sessions,
     roleMapping: repos.roleMapping,
     ingestRuns: repos.ingestRuns,
+    documents: repos.documents,
   };
 } else {
   store = new Store();
@@ -137,6 +141,9 @@ if (config.store === "mssql") {
     /* No database, so no run history to show. The route says so rather than
        pretending the list is empty. */
     ingestRuns: null,
+    /* The one store the hermetic suite actually exercises. Same interface as
+       documentExtractsRepo, so nothing above it knows which one it has. */
+    documents: memoryDocuments(),
   };
   log("store: in-memory (set STORE=mssql for the database-backed store)");
 }
