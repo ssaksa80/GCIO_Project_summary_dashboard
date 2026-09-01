@@ -14,6 +14,10 @@ import multer from "multer";
 import dayjs from "dayjs";
 
 import { ingestBuffer, WORKBOOK_EXTENSIONS } from "./ingest.js";
+import { extractDocument, DOCUMENT_EXTENSIONS } from "./documents/extract.js";
+import { extractFacts } from "./documents/facts.js";
+import { summariseDocument } from "./documents/summarise.js";
+import { hashBytes } from "./ingest/hash.js";
 import { renderMetrics } from "./metrics.js";
 import { buildSummary, loadChanges, loadHistoryStart, loadDocuments, toRow, computeDetail } from "./summarize.js";
 import { getChain } from "./chain.js";
@@ -38,6 +42,8 @@ const PERIODS = new Set(["daily", "weekly", "monthly", "yearly"]);
  *   audit: {append: Function},
  *   ingestRuns?: {recent: Function}|null,
  *   documents?: {list: Function, add: Function, remove: Function}|null,
+ *   sourceFiles?: {record: Function}|null,
+ *   vault?: {store: Function}|null,
  *   ldapAuthenticate?: Function,
  *   dataDir?: string,
  *   clientDist?: string,
@@ -64,6 +70,20 @@ export function createApp(deps) {
   /* Optional like ingestRuns: a deployment or a test that wires no document
      store gets an unavailable Documents section, not an error. */
   const documents = deps.documents || null;
+  /* The vault ledger. Optional for the same reason: an uploaded document is
+     recorded here before it is extracted, and a deployment without it cannot
+     import documents at all -- which the route says out loud rather than
+     failing on a property of null. */
+  const sourceFiles = deps.sourceFiles || null;
+  /* An explicit dependency, NOT store.vault.
+     Only SqlStore holds a vault, and it holds it privately -- it vaults inside
+     applyFile and nothing above it has ever reached into store internals. The
+     in-memory Store has none at all, so `store.vault.store(...)` would throw
+     on STORE=memory, which is every hermetic test and every dev run. Passing
+     it in keeps app.js store-agnostic and makes "no vault" an ordinary,
+     supported configuration: the document still imports, it just has no
+     provenance copy. index.js hands the real one over for STORE=mssql. */
+  const vault = deps.vault || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
   /* A function, not a plain boolean: STORE=mssql's leader status can flip to
@@ -331,6 +351,73 @@ export function createApp(deps) {
         await auditFrom(req, { actor: req.session.principal, action: "upload.rejected", subject: `${safe}: ${verdict.reason}` });
         continue;
       }
+
+      /* Documents fork here, before ingestBuffer.
+         A workbook is written into the watched folder and the watcher owns
+         the upsert. A document cannot take that route: the watcher handles
+         workbooks only, and a document has no projects to upsert. So it is
+         vaulted, recorded and extracted inline, then read back by the
+         briefing. Nothing below this branch ever sees a document. */
+      if (DOCUMENT_EXTENSIONS.has(path.extname(safe).toLowerCase())) {
+        if (!documents || !sourceFiles) {
+          errors.push({ file: safe, error: "this deployment cannot import documents" });
+          await auditFrom(req, { actor: req.session.principal, action: "upload.rejected", subject: `${safe}: no document store` });
+          continue;
+        }
+        try {
+          const extracted = await extractDocument(f.buffer, safe);
+
+          /* Without a vault the document still imports; it just has no
+             provenance copy. The hash is computed either way, because it is
+             what makes a re-import of identical bytes the same document
+             rather than a second one. */
+          const vaulted = vault
+            ? vault.store(f.buffer, safe)
+            : { hash: hashBytes(f.buffer), vaultPath: null, bytes: f.buffer.length };
+
+          const { sourceFileId } = await sourceFiles.record({
+            fileName: safe,
+            sha256: vaulted.hash,
+            bytes: vaulted.bytes,
+            vaultPath: vaulted.vaultPath,
+            uploadedBy: req.session.principal,
+          });
+
+          await documents.add({
+            sourceFileId,
+            fileName: safe,
+            kind: extracted.kind,
+            title: extracted.title,
+            pageCount: extracted.pageCount,
+            wordCount: extracted.wordCount,
+            extract: {
+              blocks: extracted.blocks,
+              facts: extractFacts(extracted.blocks),
+              summary: summariseDocument(extracted.blocks),
+              warnings: extracted.warnings,
+            },
+          });
+
+          ingested.push({ file: safe, document: extracted.title, warnings: extracted.warnings });
+          await auditFrom(req, {
+            actor: req.session.principal,
+            action: "upload.document",
+            subject: `${safe} (${extracted.wordCount} words)`,
+          });
+        } catch (err) {
+          /* Per file, not per batch: one unreadable PDF in a drop of ten must
+             cost that one file and nothing else. Outside this try the first
+             bad file would abandon every file after it. */
+          errors.push({ file: safe, error: err.message });
+          await auditFrom(req, {
+            actor: req.session.principal,
+            action: "upload.rejected",
+            subject: `${safe}: ${err.message}`,
+          });
+        }
+        continue;
+      }
+
       const parsed = ingestBuffer(f.buffer, safe, dayjs().format("YYYY-MM-DD"));
       if (!parsed.ok) {
         errors.push({ file: safe, error: parsed.error });

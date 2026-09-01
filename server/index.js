@@ -35,7 +35,7 @@ import { sourceFilesRepo } from "./repos/sourceFiles.js";
 import { ingestRunsRepo } from "./repos/ingestRuns.js";
 import { projectVersionsRepo } from "./repos/projectVersions.js";
 import { documentExtractsRepo } from "./repos/documentExtracts.js";
-import { memoryDocuments } from "./documents/memoryDocuments.js";
+import { memoryDocuments, memorySourceFiles } from "./documents/memoryDocuments.js";
 import { createVault } from "./vault.js";
 import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
@@ -64,6 +64,11 @@ const log = (msg) => console.log(`[gcio ${dayjs().format("HH:mm:ss")}] ${msg}`);
 
 let store;
 let backends;
+/* The vault the upload route files documents into. Only the SQL branch
+   has one -- see the note where server/app.js takes it as a dependency:
+   a document still imports without a vault, it just has no provenance
+   copy, which is the STORE=memory case below. */
+let vault = null;
 
 /* Seconds-since-last-refresh feeds gcio_read_model_age_seconds. Only ever
    meaningful for STORE=mssql: the leader bumps it after every ingest (that
@@ -93,17 +98,25 @@ if (config.store === "mssql") {
     documents: documentExtractsRepo(ex),
   };
 
+  /* Hoisted rather than built inline, because the upload route needs this
+     same vault: SqlStore vaults workbooks inside applyFile, and a document
+     is vaulted by server/app.js instead -- the watcher never sees one. Two
+     vaults over one directory would work, but would be two things to keep
+     pointed at the same place.
+
+     resolve, not join: VAULT_DIR may legitimately be absolute on a real
+     deployment, and path.join would then produce C:\gcio\C:\gcioault.
+     Found by actually deploying, where the ingest failed with ENOENT on a
+     doubled path while the preflight had happily validated the real one. */
+  vault = createVault(resolveStateDir(ROOT, config.vaultDir));
+
   store = new SqlStore({
     projects: repos.projects,
     posture: repos.posture,
     sourceFiles: repos.sourceFiles,
     ingestRuns: repos.ingestRuns,
     projectVersions: repos.projectVersions,
-    /* resolve, not join: VAULT_DIR may legitimately be absolute on a real
-       deployment, and path.join would then produce C:\gcio\C:\gcioault.
-       Found by actually deploying, where the ingest failed with ENOENT on a
-       doubled path while the preflight had happily validated the real one. */
-  }, { vault: createVault(resolveStateDir(ROOT, config.vaultDir)) });
+  }, { vault });
   await store.refresh();
   lastRefreshAt = Date.now();
   log(`loaded ${store.projectCount} projects from SQL`);
@@ -125,6 +138,9 @@ if (config.store === "mssql") {
     roleMapping: repos.roleMapping,
     ingestRuns: repos.ingestRuns,
     documents: repos.documents,
+    /* The vault ledger. SqlStore already writes to it for workbooks; the
+       upload route writes to it for documents, which never reach a store. */
+    sourceFiles: repos.sourceFiles,
   };
 } else {
   store = new Store();
@@ -144,6 +160,9 @@ if (config.store === "mssql") {
     /* The one store the hermetic suite actually exercises. Same interface as
        documentExtractsRepo, so nothing above it knows which one it has. */
     documents: memoryDocuments(),
+    /* Its counterpart: an incrementing id per (name, hash), so an unchanged
+       file re-imported is the same document rather than a second one. */
+    sourceFiles: memorySourceFiles(),
   };
   log("store: in-memory (set STORE=mssql for the database-backed store)");
 }
@@ -329,6 +348,10 @@ const app = createApp({
   roleMapping: backends.roleMapping,
   audit: backends.audit,
   ingestRuns: backends.ingestRuns,
+  documents: backends.documents,
+  sourceFiles: backends.sourceFiles,
+  /* null on STORE=memory: no vault, and the document imports anyway. */
+  vault,
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),
