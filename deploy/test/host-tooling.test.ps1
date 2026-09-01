@@ -48,7 +48,13 @@ try {
   [IO.File]::WriteAllText("$inst/app/package.json", '{"version":"1.5.0"}')
   [IO.File]::WriteAllText("$inst/app/server/db/migrations.js", 'MIGRATIONS')
   [IO.File]::WriteAllText("$inst/app/node_modules/dep/index.js", 'KEEP')
-  [IO.File]::WriteAllText("$inst/.env", 'PORT=8130')
+  # A port nothing is listening on, and deliberately NOT 8130. install.ps1 reads
+  # PORT from the fixture's .env and then waits for that port to go quiet before
+  # it will overlay. Pointed at the live port, the probe sees production's
+  # listener, concludes the service never released it, and refuses - a fixture
+  # failing on the state of the real host. Same coupling as the service name
+  # above, one layer down.
+  [IO.File]::WriteAllText("$inst/.env", 'PORT=18130')
 
   # A patch payload shaped like the real one, carrying the host scripts the
   # builder is supposed to stage.
@@ -99,8 +105,16 @@ try {
   # the fixture runs the copy inside the fake artifact, not the one in deploy/.
   $inst2 = Join-Path $root 'install2'
   Copy-Item -Recurse -Force $inst $inst2
+  # -ServiceName is NOT optional here, however unused it looks. It defaults to
+  # 'GCIOProjectIntelligence', the live service, and install.ps1 stops and starts
+  # whatever name it is given regardless of which directory it is patching. The
+  # first version of this test omitted it and took the production service down
+  # and back up on every run - the overlay went to the temp fixture while the
+  # stop and start hit the real host. Point it at a name that cannot exist.
+  $fakeSvc = 'GCIOTestFixture-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
   & pwsh -NoProfile -ExecutionPolicy Bypass -File "$patch/install.ps1" `
-      -InstallDir $inst2 -Patch -SkipHealthGate -SkipSqlPrecheck *> "$root/install.log" 2>&1
+      -InstallDir $inst2 -ServiceName $fakeSvc -Patch -SkipHealthGate -SkipSqlPrecheck `
+      *> "$root/install.log" 2>&1
 
   $before = $script:fails
   foreach ($f in $MustReachHost) {
