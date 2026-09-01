@@ -7,6 +7,29 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.5.2
+
+Deploy tooling only. No application change - the app payload is identical to
+1.5.1 apart from the version string, so nothing a user sees is different.
+
+**A patched host now gets the updater it is told to run.** Every refusal message
+names `Update-GCIO.cmd -Rollback` as the recovery command, and on a host that
+had only ever been patched that file did not exist: `code-update.ps1` and
+`Update-GCIO.cmd` shipped beside the archive, which bootstraps a host that has
+nothing, but were never copied onto the host afterwards. Found on this host
+immediately after deploying 1.5.1, where `C:\gcio` had `install.ps1`,
+`uninstall.ps1` and `lib/` and no updater at all.
+
+The gap was silent because the copy is guarded by a `Test-Path`: a file the
+artifact does not carry is skipped, the deploy still reports `health=OK`, and
+the host quietly never gains the script. Three lists had to agree and nothing
+made them - the two builders' ship lists and the installer's copy list.
+
+If you are on a host installed before 1.5.2, this patch will place the updater
+for you. Until it lands, `install.ps1 -Rollback` does the same job as
+`Update-GCIO.cmd -Rollback`; the capability was always there, only the
+documented entry point was missing.
+
 ## GCIO 1.5.1
 
 Accessibility and one authentication fix. No database migration, no dependency
