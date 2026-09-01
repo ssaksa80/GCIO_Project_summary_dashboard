@@ -131,6 +131,36 @@ function scenarioParsed(fileName, tag, { count = 5 } = {}) {
   };
 }
 
+/**
+ * The whole sample workbook, namespaced, for the subtests that persist it
+ * under FILE rather than under a per-scenario pretend name.
+ *
+ * They used to write the workbook's own ids. That was safe only while the
+ * target database held nothing else: dbo.Project's key is ProjectId alone, so
+ * the fixture's PRJ-1001 collides with a real PRJ-1001 the moment anyone
+ * ingests an actual portfolio into the shared development instance -- which
+ * is exactly what happened. Namespacing here is the same guard scenarioParsed
+ * applies between scenarios, turned outward at the rest of the database.
+ */
+function fixtureParsed(fileName) {
+  return scenarioParsed(fileName, "MAIN", { count: Infinity });
+}
+
+/**
+ * How many projects one SourceFile has in SQL.
+ *
+ * The only project count this suite may assert on. SqlStore.refresh() loads
+ * every row in dbo.Project, so store.projectCount includes rows this suite
+ * did not write and cannot predict; scoping to the file under test makes the
+ * assertion about this suite's own work again.
+ */
+async function countForFile(ex, fileName) {
+  const { recordset } = await ex.query(
+    "SELECT COUNT(*) AS n FROM dbo.Project WHERE SourceFile = @f",
+    [{ name: "f", type: sql.NVarChar(260), value: fileName }]);
+  return recordset[0].n;
+}
+
 /** A vault directory scoped to one scenario, in the OS temp dir. */
 function scenarioVault() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-live-vault-"));
@@ -265,8 +295,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
   });
 
   await t.test("a real workbook persists and reads back through the store", async () => {
-    const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
-    assert.equal(parsed.ok, true, parsed.error);
+    const parsed = fixtureParsed(FILE);
 
     const repos = { projects: projectsRepo(ex), posture: postureRepo(ex) };
     await repos.projects.replaceForFile(FILE, parsed.projects);
@@ -275,7 +304,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const store = new SqlStore(repos, { logger: quiet });
     await store.refresh();
 
-    assert.equal(store.projectCount, parsed.projects.length);
+    assert.equal(await countForFile(ex, FILE), parsed.projects.length,
+      "not every project in the workbook reached SQL");
     const first = parsed.projects[0];
     const roundTripped = store.get(first.id);
     assert.ok(roundTripped, `${first.id} did not come back from SQL`);
@@ -319,18 +349,18 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
   });
 
   await t.test("re-ingesting the same workbook does not duplicate anything", async () => {
-    const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
+    const parsed = fixtureParsed(FILE);
     const repos = { projects: projectsRepo(ex), posture: postureRepo(ex) };
 
     await repos.projects.replaceForFile(FILE, parsed.projects);
     const store = new SqlStore(repos, { logger: quiet });
     await store.refresh();
-    const before = store.projectCount;
+    const before = await countForFile(ex, FILE);
 
     await repos.projects.replaceForFile(FILE, parsed.projects);
     await store.refresh();
 
-    assert.equal(store.projectCount, before);
+    assert.equal(await countForFile(ex, FILE), before);
     const { recordset } = await ex.query(
       "SELECT COUNT(*) AS n FROM dbo.ProjectChild WHERE SourceFile = @f",
       [{ name: "f", type: sql.NVarChar(260), value: FILE }]
@@ -347,7 +377,8 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
 
     const store = new SqlStore(repos, { logger: quiet });
     await store.refresh();
-    assert.equal(store.projectCount, 0);
+    assert.equal(await countForFile(ex, FILE), 0,
+      "removing the workbook left its own rows behind");
   });
 
   await t.test("history records a version once, and not again for an unchanged file", async () => {
@@ -361,8 +392,7 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "gcio-live-vault-"));
     const store = new SqlStore(repos, { vault: createVault(vaultDir, { logger: quiet }), logger: quiet });
 
-    const parsed = ingestFile("sample-data/GCIO_Portfolio_Master.xlsx");
-    parsed.file = FILE;
+    const parsed = fixtureParsed(FILE);
 
     await store.applyFile(parsed, { trigger: "replay" });
     const firstVersions = await ex.query(
@@ -568,8 +598,21 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     const versions = projectVersionsRepo(ex);
     const store = new SqlStore({ projectVersions: versions }, { logger: quiet });
 
-    assert.equal(await store.historyStartedAt(), null,
-      "historyStartedAt reported a start date with nothing recorded anywhere");
+    /* cleanup() empties what this suite wrote, not what anyone else did:
+       historyStartedAt() is MIN() over the whole table, and the shared
+       development database can hold real history. The null branch is only
+       honest when the table is genuinely empty, so assert it then, and assert
+       the same contract -- the oldest row that actually remains -- otherwise. */
+    const { recordset: remaining } = await ex.query(
+      "SELECT COUNT(*) AS n, MIN(RecordedAt) AS oldest FROM dbo.ProjectVersion");
+    if (remaining[0].n === 0) {
+      assert.equal(await store.historyStartedAt(), null,
+        "historyStartedAt reported a start date with nothing recorded anywhere");
+    } else {
+      assert.equal(new Date(await store.historyStartedAt()).getTime(),
+        new Date(remaining[0].oldest).getTime(),
+        "historyStartedAt did not report the oldest version actually recorded");
+    }
 
     const base = { ...ingestFile("sample-data/GCIO_Portfolio_Master.xlsx").projects[0] };
     const oldest = { ...base, id: `${ID_PREFIX}P2-OLDEST` };
@@ -993,10 +1036,18 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await cleanup(ex);
     const ingestRuns = ingestRunsRepo(ex, { logger: quiet });
 
-    const empty = await ingestRuns.timingSummary();
-    assert.deepEqual(empty, { runs: 0, slowestParseMs: null, slowestPersistMs: null, lastFinishedAt: null },
-      "an empty window must report null maxima and a null finish time -- MAX() over no rows is NULL, " +
-      "not 0, and a zero here would falsely claim a 0ms parse happened");
+    /* A baseline, not an absolute: dbo.IngestRun can hold in-window runs this
+       suite did not write, and on the shared development instance it does.
+       Every assertion below is a delta from this, so the subtest measures
+       what this suite added rather than what the table happens to contain.
+       When the table really is empty the null-maxima branch is still the
+       thing being asserted. */
+    const baseline = await ingestRuns.timingSummary();
+    if (baseline.runs === 0) {
+      assert.deepEqual(baseline, { runs: 0, slowestParseMs: null, slowestPersistMs: null, lastFinishedAt: null },
+        "an empty window must report null maxima and a null finish time -- MAX() over no rows is NULL, " +
+        "not 0, and a zero here would falsely claim a 0ms parse happened");
+    }
 
     const scenarioFile = "livetest-timing-summary.xlsx";
 
@@ -1027,9 +1078,14 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     );
 
     const summary = await ingestRuns.timingSummary();
-    assert.equal(summary.runs, 2, "the backdated run must not count toward the windowed runs total");
-    assert.equal(summary.slowestParseMs, 30, "the backdated row's larger ParseMs leaked into the windowed maximum");
-    assert.equal(summary.slowestPersistMs, 50, "the backdated row's larger PersistMs leaked into the windowed maximum");
+    assert.equal(summary.runs, baseline.runs + 2, "the backdated run must not count toward the windowed runs total");
+    /* Still catches an unwindowed regression: the backdated row's 999s beat
+       both this suite's rows and any baseline maximum, so a MAX() over the
+       whole table would fail these two however much the table already held. */
+    assert.equal(summary.slowestParseMs, Math.max(baseline.slowestParseMs ?? 0, 30),
+      "the backdated row's larger ParseMs leaked into the windowed maximum");
+    assert.equal(summary.slowestPersistMs, Math.max(baseline.slowestPersistMs ?? 0, 50),
+      "the backdated row's larger PersistMs leaked into the windowed maximum");
     assert.equal(new Date(summary.lastFinishedAt).getTime(), new Date(expectedLastFinishedAt).getTime(),
       "lastFinishedAt did not match the latest in-window finish time");
   });
@@ -1038,9 +1094,14 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     await cleanup(ex);
     const ingestRuns = ingestRunsRepo(ex, { logger: quiet });
 
-    const emptyCounts = await ingestRuns.countByOutcome();
-    assert.deepEqual(emptyCounts, { applied: 0, unchanged: 0, failed: 0, removed: 0 },
-      "an empty table must still report all four outcome keys, zero-filled");
+    /* Zero-fill is the property under test, and it holds whatever the table
+       already contains: all four keys must be present even for outcomes that
+       never occurred. The counts themselves are a baseline to measure from,
+       because runs this suite did not write also land in this unwindowed
+       total. */
+    const baseline = await ingestRuns.countByOutcome();
+    assert.deepEqual(Object.keys(baseline).sort(), ["applied", "failed", "removed", "unchanged"],
+      "countByOutcome() must always report all four outcome keys, zero-filled");
 
     const scenarioFile = "livetest-outcome-count.xlsx";
 
@@ -1061,9 +1122,9 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     );
 
     const counts = await ingestRuns.countByOutcome();
-    assert.deepEqual(counts, { applied: 2, unchanged: 0, failed: 0, removed: 0 },
-      "countByOutcome() must count a run backdated beyond 7 days, and must still zero-fill the outcomes " +
-      "that never occurred -- only 'applied' happened here, but all four keys must be present");
+    assert.deepEqual(counts, { ...baseline, applied: baseline.applied + 2 },
+      "countByOutcome() must count a run backdated beyond 7 days, and must leave every other outcome " +
+      "exactly as it found it -- only 'applied' happened here, and only 'applied' may move");
   });
 
   await t.test("a real ingest through SqlStore.applyFile records ParseMs and PersistMs -- read back from SQL, not the return value", async () => {
