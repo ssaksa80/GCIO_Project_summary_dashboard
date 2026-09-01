@@ -16,7 +16,25 @@
 
 **Work in a fresh worktree.** `C:\dev\gcio-p4` is occupied by another live session that commits to it. Use the `superpowers:using-git-worktrees` skill to create an isolated one from current `origin/main`. Do not implement in `gcio-p4`.
 
-**Test commands.** `npm test` runs everything except the browser suites. `npm run test:ui` runs those. `npm run test:all` runs both. Do **not** set `DB_LIVE=1` — it needs an empty database and the live instance is shared with other sessions.
+**Test commands.** On this branch `npm test` is `node --test "test/**/*.test.js"`
+and runs **everything, browser suites included**. There is no `test:all`. A peer
+session has an unpushed change that splits the UI suites out; it is not on
+`origin/main` and this plan does not assume it. If it lands mid-implementation,
+re-read `package.json` rather than trusting this paragraph.
+
+Two consequences:
+
+- **The UI suites are in the run but skip unless `UI_LIVE=1`**, so a normal
+  `npm test` neither needs a browser nor `client/dist`. When you do run them,
+  `client/dist` must exist — it is gitignored, so a fresh worktree has none and
+  needs `npm run build` first.
+- **Never judge a run by the shell exit code alone if you piped the output.**
+  `npm test | tail` reports `tail`'s status, not the test run's. Read the TAP
+  summary (`# fail`) or capture the exit code without a pipe. This has produced
+  three false "it passed" readings on this project already.
+
+Do **not** set `DB_LIVE=1` — it needs an empty database and the live instance is
+shared with other sessions.
 
 **Never `git commit --amend`.** Other sessions commit to shared branches; amending folds their work into the wrong commit. New commits only.
 
