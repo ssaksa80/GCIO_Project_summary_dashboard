@@ -76,12 +76,18 @@ export function loadConfig(env = process.env) {
     problems.push("AUTH_MODE=dev is not permitted when NODE_ENV=production");
   }
 
-  const ldap = { url: "", baseDN: "", domain: "", upnSuffix: "", timeoutMs: Number(env.LDAP_TIMEOUT_MS || 10000) };
+  const ldap = { url: "", baseDN: "", domain: "", upnSuffix: "", bindDN: "", bindPassword: "",
+                 timeoutMs: Number(env.LDAP_TIMEOUT_MS || 10000) };
   if (authMode === "ldap") {
     ldap.url = need("LDAP_URL");
     ldap.baseDN = need("LDAP_BASE_DN");
     ldap.domain = String(env.LDAP_DOMAIN || "").trim();
     ldap.upnSuffix = String(env.LDAP_UPN_SUFFIX || "").trim();
+    /* Optional. Present -> search-then-bind as this account; absent -> the
+       original bind-as-user path. Never logged, never echoed: treated exactly
+       like DB_PASSWORD. */
+    ldap.bindDN = String(env.LDAP_BIND_DN || "").trim();
+    ldap.bindPassword = String(env.LDAP_BIND_PASSWORD || "");
   }
 
   /* SSO is additive: it can be enabled alongside LDAP so people may use

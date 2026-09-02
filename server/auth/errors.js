@@ -28,3 +28,19 @@ export const noAccess = () =>
 
 export const directoryUnavailable = (detail) =>
   new AuthError(503, "directory_unavailable", `the directory could not be reached: ${detail}`);
+
+/*
+  The APP's own directory credential is wrong, not the user's.
+
+  Deliberately NOT bad_credentials. Under search-then-bind the service account
+  binds before the user does, so a wrong service password fails every sign-in in
+  the organisation - and as a 401 that tells every one of those users to check a
+  password that was never the problem. That is the same misdirection
+  directoryUnavailable was added to stop, multiplied by the whole user base.
+
+  Carries no credential detail: an unauthenticated caller must not learn what the
+  app binds as, or whether a given service account exists.
+*/
+export const directoryMisconfigured = (detail) =>
+  new AuthError(503, "directory_misconfigured",
+    `the directory rejected this application's own credentials: ${detail}`);

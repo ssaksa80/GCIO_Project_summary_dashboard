@@ -335,3 +335,127 @@ test("a credential rejection is still 401, and still indistinguishable from a mi
     assert.equal(r.status, 401);
   }
 });
+
+/* ---------------------------------------------------------------------------
+   Service-account search-then-bind.
+
+   This deployment's directory cannot use the bind-as-user path: bindIdentity()
+   constructs <user>@LDAP_UPN_SUFFIX and the domain carries mixed suffixes, so a
+   correct password returns 401. Searching by sAMAccountName as a service
+   account and then binding the DN the directory returns removes the guess
+   rather than reconfiguring it.
+
+   Every test below records the binds in order, because "which principal bound,
+   with what, and in what sequence" is the entire behaviour under test and none
+   of it is visible from the return value.
+   ------------------------------------------------------------------------- */
+
+/** A directory that records binds and answers one user. */
+function fakeDirectory({ entry, rejectBindFor = [], unreachableFor = [] } = {}) {
+  const binds = [];
+  class Fake {
+    async bind(dn, password) {
+      binds.push({ dn, password });
+      if (unreachableFor.includes(dn)) {
+        const e = new Error("connect ECONNREFUSED 10.0.0.1:636");
+        e.code = "ECONNREFUSED";
+        throw e;
+      }
+      if (rejectBindFor.includes(dn)) throw new Error("invalid credentials");
+    }
+    async search() { return { searchEntries: entry ? [entry] : [] }; }
+    async unbind() {}
+  }
+  return { Fake, binds };
+}
+
+const SVC = "CN=svc,OU=Svc,DC=x";
+const USER_DN = "CN=Real User,OU=People,DC=x";
+const svcCfg = {
+  url: "ldaps://dc:636", baseDN: "DC=x",
+  bindDN: SVC, bindPassword: "svc-secret",
+};
+const anEntry = {
+  dn: USER_DN,
+  distinguishedName: USER_DN,
+  sAMAccountName: "ruser",
+  userPrincipalName: "ruser@elsewhere.example",
+  displayName: "Real User",
+  memberOf: ["CN=GCIO-Dashboard-Admins,DC=x"],
+};
+
+test("it binds as the service account first, then as the DN the directory returned", async () => {
+  const { Fake, binds } = fakeDirectory({ entry: anEntry });
+  const identity = await authenticate({ username: "ruser", password: "user-pw" }, svcCfg, { ClientCtor: Fake });
+
+  assert.equal(binds.length, 2, `expected two binds, got ${binds.length}`);
+  assert.equal(binds[0].dn, SVC, "the first bind must be the service account");
+  assert.equal(binds[0].password, "svc-secret");
+  assert.equal(binds[1].dn, USER_DN, "the second bind must use the DN from the search");
+  assert.equal(binds[1].password, "user-pw");
+  assert.equal(identity.principal, "ruser@elsewhere.example");
+  assert.deepEqual(identity.groups, ["GCIO-Dashboard-Admins"]);
+});
+
+test("the user's bind never uses a constructed UPN, even when a suffix is configured", async () => {
+  const { Fake, binds } = fakeDirectory({ entry: anEntry });
+  await authenticate({ username: "ruser", password: "user-pw" },
+    { ...svcCfg, upnSuffix: "wrong.example" }, { ClientCtor: Fake });
+
+  assert.equal(binds[1].dn, USER_DN);
+  assert.ok(!binds[1].dn.includes("wrong.example"),
+    "the configured suffix leaked into the bind identity - this is the bug the design removes");
+});
+
+test("a rejected SERVICE ACCOUNT is a 503, never a 401 blamed on the user", async () => {
+  const { Fake } = fakeDirectory({ entry: anEntry, rejectBindFor: [SVC] });
+  const err = await authenticate({ username: "ruser", password: "user-pw" }, svcCfg,
+    { ClientCtor: Fake }).catch((e) => e);
+
+  assert.equal(err.status, 503, "a wrong service-account password must not be reported as the user's fault");
+  assert.equal(err.code, "directory_misconfigured");
+  assert.ok(!/password/i.test(err.message) || /service/i.test(err.message),
+    "the message must not send an end user to retype their own password");
+});
+
+test("an unreachable directory is still 503 unavailable, not misconfigured", async () => {
+  const { Fake } = fakeDirectory({ entry: anEntry, unreachableFor: [SVC] });
+  const err = await authenticate({ username: "ruser", password: "p" }, svcCfg,
+    { ClientCtor: Fake }).catch((e) => e);
+
+  assert.equal(err.status, 503);
+  assert.equal(err.code, "directory_unavailable");
+});
+
+test("a wrong user password and an unknown account stay indistinguishable", async () => {
+  const wrong = fakeDirectory({ entry: anEntry, rejectBindFor: [USER_DN] });
+  const missing = fakeDirectory({ entry: null });
+
+  const a = await authenticate({ username: "ruser", password: "bad" }, svcCfg, { ClientCtor: wrong.Fake }).catch((e) => e);
+  const b = await authenticate({ username: "nobody", password: "p" }, svcCfg, { ClientCtor: missing.Fake }).catch((e) => e);
+
+  assert.equal(a.code, "bad_credentials");
+  assert.equal(b.code, "bad_credentials");
+  assert.equal(a.message, b.message);
+  assert.equal(a.status, b.status);
+});
+
+test("an empty password is refused BEFORE any bind is attempted", async () => {
+  /* LDAP treats a bind carrying a DN and an empty password as an unauthenticated
+     bind, and AD accepts it. Once the search has supplied a real DN, a missing
+     guard here would authenticate any known username with a blank password. */
+  const { Fake, binds } = fakeDirectory({ entry: anEntry });
+  const err = await authenticate({ username: "ruser", password: "" }, svcCfg, { ClientCtor: Fake }).catch((e) => e);
+
+  assert.equal(err.code, "bad_credentials");
+  assert.equal(binds.length, 0, "a bind was attempted with an empty password");
+});
+
+test("without a bindDN the original single-bind path is used unchanged", async () => {
+  const { Fake, binds } = fakeDirectory({ entry: anEntry });
+  await authenticate({ username: "ruser", password: "user-pw" },
+    { url: "ldap://x", baseDN: "DC=x", upnSuffix: "example.local" }, { ClientCtor: Fake });
+
+  assert.equal(binds.length, 1, "fallback mode must bind exactly once");
+  assert.equal(binds[0].dn, "ruser@example.local", "fallback must still construct the UPN as before");
+});
