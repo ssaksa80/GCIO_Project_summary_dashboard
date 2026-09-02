@@ -89,14 +89,21 @@ try {
   # that script for a filename matches the copy it makes BESIDE the archive as
   # readily as the one it stages INSIDE it, so a source check passes while the
   # artifact is empty. That false positive was in this test's first draft.
-  $newest = Get-ChildItem (Join-Path $repoRoot 'dist-bundle') -Directory -Filter 'gcio-patch-*' -EA SilentlyContinue |
+  # The artifact for the version in package.json, either tier - NOT "the newest
+  # gcio-patch-* lying around". That glob made this test depend on build order:
+  # after a bundle release the newest patch directory is a previous version, so
+  # the check ran against a stale artifact and reported a failure that had
+  # nothing to do with the build under test. It did exactly that on 1.6.0.
+  $ver = (Get-Content (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json).version
+  $newest = Get-ChildItem (Join-Path $repoRoot 'dist-bundle') -Directory -EA SilentlyContinue |
+            Where-Object { $_.Name -like "gcio-patch-$ver-*" -or $_.Name -like "gcio-bundle-$ver-*" } |
             Sort-Object Name -Descending | Select-Object -First 1
   if ($newest) {
     foreach ($f in $MustReachHost) {
-      Check (Test-Path (Join-Path $newest.FullName $f)) "the built patch $($newest.Name) carries $f"
+      Check (Test-Path (Join-Path $newest.FullName $f)) "the built artifact $($newest.Name) carries $f"
     }
   } else {
-    Check $false 'a built patch exists in dist-bundle/ to check (run build-patch.ps1)'
+    Check $false "an artifact for $ver exists in dist-bundle/ to check (run build-patch.ps1 or build-bundle.ps1)"
   }
 
   # ---- 2. and the installer must actually place them on the host -----------
