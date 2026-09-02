@@ -53,3 +53,17 @@ Thumbs.db
 # own temp profile on a clean browser.close() and this harness tree-kills a
 # close that hangs. Anchored for the same reason as audit/ and vault/ above.
 /.tmp/
+
+
+# Secret material. key.bin is the DPAPI-protected master key that opens every
+# enc:v1: value in .env - committing it would hand an attacker the other half
+# of the pair and make the encryption pointless. Machine-bound, so it is never
+# shareable anyway: a checkout on another host generates its own.
+key.bin
+*.key
+
+# .env backups. seal-secret.ps1 and the deploy scripts leave timestamped
+# copies beside the original, and those copies hold whatever the file held
+# before it was sealed - which is exactly the plaintext password.
+.env.bak-*
+.env.*.bak

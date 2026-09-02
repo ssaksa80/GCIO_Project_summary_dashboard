@@ -80,3 +80,68 @@ test("the guard does not fire when AUTH_MODE is not ldap", () => {
     () => loadConfig({ STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin", LDAP_BIND_DN: "svc@example.test" }),
   );
 });
+
+/* ------------------------------------------------------------------------ *
+ * Sealing the bind password at rest.
+ *
+ * The value in .env may be plaintext (an un-migrated host) or an enc:v1: token
+ * (after deploy/seal-secret.ps1). Both must work; only one should be quiet.
+ * ------------------------------------------------------------------------ */
+
+const sealed = "enc:v1:AAAAAAAAAAAAAAAAAAAA";
+
+test("a sealed bind password is opened before anything tries to bind with it", () => {
+  const cfg = loadConfig(
+    { ...ldapBase, LDAP_BIND_DN: "svc@example.test", LDAP_BIND_PASSWORD: sealed },
+    { openSecret: (t) => (t === sealed ? "the real password" : t) },
+  );
+  assert.equal(cfg.ldap.bindPassword, "the real password",
+    "binding with the token itself would fail every sign-in with a password that is technically present");
+});
+
+test("a plaintext bind password still works, but says so", () => {
+  const cfg = loadConfig({ ...ldapBase, LDAP_BIND_DN: "svc@example.test", LDAP_BIND_PASSWORD: "hunter2" });
+  assert.equal(cfg.ldap.bindPassword, "hunter2", "an un-migrated host must keep signing people in");
+  const warned = cfg.warnings.join(" ");
+  assert.match(warned, /LDAP_BIND_PASSWORD/, "the warning has to name the setting");
+  assert.match(warned, /seal-secret/, "and the tool that fixes it, or it is just nagging");
+});
+
+test("a sealed bind password produces no warning", () => {
+  const cfg = loadConfig(
+    { ...ldapBase, LDAP_BIND_DN: "svc@example.test", LDAP_BIND_PASSWORD: sealed },
+    { openSecret: () => "opened" },
+  );
+  assert.equal(cfg.warnings.filter((w) => /LDAP_BIND_PASSWORD/.test(w)).length, 0);
+});
+
+test("no bind password at all is not warned about", () => {
+  /* Nothing is stored, so there is nothing stored in the clear. Warning here
+     would train operators to ignore the warning that matters. */
+  assert.equal(loadConfig(ldapBase).warnings.filter((w) => /LDAP_BIND_PASSWORD/.test(w)).length, 0);
+});
+
+test("opening a secret is not attempted for a plaintext value", () => {
+  /* Unsealing shells out to PowerShell for DPAPI. Doing that for a value that
+     is plainly not a token would add a subprocess to every boot and to every
+     test in this suite. */
+  let calls = 0;
+  loadConfig(
+    { ...ldapBase, LDAP_BIND_DN: "svc@example.test", LDAP_BIND_PASSWORD: "hunter2" },
+    { openSecret: () => { calls++; return "x"; } },
+  );
+  assert.equal(calls, 0);
+});
+
+test("a sealed value that will not open stops the service, naming the cause", () => {
+  /* The alternative is an empty password, which trips the half-config guard
+     above and reports a missing setting that is right there in the file. The
+     real fault - a key.bin from another machine - would never be mentioned. */
+  assert.throws(
+    () => loadConfig(
+      { ...ldapBase, LDAP_BIND_DN: "svc@example.test", LDAP_BIND_PASSWORD: sealed },
+      { openSecret: () => { throw new Error("key.bin could not be unsealed"); } },
+    ),
+    /LDAP_BIND_PASSWORD|unsealed/,
+  );
+});

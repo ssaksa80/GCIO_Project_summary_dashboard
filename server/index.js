@@ -47,6 +47,12 @@ const SAMPLE_DIR = path.join(ROOT, "sample-data");
 
 const config = loadConfig(process.env);
 
+/* Printed here rather than from config.js: that module is loaded by most of the
+   test suite, and a module that logs during import makes every one of those
+   runs noisier. Warnings are things an operator should fix but that must not
+   stop the service -- a plaintext bind password is the current example. */
+for (const w of config.warnings) console.warn(`[gcio] WARNING: ${w}`);
+
 /* resolve, not join, and read from config rather than hardcoded: DATA_DIR may
    legitimately be absolute on a real deployment. A bundle installs code to
    <install>/app, which makes ROOT C:\gcio\app -- and if the drop folder moved

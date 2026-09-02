@@ -10,6 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isSealed, makeSecretBox } from "./crypto/secretBox.js";
+import { loadOrCreateKey, resolveKeyFile } from "./crypto/masterKey.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
@@ -55,8 +58,16 @@ function readVersion() {
  * @param {NodeJS.ProcessEnv} env
  * @returns {Readonly<object>}
  */
-export function loadConfig(env = process.env) {
+export function loadConfig(env = process.env, deps = {}) {
   const problems = [];
+  const warnings = [];
+
+  /* Opening a sealed secret shells out to PowerShell for DPAPI, so it is built
+     lazily and called only for values that actually carry the enc:v1: marker.
+     A plaintext password must not cost a subprocess on every boot, and the
+     test suite must not spawn one at all. Injectable for exactly that reason. */
+  const openSecret = deps.openSecret || ((token) =>
+    makeSecretBox(loadOrCreateKey(resolveKeyFile(ROOT, env.GCIO_KEY_FILE))).open(token));
   const need = (key) => {
     const value = String(env[key] || "").trim();
     if (!value) problems.push(`${key} is required`);
@@ -87,7 +98,25 @@ export function loadConfig(env = process.env) {
        original bind-as-user path. Never logged, never echoed: treated exactly
        like DB_PASSWORD. */
     ldap.bindDN = String(env.LDAP_BIND_DN || "").trim();
-    ldap.bindPassword = String(env.LDAP_BIND_PASSWORD || "");
+    const rawBindPassword = String(env.LDAP_BIND_PASSWORD || "");
+    if (isSealed(rawBindPassword)) {
+      try {
+        ldap.bindPassword = openSecret(rawBindPassword);
+      } catch (err) {
+        /* Reporting this as an empty password would trip the half-config guard
+           below and send an operator hunting for a setting that is plainly
+           present in the file, while the real fault - usually a key.bin from a
+           different machine - goes unmentioned. */
+        problems.push(`LDAP_BIND_PASSWORD is sealed but could not be opened: ${err.message}`);
+      }
+    } else {
+      ldap.bindPassword = rawBindPassword;
+      if (rawBindPassword) {
+        warnings.push(
+          "LDAP_BIND_PASSWORD is stored in plaintext; run deploy/seal-secret.ps1 to encrypt it at rest",
+        );
+      }
+    }
     /* Either one alone is a trap rather than a partial configuration.
        authenticate() picks its strategy on bindDN alone, so a DN with no
        password takes the search-then-bind path and binds with an empty one -
@@ -131,6 +160,10 @@ export function loadConfig(env = process.env) {
   }
 
   return Object.freeze({
+    /* Surfaced rather than logged from here: config load is pure enough to be
+       called all over the test suite, and a module that prints during import
+       makes every one of those runs noisier. index.js prints these once. */
+    warnings: Object.freeze(warnings),
     nodeEnv,
     isProd,
     version: readVersion(),

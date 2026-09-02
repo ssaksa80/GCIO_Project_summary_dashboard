@@ -1309,3 +1309,76 @@ function Get-GcioBindAddress {
   } catch { }
   return ''
 }
+
+<#
+  Set a single KEY=VALUE in a .env file, in place.
+
+  Rewrites rather than appends, because install.ps1 leaves the LDAP service
+  account settings behind as a COMMENTED placeholder block. An appender would
+  add a second live copy below the commented one, and dotenv takes the last
+  occurrence -- so the file would end up with a key that looks unset to a reader
+  and set to something else to the app. Both the commented and uncommented forms
+  are therefore treated as the same setting and replaced in place, which also
+  makes this idempotent: running it twice leaves one line, not two.
+
+  Surrounding comments, blank lines and ordering are preserved. Line endings are
+  preserved by writing back with the same WriteAllLines the rest of deploy/ uses.
+
+  Returns nothing; throws if the file is missing.
+#>
+function Set-GcioEnvSetting {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { throw "no .env at $Path" }
+  $lines = [IO.File]::ReadAllLines($Path)
+  $out = [Collections.Generic.List[string]]::new()
+  $written = $false
+  # Anchored, and the key is escaped: a name containing regex metacharacters
+  # must not match a different setting.
+  $pattern = '^\s*#?\s*' + [Regex]::Escape($Name) + '\s*='
+  foreach ($line in $lines) {
+    if ($line -match $pattern) {
+      if (-not $written) { $out.Add("$Name=$Value"); $written = $true }
+      # later duplicates are dropped, so the file cannot keep a stale second copy
+    } else { $out.Add($line) }
+  }
+  if (-not $written) { $out.Add("$Name=$Value") }
+  [IO.File]::WriteAllLines($Path, $out)
+}
+
+<#
+  The Node one-liner seal-secret.ps1 pipes a password into.
+
+  Lives here rather than inline in the script so a test can render the REAL
+  template and execute it. It was inline once, and shipped with bare absolute
+  Windows paths in its import statements - which Node's ESM loader rejects with
+  ERR_UNSUPPORTED_ESM_URL_SCHEME ("protocol c:"). Nothing caught it, because the
+  only thing that ran the template was the interactive script nobody could test.
+
+  Two forms of the same directory are needed and they are not interchangeable:
+  imports must be file:// URLs, while resolveKeyFile takes a plain filesystem
+  path. Rendering both from one input is what keeps them from drifting apart.
+
+  The password arrives on STDIN, never argv - argv is readable by any process
+  listing, any EDR agent, and Windows command-line auditing.
+#>
+function Get-GcioSealerScript {
+  param([Parameter(Mandatory)][string]$AppRoot)
+  # [IO.Path]::AltDirectorySeparatorChar rather than a regex: '\' alone is not a
+  # valid pattern, and '\\' in a -replace is one escaped backslash, which is a
+  # trap worth stepping around entirely.
+  $slashed = $AppRoot.Replace('\', '/')
+  return @"
+import { makeSecretBox } from "file:///$slashed/server/crypto/secretBox.js";
+import { loadOrCreateKey, resolveKeyFile } from "file:///$slashed/server/crypto/masterKey.js";
+let input = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) input += chunk;
+const keyFile = resolveKeyFile("$slashed", process.env.GCIO_KEY_FILE);
+process.stdout.write(makeSecretBox(loadOrCreateKey(keyFile)).seal(input) + "\n");
+process.stderr.write("key: " + keyFile + "\n");
+"@
+}
