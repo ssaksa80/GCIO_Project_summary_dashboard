@@ -7,6 +7,38 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.5.4
+
+**A half-configured service account is now refused at startup instead of
+failing every sign-in.** Housekeeping on top of 1.5.3, and the only reason it
+is a separate release is that it protects the exact configuration change 1.5.3
+asks operators to make.
+
+`LDAP_BIND_DN` alone was not a partial configuration, it was a trap. It selects
+search-then-bind, which then binds with an empty password - an anonymous bind,
+which Active Directory accepts. The search returns nothing, so every user in
+the organisation gets `sign-in failed: check the username and password` while
+holding a correct one, and nothing in the logs names the cause. `LDAP_BIND_PASSWORD`
+alone is quieter and just as wrong: it is ignored, and the release keeps
+guessing UPN suffixes as if nothing had been configured.
+
+Both now stop the service at startup with a message naming both settings,
+alongside the other configuration checks. **This is deliberately loud.** A
+service that will not start fails the deploy health gate and rolls back, which
+is the outcome an operator can act on; an authentication mystery on Monday
+morning is not.
+
+What an operator will notice:
+
+- Setting one of the two and restarting now fails immediately and says which
+  half is missing, rather than starting cleanly and rejecting everyone.
+- Setting both, or neither, is unchanged. Neither still means bind-as-user,
+  exactly as before 1.5.3.
+- Whitespace counts as unset, so `LDAP_BIND_DN= ` behaves like an absent value
+  rather than a configured account.
+
+No schema, dependency or runtime change. Ships as a patch.
+
 ## GCIO 1.5.3
 
 **Sign-in now works on directories the previous release could not authenticate
