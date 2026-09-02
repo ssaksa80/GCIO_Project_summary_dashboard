@@ -38,7 +38,7 @@ $patch = Join-Path $root 'patch'
 
 # Everything Install-GcioHostTooling exists to put on the host. A patch must
 # carry each of these, or the copy is a no-op and the host keeps a stale one.
-$MustReachHost = @('install.ps1', 'uninstall.ps1', 'code-update.ps1', 'Update-GCIO.cmd')
+$MustReachHost = @('install.ps1', 'uninstall.ps1', 'code-update.ps1', 'Update-GCIO.cmd', 'seal-secret.ps1')
 
 try {
   New-Item -ItemType Directory -Force `

@@ -36,7 +36,15 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$InstallDir = (Resolve-Path "$PSScriptRoot\..").Path,
+  # Two layouts, and the difference is not cosmetic. In the repo this script is
+  # deploy/seal-secret.ps1, so the install dir is its parent. On a host a patch
+  # copies it to the install root itself (C:\gcio\seal-secret.ps1), where the
+  # parent is C:\ - which has no .env, and would send an operator to a confusing
+  # "no .env at C:\.env". Decide by looking for the file rather than by guessing.
+  [string]$InstallDir = $(
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env')) { $PSScriptRoot }
+    else { (Resolve-Path "$PSScriptRoot\..").Path }
+  ),
   [string]$BindDN
 )
 

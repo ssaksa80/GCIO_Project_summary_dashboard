@@ -113,7 +113,7 @@ export function loadConfig(env = process.env, deps = {}) {
       ldap.bindPassword = rawBindPassword;
       if (rawBindPassword) {
         warnings.push(
-          "LDAP_BIND_PASSWORD is stored in plaintext; run deploy/seal-secret.ps1 to encrypt it at rest",
+          "LDAP_BIND_PASSWORD is stored in plaintext; run seal-secret.ps1 to encrypt it at rest",
         );
       }
     }

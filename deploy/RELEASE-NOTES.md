@@ -7,6 +7,57 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.6.0
+
+**The LDAP service-account password can now be stored encrypted at rest.**
+Until this release the only place to put it was plaintext in `.env`, where it
+is copied by every backup, support bundle and folder copy that touches the
+install directory.
+
+`LDAP_BIND_PASSWORD` may now hold an `enc:v1:` token instead of a password.
+To move an existing host across, from an elevated prompt:
+
+    pwsh -NoProfile -ExecutionPolicy Bypass -File C:\gcio\seal-secret.ps1 -InstallDir C:\gcio
+
+It prompts for the bind DN and password, backs `.env` up, replaces the
+settings in place, and reminds you to re-register the service - NSSM freezes
+the environment at install time, so a restart alone will not pick the new
+values up. The password is read as a SecureString and never echoed, never
+logged, and never placed on a command line.
+
+**What this protects against, precisely.** The key lives in `key.bin` beside
+`.env`, held under Windows DPAPI at LocalMachine scope, so both files together
+are useless on any other machine. A leaked backup, a copied folder or an
+accidental commit no longer leaks the password. It does **not** defend against
+code already running on this host as the service account, because the service
+has to decrypt unattended - anything it can do, that code can do. No
+unattended scheme does better, and it is worth knowing which of the two
+problems this solves.
+
+What an operator will notice:
+
+- A plaintext `LDAP_BIND_PASSWORD` still works. The service starts, signs
+  people in, and logs one warning naming the file and the tool. Upgrading a
+  host that has not been migrated is not an outage.
+- `key.bin` appears next to `.env` the first time something is sealed. **Back
+  it up with `.env`, and treat it as equally sensitive.** Restoring `.env` to
+  a different host without it - or with it - means re-running the tool there.
+- `key.bin` and `.env.bak-*` are now in `.gitignore`.
+
+Also in this release: the LDAP bind identity and search filters were reviewed
+against DEDB's implementation. Both projects escape search filters to RFC 4515
+identically; no change was needed.
+
+This adds functionality rather than fixing behaviour, so it is a MINOR bump
+and ships as a **bundle**, not a patch. There is no schema change and no new
+dependency; the tier is set by the release gate's rule that new functionality
+ships whole, and the gate refused a patch build of this until the version was
+corrected.
+
+A bundle replaces node_modules and the bundled runtime as well as the
+application, so allow more time than a patch deploy and expect the service to
+be down for longer than the usual few seconds.
+
 ## GCIO 1.5.4
 
 **A half-configured service account is now refused at startup instead of
