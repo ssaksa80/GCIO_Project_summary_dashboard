@@ -88,6 +88,19 @@ export function loadConfig(env = process.env) {
        like DB_PASSWORD. */
     ldap.bindDN = String(env.LDAP_BIND_DN || "").trim();
     ldap.bindPassword = String(env.LDAP_BIND_PASSWORD || "");
+    /* Either one alone is a trap rather than a partial configuration.
+       authenticate() picks its strategy on bindDN alone, so a DN with no
+       password takes the search-then-bind path and binds with an empty one -
+       an ANONYMOUS bind, which AD accepts. The search then finds nothing and
+       every user gets 401 holding a correct password. A password with no DN is
+       quieter and equally wrong: it is ignored and the UPN guessing continues.
+       Both are configuration errors and belong here, not at 9am. */
+    if (ldap.bindDN && !ldap.bindPassword) {
+      problems.push("LDAP_BIND_DN is set but LDAP_BIND_PASSWORD is empty; set both to use a service account, or neither to bind as the user");
+    }
+    if (!ldap.bindDN && ldap.bindPassword) {
+      problems.push("LDAP_BIND_PASSWORD is set but LDAP_BIND_DN is empty; the credential would be ignored");
+    }
   }
 
   /* SSO is additive: it can be enabled alongside LDAP so people may use
