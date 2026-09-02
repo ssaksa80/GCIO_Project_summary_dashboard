@@ -7,6 +7,43 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.5.3
+
+**Sign-in now works on directories the previous release could not authenticate
+against.** If you are on a domain where users bind successfully today, nothing
+changes and no configuration is needed.
+
+The old path constructed a bind identity as `<username>@LDAP_UPN_SUFFIX`. That
+assumes every account shares one UPN suffix, and many directories do not: on the
+deployment this was found on, `jdoe@example.com` and `svc_app@example.local` live
+in the same domain, so no configured value was right for both. A user with the
+correct password was told to check the username and password.
+
+Set `LDAP_BIND_DN` and `LDAP_BIND_PASSWORD` in `.env` and the app instead binds
+as that service account, searches for the user by `sAMAccountName`, and then
+binds the `distinguishedName` the directory itself returned. No identity is
+guessed, so the suffix stops mattering. `LDAP_UPN_SUFFIX` becomes unused in this
+mode; leave it or remove it.
+
+Leave `LDAP_BIND_DN` unset and the previous bind-as-user behaviour is unchanged,
+so this is safe to take on a working deployment and can be reverted by removing
+one setting rather than by rolling back.
+
+**Group membership is now read by the service account, not the signing-in user.**
+A user without directory read rights previously resolved to zero groups and was
+refused with 403 "no access" - which reads as a permissions decision rather than
+the failed lookup it was.
+
+**A wrong service-account password fails as 503, not 401.** It binds before the
+user does, so a bad service credential fails every sign-in in the organisation.
+Reported as 401 it would tell every one of those users to check a password that
+was never the problem, so it returns `directory_misconfigured` instead. The
+message names no credential detail.
+
+Both new settings are secrets and are handled like `DB_PASSWORD`: `.env` only,
+never logged, never committed. Editing `.env` does not affect a running service -
+re-register it, see runbook section 7a.
+
 ## GCIO 1.5.2
 
 Deploy tooling only. No application change - the app payload is identical to
