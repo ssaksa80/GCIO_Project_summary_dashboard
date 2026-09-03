@@ -7,6 +7,56 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.8.0
+
+**A command on the host can now grant a role, so a locked-out deployment can
+be recovered without the admin console.** This closes the gap 1.7.0 left: the
+console grants roles, but you have to sign in to reach it, and signing in
+needs a role. On a fresh database nobody has one.
+
+From the install directory, in any shell:
+
+    C:\gcio\Grant-Role.cmd <username> admin      grant or change a role
+    C:\gcio\Grant-Role.cmd --list                show every current grant
+    C:\gcio\Grant-Role.cmd --remove <username>   revoke a grant
+
+Roles are `viewer`, `pm` and `admin`. It reads the same `.env` and database the
+application uses, so there is nothing extra to configure, and it writes the
+same table the console does - a grant made here appears there and vice versa.
+
+**This is now the recommended way to create the first admin.** `SEED_ADMIN_GROUP`
+still works and is unchanged, but it needs a directory group that somebody has
+to create and populate. This does not:
+
+    C:\gcio\Grant-Role.cmd jdoe admin
+
+It is also the way back from a directory outage. When LDAP group resolution
+fails, every role folds to nothing and everyone is refused - including whoever
+would fix it. A direct grant is applied by account name and bypasses group
+resolution entirely, so it restores access while the directory is still broken.
+
+Points worth knowing:
+
+- Run it through `Grant-Role.cmd`, not the `.js` directly. Windows hands a bare
+  `.js` to Windows Script Host, which cannot parse the file and fails with an
+  `800A03EA` compile error that names nothing useful.
+- Unlike the console, this **will** remove the last admin grant. The console
+  refuses because it would lock itself out; this tool can always grant straight
+  back, and refusing would disarm the recovery path in the one situation it
+  exists for.
+- Granted roles apply at the next sign-in. An open session keeps its old role.
+- Grants made here are recorded as coming from the CLI rather than from a
+  person, so the audit trail does not imply someone used the console.
+
+Also fixed: `--list` and the console's list used to show "no grants" on a host
+whose schema predates 1.7.0, where the truthful answer is that the table does
+not exist yet. Both now say so and name the migration. Found by running the
+tool against a real host still at migration 11.
+
+**Deployment.** Supersedes 1.7.0 - if you have not deployed that yet, deploy
+this instead and you get both. It still carries migration 12 and still ships as
+a **bundle**.
+
 ## GCIO 1.7.0
 
 **An admin can now give any person a role from inside the application**, without
