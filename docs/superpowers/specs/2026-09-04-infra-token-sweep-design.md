@@ -116,21 +116,23 @@ produced empty output and no error. So the file also proves it can fail:
 3. **The corpus is non-empty** — a `git ls-files` that returns nothing would make
    every other assertion in the file vacuously true.
 
-The fixtures use fabricated values (`acme-corp.com`, `172.16.31.9`,
-`DC=acme,DC=corp`, `WKSTN01234-XY`, `C:\Users\someone`), never the real ones.
-Writing the real values into a fixture would put them back into the repository
-this test exists to protect — and the file would fail its own sweep.
+The fixtures are fabricated — one invented value per class, resembling real
+infrastructure but belonging to nobody. Writing the real values into a fixture
+would put them back into the repository this test exists to protect, and the
+file would fail its own sweep.
 
 Each fixture is assembled at runtime from fragments, so no complete
 infrastructure-shaped token appears literally in the test file. The
 alternative, excluding the test from its own corpus, was rejected: it would
 create the one file in the repository where a real value could sit unexamined.
 
-This document is itself in the corpus, and it spells the fixture values out in
-full. They therefore get allowlist entries of their own, commented as fabricated
-fixtures documented here. That is the correct outcome rather than an annoyance:
-the rule is that anything infrastructure-shaped in a tracked file is either
-allowlisted with a reason or it fails, and a design document is not exempt.
+**The fixture values are deliberately not written down here, and must never be
+added to the allowlist.** The first draft of this document listed them, which
+forced allowlist entries for them, which made the contaminated sample fully
+permitted — the self-check then found zero offenders and failed, correctly, by
+reporting that every pattern was dead. A value cannot be both the known-bad
+input and an approved token. If the fixtures ever need changing, read them from
+the test.
 
 ### Failure output
 
