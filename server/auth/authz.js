@@ -61,7 +61,23 @@ export function resolveRole(groups, roleMap) {
 export async function resolveAccess({ principal, groups }, deps) {
   if (!principal) throw new AuthError(401, "no_principal", "sign-in failed");
   const roleMap = await deps.roleMapping.getMap();
-  const role = resolveRole(groups, roleMap);
+  const groupRole = resolveRole(groups, roleMap);
+
+  /* Per-user grants are the second source, so an admin can give one person a
+     role without asking the directory team for a group. Optional: callers that
+     predate it (and most tests) pass only roleMapping, and this must keep
+     working for them rather than becoming mandatory everywhere at once. */
+  const userMap = deps.userRoleMapping ? await deps.userRoleMapping.getMap() : {};
+  const userRole = userMap[String(principal).toLowerCase()];
+
+  /* Highest of the two wins. A stale low grant must not demote someone their
+     group has promoted - revoking is done by removing the grant, not by
+     lowering it. */
+  const role = bestRole(groupRole, userRole);
+
+  /* Authenticating is not authorisation. Membership of an unmapped group must
+     never imply a default role, so someone the directory knows but nothing
+     grants gets 403 rather than a quiet read-only session. */
   if (!role) throw noAccess();
   return { role };
 }

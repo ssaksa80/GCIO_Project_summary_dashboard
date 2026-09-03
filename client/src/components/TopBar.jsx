@@ -28,7 +28,7 @@ const EXPORTS = [
   ["html", "HTML brief", "Self-contained page — email or print ready"],
 ];
 
-export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme, font, onFont, health, me, onUpload, onSignOut }) {
+export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme, font, onFont, health, me, onUpload, onAdmin, onSignOut }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(null);
   const menuRef = useRef(null);
@@ -148,6 +148,15 @@ export default function TopBar({ period, onPeriod, date, onDate, theme, onTheme,
         <button type="button" className="btn" onClick={onUpload}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
           Upload
+        </button>
+        )}
+
+        {/* Admin-only. The server enforces it too - hiding a control is
+            presentation, not access control. */}
+        {me?.role === "admin" && (
+        <button type="button" className="btn" onClick={onAdmin}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+          Access
         </button>
         )}
 

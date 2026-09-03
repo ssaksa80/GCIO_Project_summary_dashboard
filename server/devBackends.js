@@ -11,6 +11,10 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 /** Audit sink that appends JSONL, one file per day. Never throws. */
+/* Shared with the real repos so the stand-ins cannot drift from them. */
+import { PRECEDENCE } from "./auth/authz.js";
+import { toSam } from "./auth/ldap.js";
+
 export function createFileAudit(dir, { logger = console } = {}) {
   return {
     async append(event) {
@@ -136,6 +140,41 @@ export function memoryRoleMapping(map = {}) {
     },
     async list() {
       return [...store].map(([groupName, role]) => ({ groupName, role }));
+    },
+  };
+}
+
+/**
+ * Per-user role grants, in memory. Mirrors repos/userRoleMapping.js closely
+ * enough that a test exercising one is exercising the behaviour of the other -
+ * including the principal normalisation, which is where the real repo earns
+ * its keep: a grant typed as DOMAIN\user has to land on the key sign-in looks
+ * up, or the grant is stored, displayed, and silently ineffective.
+ */
+export function memoryUserRoleMapping(map = {}) {
+  const store = new Map(
+    Object.entries(map).map(([p, r]) => [toSam(p).toLowerCase(), { role: r, grantedBy: null, grantedAt: new Date() }]),
+  );
+  return {
+    async getMap() {
+      return Object.fromEntries([...store].map(([p, v]) => [p, v.role]));
+    },
+    async list() {
+      return [...store]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([Principal, v]) => ({ Principal, Role: v.role, GrantedBy: v.grantedBy, GrantedAt: v.grantedAt }));
+    },
+    async set(principal, role, grantedBy) {
+      const normalised = String(role || "").toLowerCase();
+      if (!PRECEDENCE.includes(normalised)) {
+        throw new Error(`unknown role '${role}' - expected one of ${PRECEDENCE.join(", ")}`);
+      }
+      const p = toSam(String(principal || "").trim()).toLowerCase();
+      if (!p) throw new Error("a principal is required");
+      store.set(p, { role: normalised, grantedBy: grantedBy || null, grantedAt: new Date() });
+    },
+    async remove(principal) {
+      return store.delete(toSam(String(principal || "").trim()).toLowerCase()) ? 1 : 0;
     },
   };
 }

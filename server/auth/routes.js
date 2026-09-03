@@ -24,6 +24,9 @@ import { validateWithRefresh, SSO_FAILURE_MESSAGE } from "./entraToken.js";
  */
 export function authRoutes(deps) {
   const { config, sessions, roleMapping, audit } = deps;
+  /* Optional: absent on callers that predate per-user grants, which
+     resolveAccess reads as "no grants" rather than as an error. */
+  const userRoleMapping = deps.userRoleMapping || null;
   const ldapAuthenticate = deps.ldapAuthenticate || authenticate;
   const router = express.Router();
   const secure = Boolean(config.isProd);
@@ -37,7 +40,7 @@ export function authRoutes(deps) {
       if (!username || !password) throw badCredentials();
 
       const identity = await ldapAuthenticate({ username, password }, config.ldap);
-      const { role } = await resolveAccess(identity, { roleMapping });
+      const { role } = await resolveAccess(identity, { roleMapping, userRoleMapping });
 
       const sessionId = await sessions.create({
         principal: identity.principal,
@@ -95,7 +98,7 @@ export function authRoutes(deps) {
         displayName: String(verdict.payload.name || verdict.sam),
         groups: verdict.groups,
       };
-      const { role } = await resolveAccess(identity, { roleMapping });
+      const { role } = await resolveAccess(identity, { roleMapping, userRoleMapping });
 
       const sessionId = await sessions.create({
         principal: identity.principal,

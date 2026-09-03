@@ -31,12 +31,14 @@ import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
+import { userRoleMappingRepo } from "./repos/userRoleMapping.js";
 import { sourceFilesRepo } from "./repos/sourceFiles.js";
 import { ingestRunsRepo } from "./repos/ingestRuns.js";
 import { projectVersionsRepo } from "./repos/projectVersions.js";
 import { createVault } from "./vault.js";
-import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
+import { createFileAudit, memorySessions, memoryRoleMapping, memoryUserRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
+import { searchUsers } from "./auth/ldap.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -91,6 +93,7 @@ if (config.store === "mssql") {
     audit: auditRepo(ex),
     sessions: sessionsRepo(ex),
     roleMapping: roleMappingRepo(ex),
+    userRoleMapping: userRoleMappingRepo(ex),
     sourceFiles: sourceFilesRepo(ex),
     ingestRuns: ingestRunsRepo(ex),
     projectVersions: projectVersionsRepo(ex),
@@ -126,6 +129,11 @@ if (config.store === "mssql") {
     audit: repos.audit,
     sessions: repos.sessions,
     roleMapping: repos.roleMapping,
+    userRoleMapping: repos.userRoleMapping,
+    /* The console's picker. Bound to the running config so a deployment
+       with no service account fails with the reason rather than an empty
+       list that reads as "no such person". */
+    searchDirectory: (q) => searchUsers(q, config.ldap),
     ingestRuns: repos.ingestRuns,
   };
 } else {
@@ -140,6 +148,13 @@ if (config.store === "mssql") {
       "gcio-dashboard-pms": "pm",
       "gcio-dashboard-admins": "admin",
     }),
+    /* In memory, so grants last only as long as the process. Enough for the
+       console to be developed and demonstrated without SQL Server. */
+    userRoleMapping: memoryUserRoleMapping(),
+    /* AUTH_MODE=dev has no directory to search. Left null so the route
+       answers "not configured" rather than returning an empty list that
+       reads as "nobody by that name". */
+    searchDirectory: null,
     /* No database, so no run history to show. The route says so rather than
        pretending the list is empty. */
     ingestRuns: null,

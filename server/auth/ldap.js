@@ -225,3 +225,90 @@ async function bindAsUser({ username, password, sam }, config, newClient) {
     try { await client.unbind(); } catch { /* already gone */ }
   }
 }
+
+/** What the admin console's picker shows for each match. */
+const SEARCH_ATTRS = ["sAMAccountName", "displayName", "mail"];
+
+/**
+ * The most matches one query may return.
+ *
+ * A two-letter query matches most of a directory, and neither a picker nor the
+ * connection between here and the DC benefits from the rest of it.
+ */
+const SEARCH_LIMIT = 25;
+
+/**
+ * Find people by a partial name, for the admin console's user picker.
+ *
+ * Ports DEDB's searchUsers. Binds as the SERVICE account - the signed-in
+ * admin's own credential is not available at this point and must not be
+ * needed - and matches the query against the three fields someone would
+ * actually type: display name, mail address and account name.
+ *
+ * This exists so a role is granted to an account that demonstrably exists.
+ * Typed by hand, a grant against a typo is stored happily, reports nothing,
+ * and looks correct in the table while the person still cannot sign in.
+ *
+ * DEPARTS FROM DEDB in one respect: DEDB resolves every failure to [] and
+ * never throws. Behind a search box that is wrong - "no matches" and "the
+ * directory is unreachable" call for different actions, and collapsing them
+ * hides an outage behind a result that merely looks disappointing.
+ *
+ * @param {string} query partial name, mail or account name
+ * @param {object} config the ldap config block
+ * @param {{ClientCtor?: Function}} [deps]
+ * @returns {Promise<Array<{username: string, name: string, mail: string}>>}
+ */
+export async function searchUsers(query, config, deps = {}) {
+  const q = String(query || "").trim();
+  /* An empty box would otherwise page the whole directory back on every
+     keystroke that cleared the field. */
+  if (!q) return [];
+
+  if (!config.bindDN || !config.bindPassword) {
+    throw directoryMisconfigured(
+      "searching the directory needs a service account; set LDAP_BIND_DN and LDAP_BIND_PASSWORD",
+    );
+  }
+
+  const ClientCtor = deps.ClientCtor || Client;
+  const client = new ClientCtor({
+    url: config.url,
+    timeout: config.timeoutMs || 10000,
+    connectTimeout: config.timeoutMs || 10000,
+  });
+
+  try {
+    try {
+      await client.bind(config.bindDN, config.bindPassword);
+    } catch (err) {
+      if (isUnreachable(err)) throw directoryUnavailable(err?.message || "connection failed");
+      throw directoryMisconfigured(err?.message || "the service account bind was rejected");
+    }
+
+    const esc = escapeFilter(q);
+    const { searchEntries } = await client.search(config.baseDN, {
+      scope: "sub",
+      /* Leading wildcards on the two human-facing fields, because an admin
+         searches for a surname as readily as a first name. sAMAccountName is
+         prefix-only: it is an identifier, and a substring match over it
+         returns noise without finding anything a person meant. */
+      filter: `(&(objectCategory=person)(|(displayName=*${esc}*)(mail=*${esc}*)(sAMAccountName=${esc}*)))`,
+      attributes: SEARCH_ATTRS,
+      sizeLimit: SEARCH_LIMIT,
+    });
+
+    return (searchEntries || [])
+      .slice(0, SEARCH_LIMIT)
+      .map((e) => ({
+        username: String(e.sAMAccountName || ""),
+        /* Falling back to the account name rather than leaving this blank: an
+           unlabelled row in a picker cannot be picked. */
+        name: String(e.displayName || e.sAMAccountName || ""),
+        mail: String(e.mail || ""),
+      }))
+      .filter((u) => u.username);
+  } finally {
+    try { await client.unbind(); } catch { /* the search already answered */ }
+  }
+}

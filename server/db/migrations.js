@@ -316,6 +316,35 @@ export const MIGRATIONS = [
         ALTER TABLE dbo.IngestRun ADD IsColdStart BIT NOT NULL CONSTRAINT DF_IngestRun_ColdStart DEFAULT (0);
     `,
   },
+  {
+    id: 12,
+    name: "user_role_mapping",
+    sql: `
+      /* Per-user role grants, so an admin can give one person a role without
+         asking the directory team for a group. Ports DEDB migration 006.
+
+         Principal is the bare sAMAccountName, lower-cased by the repo before
+         it is stored and before it is matched. AD is case-insensitive and a
+         person may sign in as jdoe, DOMAIN\jdoe or jdoe@example.local; all
+         three resolve to the same principal at sign-in, so all three must
+         resolve to the same row here, or a grant silently fails to apply.
+
+         The CHECK names the roles rather than deferring to the application: a
+         row written by hand carrying a role the app does not know would
+         resolve to no access, which reads as "the grant did not work" rather
+         than "the role is invalid".
+
+         GrantedBy is kept because a role grant is the one table where "who
+         did this" gets asked months later. */
+      IF OBJECT_ID('dbo.UserRoleMapping', 'U') IS NULL
+        CREATE TABLE dbo.UserRoleMapping (
+          Principal NVARCHAR(120) NOT NULL CONSTRAINT PK_UserRoleMapping PRIMARY KEY,
+          Role      VARCHAR(10)   NOT NULL CONSTRAINT CK_UserRoleMapping_Role CHECK (Role IN ('admin','pm','viewer')),
+          GrantedBy NVARCHAR(120) NULL,
+          GrantedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_UserRoleMapping_GrantedAt DEFAULT (SYSUTCDATETIME())
+        );
+    `,
+  },
 ];
 
 const LEDGER = `
