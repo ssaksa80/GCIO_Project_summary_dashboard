@@ -965,7 +965,7 @@ re-running the installer too, not just editing the file.
   Getting here needed a service re-registration, not a config edit, and the trap
   in section 7a is exactly why: the service had been frozen since install time
   on placeholder values (`ldaps://dc01.example.local:636`, `DC=example,DC=local`)
-  while `.env` on disk had carried the correct EXAMPLE settings for some time. The
+  while `.env` on disk had carried the correct directory settings for some time. The
   symptom was a 503 naming a host nobody had configured. Editing `.env` would
   never have fixed it.
 
