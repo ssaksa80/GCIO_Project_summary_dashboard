@@ -74,7 +74,7 @@ Copy-Item -Recurse -Force "$Repo/client/dist" "$Stage/app/client/dist"
 
   Missing STOPS the build, for the same reason the bundle's list does.
 #>
-$HostScripts = 'install.ps1', 'uninstall.ps1', 'code-update.ps1', 'Update-GCIO.cmd', 'seal-secret.ps1'
+$HostScripts = 'install.ps1', 'uninstall.ps1', 'code-update.ps1', 'Update-GCIO.cmd', 'seal-secret.ps1', 'Grant-Role.cmd'
 foreach ($f in $HostScripts) {
   if (-not (Test-Path "$Here/$f")) {
     Stop-Gcio "host script '$f' is on the patch ship list but is not in deploy/. Fix the name or remove it from `$HostScripts - do not let it silently not ship."

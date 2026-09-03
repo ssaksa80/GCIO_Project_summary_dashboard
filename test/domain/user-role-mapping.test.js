@@ -49,12 +49,21 @@ test("the map is lower-cased, because the directory is case-insensitive", async 
 });
 
 test("a missing table degrades to no grants rather than breaking sign-in", async () => {
-  /* This lookup sits in the login path. A code-only upgrade runs no
-     migrations, so on a host that has not migrated yet the table is absent -
-     and a purely additive feature must not take authentication down with it. */
+  /* getMap sits in the login path. A code-only upgrade runs no migrations, so
+     on a host that has not migrated yet the table is absent - and a purely
+     additive feature must not take authentication down with it. */
   const repo = userRoleMappingRepo(fakeEx([], { throwOn: missingTable }));
   assert.deepEqual(await repo.getMap(), {});
-  assert.deepEqual(await repo.list(), []);
+});
+
+test("but LISTING a missing table reports it, rather than showing no grants", async () => {
+  /* The opposite call, and the opposite answer. list() is asked by an
+     administrator, where "there are no grants" and "the table does not exist"
+     are different facts and only one of them has a fix. Conflating them is how
+     someone concludes the tool works and their grants disappeared - which is
+     exactly what the CLI printed against a real host at migration 11. */
+  const repo = userRoleMappingRepo(fakeEx([], { throwOn: missingTable }));
+  await assert.rejects(() => repo.list(), /invalid object name/i);
 });
 
 test("any other database error is surfaced, not swallowed", async () => {

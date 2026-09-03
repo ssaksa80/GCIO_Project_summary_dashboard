@@ -52,17 +52,23 @@ export function userRoleMappingRepo(ex) {
       }
     },
 
-    /** Every grant, for the admin console. */
+    /**
+     * Every grant, for the admin console and the CLI.
+     *
+     * Deliberately does NOT tolerate a missing table, unlike getMap above. The
+     * tolerance exists because getMap sits in the login path, where a
+     * not-yet-migrated host must degrade rather than lock everyone out. Nothing
+     * about that applies here: this is asked by an administrator, and "there
+     * are no grants" is a different answer from "the table does not exist yet".
+     * Returning the first for the second is how an operator concludes the tool
+     * works and the grants simply vanished. Measured on a real host at
+     * migration 11, where this said "(none)".
+     */
     async list() {
-      try {
-        const { recordset } = await ex.query(
-          "SELECT Principal, Role, GrantedBy, GrantedAt FROM dbo.UserRoleMapping ORDER BY Principal",
-        );
-        return recordset;
-      } catch (err) {
-        if (isMissingTable(err)) return [];
-        throw err;
-      }
+      const { recordset } = await ex.query(
+        "SELECT Principal, Role, GrantedBy, GrantedAt FROM dbo.UserRoleMapping ORDER BY Principal",
+      );
+      return recordset;
     },
 
     /**

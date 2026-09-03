@@ -87,7 +87,7 @@ function Get-InstalledVersion {
 #>
 function Install-GcioHostTooling {
   foreach ($f in 'install.ps1', 'install-service.ps1', 'uninstall.ps1',
-                 'code-update.ps1', 'Update-GCIO.cmd', 'seal-secret.ps1',
+                 'code-update.ps1', 'Update-GCIO.cmd', 'seal-secret.ps1', 'Grant-Role.cmd',
                  'VERSION', 'versions.json') {
     $src = Join-Path $Here $f
     if (Test-Path $src) { Copy-Item -Force $src (Join-Path $InstallDir $f) }
