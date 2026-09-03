@@ -93,6 +93,48 @@ try {
   Set-GcioEnvSetting -Path $p -Name 'LDAP_BIND_PASSWORD' -Value $tok
   Check ((Live $p 'LDAP_BIND_PASSWORD')[0] -eq "LDAP_BIND_PASSWORD=$tok") 'a base64 token is written verbatim, metacharacters and all'
 
+  # ---- 1b. reading what .env already knows ---------------------------------
+  # The base DN, domain and UPN suffix are already configured. Asking an
+  # operator to retype them invites a typo in a value that was already correct.
+
+  $p = NewEnv @('# LDAP_BASE_DN=commented-out', 'LDAP_BASE_DN=DC=example,DC=test', 'PORT=1')
+  Check ((Get-GcioEnvSetting -Path $p -Name 'LDAP_BASE_DN') -eq 'DC=example,DC=test') 'reads a live setting'
+  Check ($null -eq (Get-GcioEnvSetting -Path $p -Name 'LDAP_DOMAIN')) 'an absent setting reads back as null'
+
+  $p = NewEnv @('#LDAP_DOMAIN=EXAMPLE')
+  Check ($null -eq (Get-GcioEnvSetting -Path $p -Name 'LDAP_DOMAIN')) 'a commented setting is absent, not its value'
+
+  $p = NewEnv @('LDAP_DOMAIN=FIRST', 'LDAP_DOMAIN=SECOND')
+  Check ((Get-GcioEnvSetting -Path $p -Name 'LDAP_DOMAIN') -eq 'SECOND') 'the last live copy wins, as dotenv does'
+
+  $p = NewEnv @('LDAP_BASE_DN =  DC=example,DC=test  ')
+  Check ((Get-GcioEnvSetting -Path $p -Name 'LDAP_BASE_DN') -eq 'DC=example,DC=test') 'whitespace around the name and value is trimmed'
+
+  # ---- 1c. turning a username into a bindable identity ---------------------
+  # This is where the operator in the screenshot went wrong: the prompt said
+  # "Bind DN", so they pasted the BASE DN. Everything here exists to make that
+  # answer impossible to give silently.
+
+  Check ((Resolve-GcioBindIdentity -User 'svc' -UpnSuffix 'example.test') -eq 'svc@example.test') 'a bare username plus a configured suffix becomes a UPN'
+  Check ((Resolve-GcioBindIdentity -User 'svc' -BaseDN 'DC=example,DC=test') -eq 'svc@example.test') 'with no suffix configured, one is derived from the base DN'
+  Check ((Resolve-GcioBindIdentity -User 'svc' -Domain 'EXAMPLE') -eq 'EXAMPLE\svc') 'with neither, a NetBIOS domain is used'
+  Check ((Resolve-GcioBindIdentity -User 'svc') -eq 'svc') 'with nothing to qualify it, the username is passed through unchanged'
+
+  # Already-qualified input is the operator overriding the derivation. Respect
+  # it exactly - a second suffix appended to a UPN is a bind that cannot work.
+  Check ((Resolve-GcioBindIdentity -User 'svc@other.test' -UpnSuffix 'example.test') -eq 'svc@other.test') 'a UPN is left alone'
+  Check ((Resolve-GcioBindIdentity -User 'EXAMPLE\svc' -UpnSuffix 'example.test') -eq 'EXAMPLE\svc') 'a NetBIOS identity is left alone'
+  Check ((Resolve-GcioBindIdentity -User 'CN=svc,OU=Service,DC=example,DC=test' -UpnSuffix 'example.test') -eq 'CN=svc,OU=Service,DC=example,DC=test') 'a full DN is left alone'
+
+  # The actual defect from the screenshot. A DN with no CN= names a container,
+  # not an account; binding as it fails with a message about credentials and
+  # sends the operator hunting for a password problem that does not exist.
+  foreach ($notAnAccount in @('DC=example,DC=local', 'OU=Service,DC=example,DC=test', 'dc=example,dc=test')) {
+    $threw = $false
+    try { Resolve-GcioBindIdentity -User $notAnAccount -UpnSuffix 'example.test' } catch { $threw = $true }
+    Check $threw "'$notAnAccount' is refused as a username - it names a container, not an account"
+  }
+
   # ---- 2. DPAPI, for real, on this host ------------------------------------
   # Seal in one process and open in a SECOND one. A single process could pass
   # by holding the key in memory the whole time; the service will not have that

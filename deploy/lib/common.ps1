@@ -1382,3 +1382,76 @@ process.stdout.write(makeSecretBox(loadOrCreateKey(keyFile)).seal(input) + "\n")
 process.stderr.write("key: " + keyFile + "\n");
 "@
 }
+
+<#
+  Read one live KEY=VALUE out of a .env file, or $null.
+
+  "Live" means uncommented: a commented line is an absent setting, not its
+  value, which is the whole point of the placeholder block install.ps1 leaves
+  behind. When a key appears more than once the LAST live copy wins, matching
+  what dotenv actually loads - a reader who assumes "first" would show an
+  operator a value the app is not using.
+#>
+function Get-GcioEnvSetting {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Name
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { return $null }
+  $pattern = '^\s*' + [Regex]::Escape($Name) + '\s*=(.*)$'
+  $value = $null
+  foreach ($line in [IO.File]::ReadAllLines($Path)) {
+    if ($line -match $pattern) { $value = $Matches[1].Trim() }
+  }
+  return $value
+}
+
+<#
+  Turn what an operator typed into something the directory will accept as a
+  bind identity.
+
+  Mirrors bindIdentity() in server/auth/ldap.js so the value written to .env is
+  the same shape the app would have constructed. Already-qualified input is
+  returned untouched: appending a suffix to a UPN produces svc@a.test@b.test,
+  which fails as a credential error and reads like a wrong password.
+
+  The refusal matters more than the derivation. A DN made only of DC= and OU=
+  components names a CONTAINER, not an account - it is what you get by pasting
+  the base DN into a prompt labelled "Bind DN", which is exactly what happened
+  on this deployment. Binding as it fails with "invalid credentials", so the
+  operator goes looking for a password problem that does not exist. Catch it
+  here, while the person who typed it is still watching.
+#>
+function Resolve-GcioBindIdentity {
+  param(
+    [Parameter(Mandatory)][AllowEmptyString()][string]$User,
+    [string]$BaseDN,
+    [string]$Domain,
+    [string]$UpnSuffix
+  )
+  $u = $User.Trim()
+  if (-not $u) { throw 'a username is required' }
+
+  # Order matters: a full DN contains OU= and DC= too, so it has to be
+  # recognised before the container check rejects those components.
+  if ($u -match '(?i)^\s*CN\s*=') { return $u }
+  if ($u -match '(?i)(^|,)\s*(DC|OU)\s*=') {
+    throw ("'$u' looks like a directory path, not an account. It has no CN= " +
+           'component, so it names a container rather than a user - this is ' +
+           'the BASE DN, which is configured separately. Enter just the ' +
+           "account name (for example: svc_app), or a full DN beginning CN=.")
+  }
+  if ($u.Contains('@') -or $u.Contains('\')) { return $u }
+
+  $suffix = if ($UpnSuffix) { $UpnSuffix.Trim() }
+            elseif ($BaseDN) {
+              # DC=example,DC=test -> example.test
+              (($BaseDN -split ',' | ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '(?i)^DC=' } |
+                ForEach-Object { $_.Substring(3) }) -join '.')
+            } else { '' }
+
+  if ($suffix) { return "$u@$suffix" }
+  if ($Domain) { return "$Domain" + [char]92 + "$u" }
+  return $u
+}

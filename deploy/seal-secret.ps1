@@ -1,10 +1,12 @@
 <#
 .SYNOPSIS
   Store the LDAP service-account credential in .env with the password encrypted
-  at rest.
+  at rest, in four prompted steps.
 
 .DESCRIPTION
-  Prompts for the bind DN and password, seals the password with the
+  Step 1 confirms the base DN already in .env, step 2 asks for the service
+  account username, step 3 for its password, and step 4 verifies the pair
+  against the directory before anything is written. Seals the password with the
   application's own master key (AES-256-GCM, key held DPAPI-protected at
   LocalMachine scope), and writes both settings into .env:
 
@@ -45,7 +47,13 @@ param(
     if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env')) { $PSScriptRoot }
     else { (Resolve-Path "$PSScriptRoot\..").Path }
   ),
-  [string]$BindDN
+  [string]$BindDN,
+
+  # Store the credential without checking it against the directory first. For a
+  # host that cannot reach a DC from where this is run, or a deliberate
+  # pre-stage. The check exists because the alternative first test of a wrong
+  # password is the service retrying it on every sign-in.
+  [switch]$SkipBindTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,21 +85,61 @@ Ok "using $node"
 Ok "sealing for $appRoot"
 
 # --- collect the credential --------------------------------------------------
-if (-not $BindDN) {
+# Four numbered steps, each with an example.
+#
+# The previous version asked for a "Bind DN" in one prompt. An operator read
+# that as the base DN and pasted DC=example,DC=local, which is a container and not
+# an account - and the next prompt then said "Password for DC=example,DC=local",
+# which looks perfectly reasonable right up until the bind fails as a
+# credential error. The base DN is already in .env; it is shown, not asked for
+# again, and the account name is collected on its own.
+function Step { param([int]$N, [string]$Title, [string]$Example, [string]$Note)
   Write-Host ''
-  Write-Host 'Bind DN for the LDAP service account. Any form the directory accepts'
-  Write-Host 'for a simple bind -- whichever one ldap-bind-test.ps1 succeeded with:'
-  Write-Host '    svc@example.local                        UPN'
-  Write-Host '    EXAMPLE\svc                              NetBIOS'
-  Write-Host '    CN=svc,OU=Service,DC=example,DC=local     full DN'
-  $BindDN = Read-Host 'Bind DN'
+  Write-Host "Step $N of 4: $Title" -ForegroundColor Cyan
+  if ($Example) { Write-Host "  example:  $Example" -ForegroundColor DarkGray }
+  if ($Note)    { Write-Host "  $Note" -ForegroundColor DarkGray }
 }
-if (-not $BindDN.Trim()) { Fail 'a bind DN is required; without one the app ignores the password entirely' }
 
-$secure = Read-Host "Password for $BindDN" -AsSecureString
+$baseDN    = Get-GcioEnvSetting -Path $envFile -Name 'LDAP_BASE_DN'
+$domain    = Get-GcioEnvSetting -Path $envFile -Name 'LDAP_DOMAIN'
+$upnSuffix = Get-GcioEnvSetting -Path $envFile -Name 'LDAP_UPN_SUFFIX'
+
+# ---- 1. base DN -------------------------------------------------------------
+Step 1 'Directory base DN' 'DC=example,DC=local' 'where the app searches for users'
+if ($baseDN) {
+  Write-Host "  from .env: $baseDN" -ForegroundColor Green
+  $answer = Read-Host '  press Enter to keep it, or type a different base DN'
+  if ($answer.Trim()) { $baseDN = $answer.Trim() }
+} else {
+  $baseDN = (Read-Host '  Base DN').Trim()
+  if (-not $baseDN) { Fail 'a base DN is required; LDAP_BASE_DN is not set in .env either' }
+}
+
+# ---- 2. username ------------------------------------------------------------
+if (-not $BindDN) {
+  Step 2 'Service account username' 'svc_app' 'the account name ONLY - not a DN, not the base DN'
+  Write-Host '  a fully-qualified value is accepted too, and used exactly as typed:' -ForegroundColor DarkGray
+  Write-Host '      svc_app@example.local                      UPN' -ForegroundColor DarkGray
+  Write-Host '      EXAMPLE\svc_app                            NetBIOS' -ForegroundColor DarkGray
+  Write-Host '      CN=svc_app,OU=Service,DC=example,DC=local  full DN' -ForegroundColor DarkGray
+  $username = Read-Host '  Username'
+  try {
+    $BindDN = Resolve-GcioBindIdentity -User $username -BaseDN $baseDN -Domain $domain -UpnSuffix $upnSuffix
+  } catch { Fail $_.Exception.Message }
+  if ($BindDN -ne $username.Trim()) {
+    Write-Host "  will bind as: $BindDN" -ForegroundColor Green
+  }
+} else {
+  Step 2 'Service account username' '' "supplied with -BindDN: $BindDN"
+}
+if (-not $BindDN.Trim()) { Fail 'a username is required; without one the app ignores the password entirely' }
+
+# ---- 3. password ------------------------------------------------------------
+Step 3 'Password' '' "for $BindDN - not shown as you type, and never written in the clear"
+$secure = Read-Host '  Password' -AsSecureString
 if ($secure.Length -eq 0) { Fail 'an empty password would bind anonymously; refusing' }
 
-$confirm = Read-Host 'Confirm password' -AsSecureString
+$confirm = Read-Host '  Confirm password' -AsSecureString
 # Compared through the plaintext forms, which are released immediately below.
 # A typo here is not a typo you find out about now -- it is a service account
 # lockout at the next restart, when the directory sees repeated bad binds.
@@ -105,6 +153,54 @@ try {
 } finally {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr1)
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
+}
+
+# ---- 4. verify, then write --------------------------------------------------
+# Try the credential against the directory BEFORE writing it.
+#
+# Without this the first thing that ever tests the password is the service, and
+# it does so on every sign-in attempt by every user. A typo therefore does not
+# surface as "wrong password" - it surfaces as repeated bad binds from the
+# application, which is how a service account gets locked out. One deliberate
+# attempt here is far cheaper than that.
+Step 4 'Verify and write' '' 'one bind against the directory, then seal and save'
+$ldapUrl = Get-GcioEnvSetting -Path $envFile -Name 'LDAP_URL'
+if ($SkipBindTest) {
+  Write-Host '  skipped (-SkipBindTest)' -ForegroundColor Yellow
+} elseif (-not $ldapUrl) {
+  Write-Host '  skipped: LDAP_URL is not set in .env, so there is nothing to test against' -ForegroundColor Yellow
+} else {
+  $uri = [Uri]$ldapUrl
+  $ldapPort = if ($uri.Port -gt 0) { $uri.Port } elseif ($uri.Scheme -eq 'ldaps') { 636 } else { 389 }
+  Write-Host "  binding to $($uri.Host):$ldapPort as $BindDN ..." -ForegroundColor DarkGray
+  try {
+    Add-Type -AssemblyName System.DirectoryServices.Protocols
+    $id = New-Object DirectoryServices.Protocols.LdapDirectoryIdentifier($uri.Host, $ldapPort)
+    $conn = New-Object DirectoryServices.Protocols.LdapConnection($id)
+    $conn.SessionOptions.SecureSocketLayer = ($uri.Scheme -eq 'ldaps')
+    $conn.SessionOptions.ProtocolVersion = 3
+    $conn.AuthType = [DirectoryServices.Protocols.AuthType]::Basic   # simple bind, as the app does
+    $conn.Credential = New-Object Net.NetworkCredential($BindDN, $plain)
+    $conn.Bind()
+    $conn.Dispose()
+    Ok 'the directory accepted this credential'
+  } catch [DirectoryServices.Protocols.LdapException] {
+    # The AD "data" code carries the real reason; 52e is a wrong password and
+    # 525 an unknown account, and the two need different corrections.
+    $detail = $_.Exception.Message
+    if ($_.Exception.ServerErrorMessage) { $detail += " | $($_.Exception.ServerErrorMessage)" }
+    Write-Host "[FAIL] the directory REJECTED this credential: $detail" -ForegroundColor Red
+    Write-Host '       52e wrong password   525 no such user   532 password expired' -ForegroundColor DarkGray
+    Write-Host '       533 account disabled  775 locked out    530/531 not permitted here' -ForegroundColor DarkGray
+    Write-Host '       Nothing was written. Re-run and correct the username or password,' -ForegroundColor DarkGray
+    Write-Host '       or pass -SkipBindTest to store it anyway.' -ForegroundColor DarkGray
+    exit 1
+  } catch {
+    # Reachability, TLS, DNS - not a credential problem, and not a reason to
+    # refuse to store a password the operator may well have right.
+    Write-Host "  could not reach the directory to check: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host '  continuing - this is a connectivity problem, not a credential one.' -ForegroundColor Yellow
+  }
 }
 
 # --- seal it -----------------------------------------------------------------
