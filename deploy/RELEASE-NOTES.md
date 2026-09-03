@@ -7,6 +7,45 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.6.1
+
+**`seal-secret.ps1` now asks for the service account username, not a bind DN,
+and checks the credential before storing it.** Fixes a prompt that invited the
+wrong answer: it said `Bind DN`, an operator supplied the base DN, and the next
+prompt read `Password for DC=...` - which looks entirely reasonable right up
+until the bind fails as a credential error and sends someone hunting for a
+password problem that does not exist.
+
+The run is now four numbered steps, each with an example:
+
+1. **Directory base DN** - already in `.env`, so it is shown for confirmation.
+   Press Enter to keep it.  Example: `DC=example,DC=local`
+2. **Service account username** - the account name on its own, nothing more.
+   Example: `svc_app`
+3. **Password** - entered twice, never echoed, never written in the clear.
+4. **Verify and write** - one bind against the directory, then seal and save.
+
+A bare username is qualified exactly as the application would qualify it: a UPN
+from `LDAP_UPN_SUFFIX`, or one derived from the base DN, or a NetBIOS
+`DOMAIN\user`. The identity it settled on is printed before the password is
+asked for. An already-qualified value - `svc@example.local`, `EXAMPLE\svc`, or a
+full `CN=...` DN - is used exactly as typed, because appending a suffix to a UPN
+yields something that cannot bind and reads like a bad password.
+
+A DN with no `CN=` component is now refused outright, saying that it names a
+container rather than an account and that the base DN is configured elsewhere.
+
+**Step 4 is the substantive change.** Until now the first thing that ever tested
+the password was the service itself, on every sign-in by every user - which is
+how a service account gets locked out by a typo. One deliberate bind here costs
+a single attempt. A rejection stops the write and prints the AD data codes
+(`52e` wrong password, `525` no such user, `532` expired, `533` disabled, `775`
+locked out). An unreachable directory does **not** stop it: that is a
+connectivity problem, not a wrong credential. `-SkipBindTest` opts out.
+
+No schema, dependency or runtime change, and no change to the application code.
+Ships as a patch.
+
 ## GCIO 1.6.0
 
 **The LDAP service-account password can now be stored encrypted at rest.**
