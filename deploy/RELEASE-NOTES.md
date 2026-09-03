@@ -7,6 +7,51 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.7.0
+
+**An admin can now give any person a role from inside the application**, without
+asking the directory team to create or populate a group. A new **Access** button
+appears in the header for admins.
+
+A person's role is the HIGHEST of two things: what their directory groups grant,
+and what an admin granted them directly. A direct grant can raise someone above
+their group; it never lowers them below it, so revoking is done by removing a
+grant rather than by setting a smaller one.
+
+**What has NOT changed, and matters most:** signing in still proves only who
+someone is. A person the directory authenticates but nothing grants is refused
+with 403, exactly as before - membership of an unmapped group never implies a
+role. `SEED_ADMIN_GROUP` still seeds the first admin, so **nobody can sign in
+until that group has at least one member.**
+
+Granting someone access:
+
+1. Sign in as an admin and press **Access** in the header.
+2. Type part of a name, email address or account name. The server searches the
+   directory using the configured service account and lists matches.
+3. Pick the person and choose a role: `viewer` reads, `pm` also uploads,
+   `admin` also opens this screen.
+
+The picker searches rather than accepting a typed name on purpose. A grant
+written against a typo saves without complaint, appears correctly in the list,
+and leaves the person refused at sign-in with nothing connecting the two.
+
+Details worth knowing:
+
+- **You cannot remove or lower your own last admin grant.** It would lock the
+  console for everyone, and the way back is a database edit or the seed group.
+- A grant typed as `DOMAIN\user` or `user@example.local` is stored against the
+  bare account name, which is what sign-in looks up. All three forms work.
+- Revoking a grant leaves any role the person gets from a directory group intact.
+- Every grant and revoke is written to the audit log with who made the change.
+- A directory outage while searching is reported as such, not as "no matches".
+
+**Deployment.** This adds `dbo.UserRoleMapping` (migration 12), so it is a
+schema change and ships as a **bundle**. The migration runs during the deploy.
+A host still on the previous schema degrades to "no direct grants" rather than
+failing sign-in, because the lookup sits in the login path - but the console
+cannot store anything until the migration has run.
+
 ## GCIO 1.6.1
 
 **`seal-secret.ps1` now asks for the service account username, not a bind DN,
