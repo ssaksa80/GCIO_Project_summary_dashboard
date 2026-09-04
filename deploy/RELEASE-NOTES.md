@@ -7,6 +7,56 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.11.0
+
+**A bundle deploy now takes about five minutes instead of the better part of
+an hour**, and there is an About footer showing the running version.
+
+### Why deploys were so slow
+
+The bundle held 17,398 files, of which 15,312 were dependencies — the
+application itself is 62 files. Every stage of a deploy paid for that count:
+clearing the previous unpack, extracting, checksumming, and copying into place.
+The clearing step alone ran at 0.1 MB/s on your host and was indistinguishable
+from a hung installer.
+
+Dependencies now travel as a single archive inside the bundle and are expanded
+once, on the host. Measured on the real artifact:
+
+    entries      17,398  ->  2,134
+    size         77.8 MB ->  73.5 MB
+    extract         730s ->  39s
+    verify           77s ->  21s
+    expand deps         -> 213s     (new, and paid once)
+    clear unpack   ~2300s ->  58s
+
+    end to end    ~3100s -> ~330s
+
+The 213 seconds to expand dependencies cannot be avoided — Node needs those
+files on disk. What changed is that the cost is paid once rather than four
+times over.
+
+Two smaller changes with the same cause: clearing a directory now uses a method
+that does not walk every file through a pipeline, and re-running a deploy skips
+extraction and checksums entirely when the same archive was already unpacked and
+verified — so a retry after a failed health check costs seconds.
+
+### About
+
+A quiet footer showing the name and version, with a link to build details and
+the maintainer credit. It appears on the dashboard, the admin console and the
+sign-in screen: the version is the first thing anyone is asked for when
+reporting a problem, and it should not be hidden from the people who cannot get
+in. If it cannot load, it simply does not appear.
+
+### Compatibility
+
+Nothing to do. Each bundle carries its own installer, so a new bundle always
+arrives with one that understands the new layout, and the verifier accepts both
+shapes. An older bundle installs exactly as it did before — just as slowly.
+
+No schema, dependency or runtime change.
+
 ## GCIO 1.10.0
 
 **The admin console now has eleven screens.** Health, Ownership, Access,
