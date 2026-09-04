@@ -7,6 +7,31 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.8.2
+
+**Per-user role grants now actually take effect.** 1.8.0 added them and 1.8.1
+fixed how they are matched, but neither release reached the running
+application: the composition root built the grants repository and then did not
+pass it to the app. Sign-in therefore ignored every direct grant, fell back to
+directory group membership alone, and refused people whose grant was plainly
+listed in the Access console.
+
+Nothing failed loudly. The feature was simply absent, which is why it survived
+a full test suite - the tests construct the application directly with the
+dependencies they want, and the step that was wrong is the one they skip.
+
+The admin console's directory search was missing for the same reason and now
+works.
+
+Existing grants need no attention. They were stored correctly throughout and
+begin working when this release is deployed - no re-granting, no
+re-registration, no configuration change.
+
+Also added: a release gate that checks the shipped artifact wires every backend
+it builds. It fails against the 1.8.1 artifact, which carries the defect.
+
+No schema, dependency or runtime change. Ships as a patch.
+
 ## GCIO 1.8.1
 
 **Fixes a role grant being ignored at sign-in.** A person granted a role - from
