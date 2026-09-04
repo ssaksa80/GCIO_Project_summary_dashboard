@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 /* Shared with the real repos so the stand-ins cannot drift from them. */
 import { PRECEDENCE } from "./auth/authz.js";
 import { toSam } from "./auth/ldap.js";
+import { KNOWN_SETTINGS } from "./repos/settings.js";
 
 export function createFileAudit(dir, { logger = console } = {}) {
   return {
@@ -191,6 +192,60 @@ export function memoryUserRoleMapping(map = {}) {
     async remove(principal) {
       return store.delete(toSam(String(principal || "").trim()).toLowerCase()) ? 1 : 0;
     },
+  };
+}
+
+/**
+ * Section ownership in memory. Mirrors the SQL repo including the part that
+ * matters: resolution matches the principal, its bare sAMAccountName and every
+ * group CN, and never filters on PrincipalType.
+ */
+export function memoryOwnership(rows = []) {
+  let nextId = 1;
+  const store = new Map(rows.map((r) => [nextId, { Id: nextId++, ...r }]));
+  return {
+    async ownedSectionsFor(principal, groups = []) {
+      const bare = toSam(String(principal || ""));
+      const names = new Set([principal, bare, ...(groups || [])].filter(Boolean).map((n) => String(n)));
+      return [...new Set([...store.values()]
+        .filter((r) => names.has(String(r.PrincipalName)))
+        .map((r) => r.SectionKey))];
+    },
+    async list() {
+      return [...store.values()].sort((a, b) =>
+        String(a.PrincipalName).localeCompare(String(b.PrincipalName)) ||
+        String(a.SectionKey).localeCompare(String(b.SectionKey)));
+    },
+    async grant({ principalType, principalName, sectionKey, grantedBy }) {
+      const id = nextId++;
+      store.set(id, {
+        Id: id,
+        PrincipalType: String(principalType).toLowerCase(),
+        PrincipalName: String(principalName).trim(),
+        SectionKey: String(sectionKey).trim(),
+        GrantedBy: grantedBy || null,
+        GrantedAt: new Date(),
+      });
+      return id;
+    },
+    async revoke(id) { store.delete(Number(id)); },
+  };
+}
+
+/** Settings in memory. Lost on restart, which is right for a dev backend. */
+export function memorySettings(initial = {}) {
+  const store = new Map(Object.entries(initial));
+  return {
+    async getMap() { return Object.fromEntries(store); },
+    async describe() {
+      const stored = Object.fromEntries(store);
+      const known = KNOWN_SETTINGS.map((s) => ({ ...s, value: stored[s.key] ?? null }));
+      const seen = new Set(KNOWN_SETTINGS.map((s) => s.key));
+      const extra = Object.entries(stored).filter(([k]) => !seen.has(k))
+        .map(([key, value]) => ({ key, label: key, type: "text", live: false, value, unknown: true }));
+      return [...known, ...extra];
+    },
+    async set(key, value) { store.set(String(key), value === null ? null : String(value)); },
   };
 }
 

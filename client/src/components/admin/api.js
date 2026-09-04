@@ -24,6 +24,7 @@ export async function api(url, options) {
 
 export const get = (url) => api(url);
 export const post = (url, body) => api(url, { method: "POST", body: JSON.stringify(body) });
+export const put = (url, body) => api(url, { method: "PUT", body: JSON.stringify(body) });
 export const del = (url) => api(url, { method: "DELETE" });
 
 /** A timestamp an operator can read at a glance, in their own timezone. */

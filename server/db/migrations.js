@@ -345,6 +345,51 @@ export const MIGRATIONS = [
         );
     `,
   },
+  {
+    id: 13,
+    name: "section_ownership_and_settings",
+    sql: `
+      /* Two tables the admin console needs, ported from DEDB.
+
+         SectionOwnership mirrors DEDB's: a principal - a person OR a directory
+         group, which is why PrincipalType exists - owns a section of the brief.
+         DEDB resolves ownership by matching PrincipalName against the caller's
+         principal AND their group CNs in one IN clause, never filtering on
+         PrincipalType, so the type is descriptive rather than load-bearing.
+         Kept anyway: it is what tells an admin reading the table whether a row
+         was meant as a person or a group.
+
+         SectionKey is checked against the five sections the client actually
+         renders (client/src/components/SectionNav.jsx). A grant against a key
+         nothing renders is a row that matches nobody and reports nothing -
+         precisely the silent no-match DEDB's route validation exists to stop,
+         so the constraint stops it one layer lower as well.
+
+         AppSetting is a plain key/value store for the Settings screen. Values
+         are NVARCHAR because everything an operator types is text; the reader
+         coerces. No secrets belong here - those stay sealed in .env, and
+         nothing in this table is read before authentication. */
+      IF OBJECT_ID('dbo.SectionOwnership', 'U') IS NULL
+        CREATE TABLE dbo.SectionOwnership (
+          Id            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SectionOwnership PRIMARY KEY,
+          PrincipalType VARCHAR(10)   NOT NULL CONSTRAINT CK_SectionOwnership_Type CHECK (PrincipalType IN ('user','group')),
+          PrincipalName NVARCHAR(200) NOT NULL,
+          SectionKey    VARCHAR(20)   NOT NULL CONSTRAINT CK_SectionOwnership_Key
+                        CHECK (SectionKey IN ('successes','questions','priorities','roadmap','posture')),
+          GrantedBy     NVARCHAR(120) NULL,
+          GrantedAt     DATETIME2(0)  NOT NULL CONSTRAINT DF_SectionOwnership_At DEFAULT (SYSUTCDATETIME()),
+          CONSTRAINT UQ_SectionOwnership UNIQUE (PrincipalName, SectionKey)
+        );
+
+      IF OBJECT_ID('dbo.AppSetting', 'U') IS NULL
+        CREATE TABLE dbo.AppSetting (
+          [Key]       VARCHAR(60)    NOT NULL CONSTRAINT PK_AppSetting PRIMARY KEY,
+          Value       NVARCHAR(400)  NULL,
+          UpdatedBy   NVARCHAR(120)  NULL,
+          UpdatedAt   DATETIME2(0)   NOT NULL CONSTRAINT DF_AppSetting_At DEFAULT (SYSUTCDATETIME())
+        );
+    `,
+  },
 ];
 
 const LEDGER = `

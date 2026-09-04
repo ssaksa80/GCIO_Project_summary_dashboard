@@ -312,3 +312,53 @@ export async function searchUsers(query, config, deps = {}) {
     try { await client.unbind(); } catch { /* the search already answered */ }
   }
 }
+
+/**
+ * Bind as the service account and report what happened.
+ *
+ * The same operation sign-in performs, offered on its own so an operator can
+ * separate "the directory is unreachable" from "this person typed the wrong
+ * password" without anyone having to try a real credential. That distinction
+ * cost a day on this deployment: a TLS failure and a bad password both surfaced
+ * as a refusal at the sign-in form.
+ *
+ * Throws on failure rather than returning a flag, so the caller decides how to
+ * present it - the route turns it into an ok:false body rather than a 5xx,
+ * because the probe running and reporting failure is a successful probe.
+ */
+export async function probeDirectory(config, deps = {}) {
+  if (!config.bindDN || !config.bindPassword) {
+    throw directoryMisconfigured("no service account is configured (LDAP_BIND_DN / LDAP_BIND_PASSWORD)");
+  }
+  const ClientCtor = deps.ClientCtor || Client;
+  const client = new ClientCtor({
+    url: config.url,
+    timeout: config.timeoutMs || 10000,
+    connectTimeout: config.timeoutMs || 10000,
+  });
+  try {
+    try {
+      await client.bind(config.bindDN, config.bindPassword);
+    } catch (err) {
+      if (isUnreachable(err)) throw directoryUnavailable(err?.message || "connection failed");
+      throw directoryMisconfigured(err?.message || "the service account bind was rejected");
+    }
+    /* A bind proves the credential; a search proves the base DN is usable too.
+       A deployment can bind fine and still have a baseDN that finds nobody,
+       which looks identical at the sign-in form. */
+    const { searchEntries } = await client.search(config.baseDN, {
+      scope: "sub",
+      filter: "(&(objectCategory=person)(sAMAccountName=*))",
+      attributes: ["sAMAccountName"],
+      sizeLimit: 1,
+    });
+    return {
+      url: config.url,
+      bindDN: config.bindDN,
+      baseDN: config.baseDN,
+      searchable: (searchEntries || []).length > 0,
+    };
+  } finally {
+    try { await client.unbind(); } catch { /* the probe already answered */ }
+  }
+}

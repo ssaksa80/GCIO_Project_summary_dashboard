@@ -15,7 +15,7 @@ import path from "node:path";
 import { createApp } from "../../server/app.js";
 import { loadConfig } from "../../server/config.js";
 import { Store } from "../../server/store.js";
-import { memorySessions, memoryRoleMapping, memoryUserRoleMapping } from "../../server/devBackends.js";
+import { memorySessions, memoryRoleMapping, memoryUserRoleMapping, memoryOwnership, memorySettings } from "../../server/devBackends.js";
 
 const config = loadConfig({ STORE: "memory", AUTH_MODE: "dev", DEV_ROLE: "admin" });
 
@@ -39,6 +39,18 @@ export async function makeTestDeps(t, opts = {}) {
   const userRoleMapping = memoryUserRoleMapping(opts.grants || {});
   const roleMapping = memoryRoleMapping({ ...ROLE_MAP });
   const sessions = memorySessions();
+  const ownership = memoryOwnership();
+  const settings = memorySettings();
+  /* Stand-ins that answer rather than probe. A test overriding one gets
+     only the piece it named; the rest keep working, which is how the
+     'a failing probe must not take the page down' cases stay honest. */
+  const adminProbes = {
+    async database() { return { up: true, ms: 1, database: 'test', serverVersion: 'stub', tables: [] }; },
+    async migrations() { return { applied: [{ id: 13, name: 'section_ownership_and_settings' }], last: 13 }; },
+    async directory() { return { url: 'ldaps://dc.example.test:636', bindDN: 'svc', baseDN: 'DC=x', searchable: true }; },
+    async logs() { return { which: 'out', exists: false, lines: [], available: ['out', 'err', 'deploy'] }; },
+    ...(opts.adminProbes || {}),
+  };
   const app = createApp({
     store: new Store(),
     config,
@@ -53,10 +65,13 @@ export async function makeTestDeps(t, opts = {}) {
       return { principal: name || role || "tester", groups: [GROUP_FOR[role] || GROUP_FOR.viewer] };
     },
     searchDirectory: opts.searchUsers || (async () => []),
+    ownership,
+    settings,
+    adminProbes,
     dataDir,
     clientDist: "client/dist",
   });
-  return { app, userRoleMapping, roleMapping, sessions };
+  return { app, userRoleMapping, roleMapping, sessions, ownership, settings };
 }
 
 /**
@@ -66,17 +81,39 @@ export async function makeTestDeps(t, opts = {}) {
  * every call has to sign in first and the tests read better without that
  * repeated in each one.
  */
+/**
+ * A caller signed in as `username` holding `role`.
+ *
+ * The agent is cached per app+role+username. Signing in on every call looked
+ * tidier and tripped the sign-in rate limiter the moment a test made more than
+ * ten requests - which the first multi-screen test did, and it failed with
+ * "too many sign-in attempts" rather than anything about the screens. The
+ * limiter is correct; the harness was wrong to hammer it.
+ */
+const agents = new WeakMap();
+
 export function asRole(app, role, username = "tester") {
-  const signIn = async () => {
-    const agent = request.agent(app);
-    const res = await agent.post("/api/auth/login").send({ username: `${role}:${username}`, password: "x" });
-    assert.equal(res.status, 200, `sign-in failed: ${JSON.stringify(res.body)}`);
-    return agent;
+  if (!agents.has(app)) agents.set(app, new Map());
+  const perApp = agents.get(app);
+  const key = `${role}:${username}`;
+
+  const agent = async () => {
+    if (!perApp.has(key)) {
+      perApp.set(key, (async () => {
+        const a = request.agent(app);
+        const res = await a.post("/api/auth/login").send({ username: key, password: "x" });
+        assert.equal(res.status, 200, `sign-in failed: ${JSON.stringify(res.body)}`);
+        return a;
+      })());
+    }
+    return perApp.get(key);
   };
+
   return {
-    async get(url) { return (await signIn()).get(url); },
-    async post(url, body) { return (await signIn()).post(url).send(body); },
-    async delete(url) { return (await signIn()).delete(url); },
+    async get(url) { return (await agent()).get(url); },
+    async post(url, body) { return (await agent()).post(url).send(body); },
+    async put(url, body) { return (await agent()).put(url).send(body); },
+    async delete(url) { return (await agent()).delete(url); },
   };
 }
 

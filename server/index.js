@@ -32,13 +32,16 @@ import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
 import { userRoleMappingRepo } from "./repos/userRoleMapping.js";
+import { ownershipRepo } from "./repos/ownership.js";
+import { settingsRepo } from "./repos/settings.js";
 import { sourceFilesRepo } from "./repos/sourceFiles.js";
 import { ingestRunsRepo } from "./repos/ingestRuns.js";
 import { projectVersionsRepo } from "./repos/projectVersions.js";
 import { createVault } from "./vault.js";
-import { createFileAudit, memorySessions, memoryRoleMapping, memoryUserRoleMapping, devAuthenticate } from "./devBackends.js";
+import { createFileAudit, memorySessions, memoryRoleMapping, memoryUserRoleMapping, memoryOwnership, memorySettings, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
-import { searchUsers } from "./auth/ldap.js";
+import { searchUsers, probeDirectory } from "./auth/ldap.js";
+import { readServiceLog } from "./logTail.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -65,6 +68,11 @@ for (const w of config.warnings) console.warn(`[gcio] WARNING: ${w}`);
    C:\gcio\app\C:\gcio\data -- the same bug fixed for the vault in 6bd993c. */
 const DATA_DIR = resolveStateDir(ROOT, config.dataDir);
 const log = (msg) => console.log(`[gcio ${dayjs().format("HH:mm:ss")}] ${msg}`);
+/* The wrapper writes logs beside the install directory, not inside app/. On a
+   bundle ROOT is <install>/app, so this resolves to <install>/logs; on a dev
+   checkout it points at a logs/ that usually does not exist, and the screen
+   reports that rather than failing. */
+const LOG_DIR = path.resolve(ROOT, "..", "logs");
 
 /* ------------------------------------------------------------- backends */
 
@@ -94,6 +102,8 @@ if (config.store === "mssql") {
     sessions: sessionsRepo(ex),
     roleMapping: roleMappingRepo(ex),
     userRoleMapping: userRoleMappingRepo(ex),
+    ownership: ownershipRepo(ex),
+    settings: settingsRepo(ex),
     sourceFiles: sourceFilesRepo(ex),
     ingestRuns: ingestRunsRepo(ex),
     projectVersions: projectVersionsRepo(ex),
@@ -130,10 +140,59 @@ if (config.store === "mssql") {
     sessions: repos.sessions,
     roleMapping: repos.roleMapping,
     userRoleMapping: repos.userRoleMapping,
+    ownership: repos.ownership,
+    settings: repos.settings,
     /* The console's picker. Bound to the running config so a deployment
        with no service account fails with the reason rather than an empty
        list that reads as "no such person". */
     searchDirectory: (q) => searchUsers(q, config.ldap),
+    /* Probes the admin screens read. Each is a closure over the live
+       connection rather than a value captured at boot, so a screen shows
+       what is true now - a database that went down after startup must
+       report down, not the health it had when the process began. */
+    adminProbes: {
+      async database({ withTables = false } = {}) {
+        const t0 = Date.now();
+        const { recordset } = await ex.query("SELECT DB_NAME() AS db, @@VERSION AS version");
+        const out = {
+          up: true, ms: Date.now() - t0,
+          database: recordset[0].db,
+          /* First line only: @@VERSION is a paragraph, and the rest is
+             build detail nobody reads on a status screen. */
+          serverVersion: String(recordset[0].version || "").split(/\r?\n/)[0].trim(),
+        };
+        if (withTables) {
+          const t = await ex.query(`
+            SELECT t.name AS name, SUM(p.rows) AS rows
+            FROM sys.tables t
+            JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)
+            GROUP BY t.name ORDER BY t.name`);
+          out.tables = t.recordset.map((r) => ({ name: r.name, rows: Number(r.rows) }));
+        }
+        return out;
+      },
+      async migrations() {
+        const { recordset } = await ex.query(
+          "SELECT Id, Name, AppliedAt FROM dbo.SchemaMigration ORDER BY Id");
+        return {
+          applied: recordset.map((r) => ({ id: r.Id, name: r.Name, appliedAt: r.AppliedAt })),
+          last: recordset.length ? recordset[recordset.length - 1].Id : null,
+        };
+      },
+      /* One bind as the service account. The same operation sign-in
+         performs, which is why it is worth offering: it separates "the
+         directory is unreachable" from "this user typed the wrong
+         password" without anyone having to try a real credential. */
+      async directory() {
+        if (!config.ldap.bindDN) {
+          const e = new Error("no service account is configured (LDAP_BIND_DN)");
+          e.code = "not_configured";
+          throw e;
+        }
+        return probeDirectory(config.ldap);
+      },
+      async logs({ which, lines }) { return readServiceLog({ which, lines, dir: LOG_DIR }); },
+    },
     ingestRuns: repos.ingestRuns,
   };
 } else {
@@ -151,6 +210,20 @@ if (config.store === "mssql") {
     /* In memory, so grants last only as long as the process. Enough for the
        console to be developed and demonstrated without SQL Server. */
     userRoleMapping: memoryUserRoleMapping(),
+    ownership: memoryOwnership(),
+    settings: memorySettings(),
+    /* No database and no directory in dev, so the screens that probe them
+       report that rather than pretending. Logs still work: they are files. */
+    adminProbes: {
+      async database() { return { up: null, detail: "in-memory store: there is no database to probe" }; },
+      async migrations() { return { applied: [], last: null }; },
+      async directory() {
+        const e = new Error("AUTH_MODE=dev: there is no directory to test");
+        e.code = "not_configured";
+        throw e;
+      },
+      async logs({ which, lines }) { return readServiceLog({ which, lines, dir: LOG_DIR }); },
+    },
     /* AUTH_MODE=dev has no directory to search. Left null so the route
        answers "not configured" rather than returning an empty list that
        reads as "nobody by that name". */

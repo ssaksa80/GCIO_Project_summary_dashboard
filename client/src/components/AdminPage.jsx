@@ -17,16 +17,33 @@
  */
 import { useEffect, useRef, useState } from "react";
 
+import Health from "./admin/Health.jsx";
+import Ownership from "./admin/Ownership.jsx";
 import Access from "./admin/Access.jsx";
 import Sessions from "./admin/Sessions.jsx";
 import Audit from "./admin/Audit.jsx";
+import Settings from "./admin/Settings.jsx";
+import Connection from "./admin/Connection.jsx";
+import Database from "./admin/Database.jsx";
+import Logs from "./admin/Logs.jsx";
+import Security from "./admin/Security.jsx";
 import Status from "./admin/Status.jsx";
 
+/* Ordered as DEDB orders them: the state of the thing first, then who may
+   touch it, then what they did, then how it is configured. An operator opening
+   this screen in an incident reads left to right. */
 const TABS = [
+  ["health", "Health", "is it up, and what is it connected to", Health],
+  ["ownership", "Ownership", "who owns which part of the brief", Ownership],
   ["access", "Access", "who may use this application", Access],
   ["sessions", "Sessions", "who is signed in now", Sessions],
   ["audit", "Audit", "who did what", Audit],
-  ["status", "Status", "health and ingest history", Status],
+  ["settings", "Settings", "what an operator can change without a deploy", Settings],
+  ["connection", "Connection", "what this deployment is pointed at", Connection],
+  ["database", "Database", "schema, migrations and row counts", Database],
+  ["logs", "Logs", "what the service wrote", Logs],
+  ["security", "Security", "the posture of the application itself", Security],
+  ["ingest", "Ingest", "recent ingest runs", Status],
 ];
 
 export default function AdminPage({ me, onClose }) {

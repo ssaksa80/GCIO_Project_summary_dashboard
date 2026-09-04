@@ -25,6 +25,8 @@ import { buildTemplate, TEMPLATE_FILENAME } from "./template.js";
 import { looksLikeWorkbook } from "./uploadGuard.js";
 import { attachSession, requireSession, requireRole } from "./auth/session.js";
 import { PRECEDENCE } from "./auth/authz.js";
+import { SECTION_KEYS } from "./repos/ownership.js";
+import { KNOWN_SETTINGS } from "./repos/settings.js";
 import { authRoutes } from "./auth/routes.js";
 import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
 
@@ -71,6 +73,12 @@ export function createApp(deps) {
      a directory and a deployment with no service account gives a clear error
      instead of a stack trace. */
   const searchDirectory = deps.searchDirectory || null;
+  /* All optional, all defaulting to null: a caller that wires none of them
+     still gets a working app, and each screen reports its own absence
+     rather than the page failing. */
+  const ownership = deps.ownership || null;
+  const settings = deps.settings || null;
+  const adminProbes = deps.adminProbes || null;
   /* A function, not a plain boolean: STORE=mssql's leader status can flip to
      false mid-run if this process loses its dedicated applock connection
      (server/db/leaderElection.js), and a scrape must see that without the
@@ -425,6 +433,230 @@ export function createApp(deps) {
     await sessions.destroyForPrincipal(principal);
     await auditFrom(req, { actor: req.session.principal, action: "session.revoked", subject: principal });
     res.json({ ok: true });
+  }));
+
+  /* ---- health -----------------------------------------------------------
+     DEDB Health answers three questions in one place: is the database
+     reachable, is the directory configured, and which migrations have run.
+     All three are otherwise learned by reading a log file. */
+  app.get("/api/admin/health", requireRole("admin"), wrap(async (req, res) => {
+    const out = {
+      version, store: config.store, authMode: config.authMode,
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+      projects: store.projectCount ?? null,
+      database: { configured: config.store === "mssql", up: null, detail: null },
+      directory: {
+        configured: config.authMode === "ldap" && Boolean(config.ldap.url),
+        url: config.ldap.url || null,
+        serviceAccount: config.ldap.bindDN ? "configured" : "not configured",
+        bindPasswordSealed: String(process.env.LDAP_BIND_PASSWORD || "").startsWith("enc:v1:"),
+      },
+      migrations: { applied: [], last: null },
+      warnings: config.warnings || [],
+    };
+    /* Each probe is separate and failure-tolerant: a database that is down
+       must still let the rest of the page render, because that is exactly
+       when an operator needs to read it. */
+    if (adminProbes && adminProbes.database) {
+      try { Object.assign(out.database, await adminProbes.database()); }
+      catch (err) { out.database.up = false; out.database.detail = err.message; }
+    }
+    if (adminProbes && adminProbes.migrations) {
+      try { out.migrations = await adminProbes.migrations(); }
+      catch (err) { out.migrations.error = err.message; }
+    }
+    res.json(out);
+  }));
+
+  /* ---- ownership --------------------------------------------------------- */
+  app.get("/api/admin/ownership", requireRole("admin"), wrap(async (req, res) => {
+    if (!ownership) return res.json([]);
+    res.json(await ownership.list());
+  }));
+
+  /**
+   * Grant a section to a person or a group.
+   *
+   * Validated before the repo, as DEDB validates it, and for the same reason:
+   * the resolver matches PrincipalName verbatim and never filters on type, so
+   * an unvalidated typo becomes a grant that matches nobody and reports
+   * nothing. Non-strings are refused rather than coerced - String(12345) would
+   * pass a non-empty check and persist as junk.
+   */
+  app.post("/api/admin/ownership", requireRole("admin"), wrap(async (req, res) => {
+    if (!ownership) return fail(res, "ownership_unavailable", "section ownership is not configured on this deployment", 503);
+    const b = req.body || {};
+    if (typeof b.principalType !== "string") return fail(res, "bad_principal_type", "principalType must be user or group");
+    if (typeof b.principalName !== "string") return fail(res, "bad_principal_name", "principalName is required");
+    if (typeof b.sectionKey !== "string") return fail(res, "bad_section", "sectionKey must be one of: " + SECTION_KEYS.join(", "));
+    const principalType = b.principalType.trim().toLowerCase();
+    const principalName = b.principalName.trim();
+    const sectionKey = b.sectionKey.trim();
+    if (!["user", "group"].includes(principalType)) return fail(res, "bad_principal_type", "principalType must be user or group");
+    if (!principalName) return fail(res, "bad_principal_name", "principalName is required");
+    if (principalName.length > 200) return fail(res, "bad_principal_name", "principalName must be 200 characters or fewer");
+    if (!SECTION_KEYS.includes(sectionKey)) return fail(res, "bad_section", "sectionKey must be one of: " + SECTION_KEYS.join(", "));
+
+    const id = await ownership.grant({ principalType, principalName, sectionKey, grantedBy: req.session.principal });
+    await auditFrom(req, { actor: req.session.principal, action: "ownership.grant", subject: principalName + " -> " + sectionKey });
+    res.json({ id });
+  }));
+
+  app.delete("/api/admin/ownership/:id", requireRole("admin"), wrap(async (req, res) => {
+    if (!ownership) return fail(res, "ownership_unavailable", "section ownership is not configured on this deployment", 503);
+    await ownership.revoke(req.params.id);
+    await auditFrom(req, { actor: req.session.principal, action: "ownership.revoke", subject: String(req.params.id) });
+    res.json({ ok: true });
+  }));
+
+  /* ---- settings ---------------------------------------------------------- */
+  app.get("/api/admin/settings", requireRole("admin"), wrap(async (req, res) => {
+    if (!settings) return res.json([]);
+    res.json(await settings.describe());
+  }));
+
+  /**
+   * Save settings, and report which ones actually took effect.
+   *
+   * DEDB distinguishes saved from applied-live, and it is the honest
+   * distinction: some settings the running process re-reads, others need a
+   * restart. Returning appliedLive lets the console say which is which rather
+   * than implying every save is instant. A save that persists but does not
+   * apply is not a failure - it is a fact the operator needs.
+   */
+  app.put("/api/admin/settings", requireRole("admin"), wrap(async (req, res) => {
+    if (!settings) return fail(res, "settings_unavailable", "settings are not configured on this deployment", 503);
+    const body = req.body || {};
+    if (typeof body !== "object" || Array.isArray(body)) return fail(res, "bad_settings", "expected an object of key/value pairs");
+
+    const saved = [];
+    for (const [k, v] of Object.entries(body)) {
+      await settings.set(k, v, req.session.principal);
+      saved.push(k);
+    }
+    /* Only what THIS request changed live, so the console cannot claim a
+       restart-only setting applied. */
+    const appliedLive = saved.filter((k) => KNOWN_SETTINGS.some((x) => x.key === k && x.live));
+    await auditFrom(req, { actor: req.session.principal, action: "settings.save", subject: saved.join(", ") });
+    res.json({ ok: true, saved, appliedLive, needsRestart: saved.filter((k) => !appliedLive.includes(k)) });
+  }));
+
+  /* ---- connection -------------------------------------------------------- */
+  /**
+   * What this deployment is pointed at. READ-ONLY, and that is a genuine
+   * difference from DEDB, which edits a runtime config store. GCIO reads its
+   * configuration from .env, which the service wrapper freezes at install
+   * time; a screen that appeared to change it would be lying. Passwords are
+   * never included - only whether one is set, and whether it is sealed.
+   */
+  app.get("/api/admin/connection", requireRole("admin"), wrap(async (req, res) => {
+    res.json({
+      editable: false,
+      why: "configuration comes from .env, which the service wrapper freezes at install time; change it there and re-register the service",
+      database: {
+        store: config.store,
+        server: process.env.DB_SERVER || null,
+        instance: process.env.DB_INSTANCE || null,
+        database: process.env.DB_DATABASE || null,
+        windowsAuth: String(process.env.DB_WINDOWS_AUTH || "") === "true",
+        encrypt: String(process.env.DB_ENCRYPT || "") === "true",
+        trustServerCertificate: String(process.env.DB_TRUST_CERT || "") === "true",
+        passwordSet: Boolean(process.env.DB_PASSWORD),
+      },
+      directory: {
+        authMode: config.authMode,
+        url: config.ldap.url || null,
+        baseDN: config.ldap.baseDN || null,
+        domain: config.ldap.domain || null,
+        upnSuffix: config.ldap.upnSuffix || null,
+        bindDN: config.ldap.bindDN || null,
+        bindPasswordSet: Boolean(config.ldap.bindPassword),
+        bindPasswordSealed: String(process.env.LDAP_BIND_PASSWORD || "").startsWith("enc:v1:"),
+        timeoutMs: config.ldap.timeoutMs,
+      },
+    });
+  }));
+
+  /** Prove the directory is reachable and the service account still binds. */
+  app.post("/api/admin/connection/test-directory", requireRole("admin"), wrap(async (req, res) => {
+    if (!adminProbes || !adminProbes.directory) return fail(res, "probe_unavailable", "directory testing is not configured on this deployment", 503);
+    const started = Date.now();
+    try {
+      const detail = await adminProbes.directory();
+      await auditFrom(req, { actor: req.session.principal, action: "directory.test", subject: "ok" });
+      res.json({ ok: true, ms: Date.now() - started, ...detail });
+    } catch (err) {
+      /* 200 with ok:false, not a 5xx. The probe RAN and produced a result; the
+         result is "it failed", which the screen must render rather than treat
+         as the screen itself being broken. */
+      await auditFrom(req, { actor: req.session.principal, action: "directory.test", subject: "failed: " + (err.code || err.message) });
+      res.json({ ok: false, ms: Date.now() - started, code: err.code || null, message: err.message });
+    }
+  }));
+
+  /* ---- database ---------------------------------------------------------- */
+  app.get("/api/admin/database", requireRole("admin"), wrap(async (req, res) => {
+    if (!adminProbes || !adminProbes.database) {
+      return res.json({ store: config.store, up: null, tables: [], migrations: { applied: [] } });
+    }
+    const out = { store: config.store, tables: [], migrations: { applied: [] } };
+    try { Object.assign(out, await adminProbes.database({ withTables: true })); }
+    catch (err) { out.up = false; out.detail = err.message; }
+    if (adminProbes.migrations) {
+      try { out.migrations = await adminProbes.migrations(); } catch { /* rendered as empty */ }
+    }
+    res.json(out);
+  }));
+
+  /* ---- logs -------------------------------------------------------------- */
+  /**
+   * The tail of the service logs. Read-only and capped: the wrapper writes
+   * these files and they reach tens of megabytes, so sending one whole would
+   * stall the browser and the request. A tail is what gets read anyway.
+   */
+  app.get("/api/admin/logs", requireRole("admin"), wrap(async (req, res) => {
+    if (!adminProbes || !adminProbes.logs) return fail(res, "logs_unavailable", "log reading is not configured on this deployment", 503);
+    const which = String(req.query.which || "out");
+    const lines = Math.min(2000, Math.max(10, Number(req.query.lines) || 300));
+    res.json(await adminProbes.logs({ which, lines }));
+  }));
+
+  /* ---- security ---------------------------------------------------------- */
+  /**
+   * The posture of the application itself, not of the portfolio.
+   *
+   * Every line is something an auditor asks and an operator would otherwise
+   * answer by reading configuration files: how sessions expire, whether the
+   * bind password is sealed, whether the directory is reached over TLS, and
+   * who holds admin.
+   */
+  app.get("/api/admin/security", requireRole("admin"), wrap(async (req, res) => {
+    const grants = userRoleMapping ? await userRoleMapping.getMap() : {};
+    const groupMap = await roleMapping.getMap();
+    const adminGrants = Object.entries(grants).filter(([, r]) => r === "admin").map(([p]) => p);
+    const adminGroups = Object.entries(groupMap).filter(([, r]) => r === "admin").map(([g]) => g);
+    res.json({
+      authentication: {
+        mode: config.authMode,
+        ssoEnabled: config.ssoEnabled,
+        directoryOverTls: String(config.ldap.url || "").startsWith("ldaps://"),
+        serviceAccountConfigured: Boolean(config.ldap.bindDN),
+        bindPasswordSealed: String(process.env.LDAP_BIND_PASSWORD || "").startsWith("enc:v1:"),
+      },
+      sessions: {
+        idleMinutes: config.sessionIdleMinutes,
+        absoluteHours: config.sessionAbsoluteHours,
+      },
+      authorisation: {
+        refusesWithoutRole: true,
+        adminGroups,
+        adminGrants,
+        /* The number that matters: if this reaches zero nobody can reach this
+           screen, and the way back is Grant-Role.cmd on the host. */
+        adminRoutesTotal: adminGroups.length + adminGrants.length,
+      },
+      warnings: config.warnings || [],
+    });
   }));
 
   app.get("/api/admin/directory", requireRole("admin"), wrap(async (req, res) => {

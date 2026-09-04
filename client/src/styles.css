@@ -723,3 +723,49 @@ table.projects th .th-sort { width: 100%; white-space: nowrap; }
 .admin-page table.projects { min-width: 0; }
 .admin-page table.projects td,
 .admin-page table.projects th { padding: 7px 8px; vertical-align: top; }
+
+/* ---- admin console: the ported screens ------------------------------------
+   Health, Connection, Security and Logs each need a small vocabulary the
+   dashboard has no equivalent for. Everything else reuses card/chip/table. */
+
+/* A label, a fact, and a state — read left to right. */
+.health-list, .sec-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.health-row { display: grid; grid-template-columns: 190px 1fr auto; gap: 14px; align-items: start;
+              padding: 11px 0; border-bottom: 1px solid var(--hairline-soft); }
+.health-row:last-child { border-bottom: 0; }
+.health-label { font-size: 12.5px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+.health-body { min-width: 0; word-break: break-word; }
+.health-state { white-space: nowrap; }
+@media (max-width: 720px) { .health-row { grid-template-columns: 1fr; gap: 4px; } }
+
+.sec-row { display: grid; grid-template-columns: 76px 1fr; gap: 12px; align-items: start;
+           padding: 10px 0; border-bottom: 1px solid var(--hairline-soft); }
+.sec-row:last-child { border-bottom: 0; }
+
+/* Configuration values are identifiers, not prose: they must not be re-wrapped
+   in a way that hides a trailing space or a look-alike character. */
+.conn-grid { margin-top: 10px; }
+.conn-field { min-width: 0; }
+.conn-value { margin-top: 2px; word-break: break-all; }
+.conn-value.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+.conn-bad { border-color: color-mix(in srgb, var(--critical) 45%, transparent); }
+
+.admin-settings { display: grid; gap: 16px; margin: 12px 0 18px; }
+@media (min-width: 1280px) { .admin-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.admin-setting { display: flex; flex-direction: column; gap: 4px; }
+.admin-setting input, .admin-setting select { width: 100%; }
+.admin-setting .meta { margin: 0; }
+
+.admin-warnings { margin: 8px 0 0; padding-left: 18px; }
+.admin-warnings li { margin-bottom: 6px; }
+
+/* Log output is preformatted, scrolls on its own, and must never widen the
+   page — a single long stack-trace line would otherwise push the whole layout
+   sideways on every screen size. */
+.admin-log { max-height: 60vh; overflow: auto; margin: 10px 0 0; padding: 10px 12px;
+             background: var(--surface-2); border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+             font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; line-height: 1.55; }
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-line.alarm { color: var(--critical-ink); }
+.admin-log-filter { flex: 1; min-width: 180px; }
+.admin-log-filter input { width: 100%; }
