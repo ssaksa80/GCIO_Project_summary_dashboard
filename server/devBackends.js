@@ -110,6 +110,21 @@ export function memorySessions() {
       const row = rows.get(sessionId);
       if (row) row.lastSeenAt = new Date().toISOString();
     },
+    /* Same shape as the SQL repo, and the same omission: no session id. */
+    async list() {
+      const now = Date.now();
+      return [...rows.values()]
+        .filter((s) => new Date(s.expiresAt).getTime() > now)
+        .map((s) => ({
+          principal: s.principal,
+          displayName: s.displayName,
+          role: s.role,
+          expiresAt: s.expiresAt,
+          lastSeenAt: s.lastSeenAt || null,
+          lastIp: s.ip || null,
+        }));
+    },
+
     async destroy(sessionId) {
       return rows.delete(sessionId) ? 1 : 0;
     },

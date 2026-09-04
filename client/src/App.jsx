@@ -3,7 +3,7 @@ import { getJSON, deleteJSON, useLiveEvents, NotAuthenticated } from "./lib/api.
 import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
-import AdminConsole from "./components/AdminConsole.jsx";
+import AdminPage from "./components/AdminPage.jsx";
 import KpiStrip from "./components/KpiStrip.jsx";
 import SectionNav from "./components/SectionNav.jsx";
 import SectionSuccesses from "./components/SectionSuccesses.jsx";
@@ -158,6 +158,12 @@ export default function App() {
     );
   }
 
+  /* A full page, not an overlay: it REPLACES the dashboard so the screens get
+     the whole width, which is the point on a display where the dashboard is
+     itself 2800px wide. Rendered before the shell so none of the dashboard's
+     data fetching or charts run behind it. */
+  if (adminOpen) return <AdminPage me={me} onClose={() => setAdminOpen(false)} />;
+
   return (
     <div className="shell">
       <TopBar
@@ -250,7 +256,6 @@ export default function App() {
       {uploadOpen && <UploadPanel onClose={() => setUploadOpen(false)} onDone={refresh} />}
       {/* A sibling of <main>, like the drawer and the upload panel: a fixed
           modal carrying its own role="dialog", not page content. */}
-      {adminOpen && <AdminConsole me={me} onClose={() => setAdminOpen(false)} />}
     </div>
   );
 }

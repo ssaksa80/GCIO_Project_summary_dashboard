@@ -386,6 +386,73 @@ export function createApp(deps) {
    * nothing, and looks correct in the table while the person is still refused
    * at sign-in.
    */
+  /**
+   * Directory group -> role. The other half of who may use this application:
+   * a mapping grants access to everyone in a group at once, where a per-user
+   * grant names one person.
+   */
+  app.get("/api/admin/roles", requireRole("admin"), wrap(async (req, res) => {
+    res.json(await roleMapping.list());
+  }));
+
+  app.post("/api/admin/roles", requireRole("admin"), wrap(async (req, res) => {
+    const groupName = String(req.body?.groupName || "").trim();
+    const role = String(req.body?.role || "").toLowerCase();
+    if (!groupName || !PRECEDENCE.includes(role)) {
+      return fail(res, "bad_group_role", `groupName is required and role must be one of ${PRECEDENCE.join(", ")}`);
+    }
+    await roleMapping.set(groupName, role);
+    await auditFrom(req, { actor: req.session.principal, action: "authz.map", subject: `${groupName} -> ${role}` });
+    res.json({ ok: true });
+  }));
+
+  /**
+   * Remove a mapping.
+   *
+   * Refused when it is the caller's own only route to admin. The per-user
+   * guard does not cover this case: someone whose admin comes from a GROUP can
+   * delete that mapping and lose the console with no grant to fall back on.
+   * Recovering then needs Grant-Role.cmd on the host, or a database edit.
+   */
+  app.delete("/api/admin/roles/:groupName", requireRole("admin"), wrap(async (req, res) => {
+    const groupName = decodeURIComponent(req.params.groupName);
+    const isMine = (req.session.groups || []).some((g) => String(g).toLowerCase() === groupName.toLowerCase());
+    if (isMine) {
+      const map = await roleMapping.getMap({ fresh: true });
+      const grants = userRoleMapping ? await userRoleMapping.getMap() : {};
+      const sam = String(req.session.principal || "").toLowerCase().split("@")[0].split("\\").pop();
+      const keptByGrant = grants[sam] === "admin";
+      const keptByOther = (req.session.groups || []).some((g) =>
+        String(g).toLowerCase() !== groupName.toLowerCase() && map[String(g).toLowerCase()] === "admin");
+      if (map[groupName.toLowerCase()] === "admin" && !keptByGrant && !keptByOther) {
+        return fail(res, "last_admin", "this mapping is your own only route to admin; removing it would lock you out of this screen", 409);
+      }
+    }
+    await roleMapping.remove(groupName);
+    await auditFrom(req, { actor: req.session.principal, action: "authz.unmap", subject: groupName });
+    res.json({ ok: true });
+  }));
+
+  /**
+   * Who is signed in.
+   *
+   * Never includes a session id. That is a bearer token, and a screen showing
+   * one would be a screen handing it over - into a response body, a proxy log
+   * and a browser cache. Revocation is by principal, which is the question an
+   * admin is actually asking.
+   */
+  app.get("/api/admin/sessions", requireRole("admin"), wrap(async (req, res) => {
+    if (typeof sessions.list !== "function") return res.json([]);
+    res.json(await sessions.list({ idleMinutes: config.sessionIdleMinutes }));
+  }));
+
+  app.delete("/api/admin/sessions/:principal", requireRole("admin"), wrap(async (req, res) => {
+    const principal = decodeURIComponent(req.params.principal);
+    await sessions.destroyForPrincipal(principal);
+    await auditFrom(req, { actor: req.session.principal, action: "session.revoked", subject: principal });
+    res.json({ ok: true });
+  }));
+
   app.get("/api/admin/directory", requireRole("admin"), wrap(async (req, res) => {
     if (!searchDirectory) return fail(res, "directory_search_unavailable", "directory search is not configured on this deployment", 503);
     res.json(await searchDirectory(String(req.query.q || "")));

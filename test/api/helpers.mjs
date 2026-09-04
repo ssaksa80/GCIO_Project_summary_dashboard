@@ -37,11 +37,13 @@ export async function makeTestDeps(t, opts = {}) {
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
   const userRoleMapping = memoryUserRoleMapping(opts.grants || {});
+  const roleMapping = memoryRoleMapping({ ...ROLE_MAP });
+  const sessions = memorySessions();
   const app = createApp({
     store: new Store(),
     config,
-    sessions: memorySessions(),
-    roleMapping: memoryRoleMapping(ROLE_MAP),
+    sessions,
+    roleMapping,
     userRoleMapping,
     audit: { append: async () => {}, recent: async () => [] },
     /* The username carries the role for this request: "admin:asmith" signs in
@@ -54,7 +56,7 @@ export async function makeTestDeps(t, opts = {}) {
     dataDir,
     clientDist: "client/dist",
   });
-  return { app, userRoleMapping };
+  return { app, userRoleMapping, roleMapping, sessions };
 }
 
 /**

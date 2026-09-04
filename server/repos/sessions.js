@@ -95,6 +95,33 @@ export function sessionsRepo(ex) {
     },
 
     /** Sign out one session. */
+    /**
+     * Live sessions, for the admin console.
+     *
+     * SessionId is deliberately absent. It is a bearer token: listing it would
+     * put every live credential into a response body, a proxy log and a browser
+     * cache, so an admin screen that shows "who is signed in" would also be a
+     * screen that hands over their sessions. Revocation is therefore by
+     * principal, which is the question an admin is actually asking anyway.
+     */
+    async list({ idleMinutes = 240 } = {}) {
+      const { recordset } = await ex.query(`
+        SELECT Principal, DisplayName, Role, ExpiresAt, LastSeenAt, LastIp
+        FROM dbo.Sessions
+        WHERE ExpiresAt > SYSUTCDATETIME()
+          AND DATEADD(minute, @idle, LastSeenAt) > SYSUTCDATETIME()
+        ORDER BY LastSeenAt DESC
+      `, [{ name: "idle", type: sql.Int, value: Math.max(1, Number(idleMinutes) || 240) }]);
+      return recordset.map((r) => ({
+        principal: r.Principal,
+        displayName: r.DisplayName,
+        role: r.Role,
+        expiresAt: r.ExpiresAt,
+        lastSeenAt: r.LastSeenAt,
+        lastIp: r.LastIp,
+      }));
+    },
+
     async destroy(sessionId) {
       if (!sessionId || !/^[0-9a-f-]{36}$/i.test(sessionId)) return 0;
       const { rowsAffected } = await ex.query("DELETE FROM dbo.Sessions WHERE SessionId = @id", [

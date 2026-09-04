@@ -7,6 +7,53 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.9.0
+
+**The dashboard now uses a 4K display, and the admin console is a full page.**
+
+### Resolution
+
+The layout was pinned at 1520px wide however large the screen, so a 3840px
+display showed a strip of content between two very wide empty margins. It now
+widens in steps: unchanged below 1920px, then 2400px, 2600px at 1440p, and
+2800px on a 4K display, with gutters and card sizes growing to match.
+
+Wide tables also gain columns rather than just stretching. The sessions list
+shows four columns on a laptop and six on a 4K screen; the extra ones simply
+are not rendered where they would not fit.
+
+Nothing changes below 1920px. The type scale, cards and tables were tuned
+against 1520px and that is still exactly what a normal screen gets.
+
+### Admin console
+
+**Access** now opens a full page instead of a small dialog, with four sections:
+
+1. **Access** - people and directory groups side by side. A group grants a role
+   to everyone in it, a direct grant names one person, and sign-in takes the
+   HIGHER of the two; showing one without the other made the other look broken.
+   Group mappings previously had no screen at all and could only be changed in
+   the database.
+2. **Sessions** - who is signed in, when they were last active, and revoke.
+3. **Audit** - sign-ins, refusals, role changes and uploads, with filters.
+4. **Status** - health, uptime, portfolio size and recent ingest runs. This is
+   the screen that answers "why has the dashboard not changed since last night".
+
+The button is admin-only, as it was, and every endpoint behind it is enforced
+server-side - hiding a control was never the access control.
+
+Two details worth knowing. The session list deliberately never shows a session
+id: that is a bearer token, and a screen displaying one would be a screen
+handing it over, so revocation is by person. And you cannot remove the group
+mapping or the grant that is your own only route to admin - it would lock the
+console for everyone, and the way back is Grant-Role.cmd on the host.
+
+The console is not a bookmarkable URL. Use the button to enter and either the
+**Back to the dashboard** button or **Escape** to leave; the browser's back
+button will leave the application instead.
+
+No schema, dependency or runtime change. Ships as a patch-sized bundle.
+
 ## GCIO 1.8.2
 
 **Per-user role grants now actually take effect.** 1.8.0 added them and 1.8.1

@@ -1,0 +1,74 @@
+/* ============================================================================
+   Responsive foundation (4K-ready).
+
+   Ported from DEDB's client/src/responsive.css, which is shared verbatim across
+   its apps. Namespaced (.r-*, --r-*) so it cannot collide with this SPA's own
+   tokens in styles.css.
+
+   ONE DELIBERATE DIFFERENCE from the original. DEDB sets --r-maxw to 2800px on
+   :root and lets the min-width steps narrow it; this file starts at GCIO's
+   existing 1520px and lets the steps WIDEN it. The dashboard's type scale,
+   card sizing and table columns were all tuned against 1520px, so inheriting
+   DEDB's base would have re-laid-out every screen below 1920px as a side
+   effect of a change that is supposed to be about large displays only. Below
+   1920px nothing moves; above it, the layout grows.
+   ========================================================================== */
+:root {
+  --r-gap: clamp(16px, 1.5vw, 32px);
+  --r-pad: clamp(16px, 3vw, 64px);
+  --r-fs-body: clamp(0.9rem, 0.55vw + 0.78rem, 1.15rem);
+  --r-fs-h1:   clamp(1.5rem, 1.6vw + 1rem, 2.75rem);
+  --r-fs-h2:   clamp(1.2rem, 1.1vw + 0.9rem, 2rem);
+  /* GCIO's established width. The steps below raise it; nothing lowers it. */
+  --r-maxw: 1520px;
+  --r-card-min: 320px;
+  --r-tap: 44px;
+}
+
+.r-main {
+  width: 100%;
+  max-width: var(--r-maxw);
+  margin-inline: auto;
+  padding-inline: var(--r-pad);
+  box-sizing: border-box;
+}
+
+/* Cards that fill the width they are given rather than stopping at a fixed
+   column count. On a 4K display this is the difference between five columns of
+   content and three columns plus a third of a screen of background. */
+.r-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--r-card-min)), 1fr));
+  gap: var(--r-gap);
+}
+
+/* A wide table still has to survive a narrow window. */
+.r-table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.r-table-scroll > table { width: 100%; border-collapse: collapse; }
+
+/* Columns that earn their place only when there is room for them. */
+.r-col-qhd, .r-col-4k { display: none; }
+
+.r-card { padding: clamp(16px, 1.2vw, 32px); }
+.r-h1 { font-size: var(--r-fs-h1); line-height: 1.15; }
+.r-h2 { font-size: var(--r-fs-h2); line-height: 1.2; }
+.r-body { font-size: var(--r-fs-body); }
+
+@media (pointer: coarse) {
+  :where(button, [role="button"], .r-tap) { min-height: var(--r-tap); }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+@media (min-width: 768px)  { :root { --r-card-min: 300px; } }
+@media (min-width: 1280px) { :root { --r-card-min: 320px; } }
+@media (min-width: 1920px) { :root { --r-maxw: 2400px; --r-gap: clamp(20px, 1.4vw, 32px); } }
+@media (min-width: 2560px) {
+  :root { --r-maxw: 2600px; --r-card-min: 360px; }
+  .r-col-qhd { display: table-cell; }
+}
+@media (min-width: 3000px) {
+  :root { --r-maxw: 2800px; --r-pad: 64px; --r-gap: 32px; --r-card-min: 400px; }
+  .r-col-qhd, .r-col-4k { display: table-cell; }
+}
