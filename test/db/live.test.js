@@ -29,6 +29,7 @@ import { roleMappingRepo } from "../../server/repos/roleMapping.js";
 import { sourceFilesRepo } from "../../server/repos/sourceFiles.js";
 import { ingestRunsRepo } from "../../server/repos/ingestRuns.js";
 import { projectVersionsRepo } from "../../server/repos/projectVersions.js";
+import { documentExtractsRepo } from "../../server/repos/documentExtracts.js";
 import { createVault } from "../../server/vault.js";
 import { hashBytes, hashProject } from "../../server/ingest/hash.js";
 import { SqlStore } from "../../server/store/sqlStore.js";
@@ -76,6 +77,14 @@ async function cleanup(ex) {
     [pattern, idPattern]);
   await ex.query(
     "IF OBJECT_ID('dbo.IngestRun','U') IS NOT NULL DELETE FROM dbo.IngestRun WHERE FileName LIKE @pattern",
+    [pattern]);
+  /* Before SourceFile, not after: dbo.DocumentExtract carries a foreign key to
+     it, so deleting the parent first fails on the constraint and takes the
+     whole cleanup -- and therefore every later scenario -- down with it. */
+  await ex.query(`
+    IF OBJECT_ID('dbo.DocumentExtract','U') IS NOT NULL
+      DELETE FROM dbo.DocumentExtract
+       WHERE SourceFileId IN (SELECT SourceFileId FROM dbo.SourceFile WHERE FileName LIKE @pattern)`,
     [pattern]);
   await ex.query(
     "IF OBJECT_ID('dbo.SourceFile','U') IS NOT NULL DELETE FROM dbo.SourceFile WHERE FileName LIKE @pattern",
@@ -1170,6 +1179,128 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
     }
   });
 
+  /* ---------------------------------------------------------- documents --
+   *
+   * Everything below this point is the only place dbo.DocumentExtract is
+   * exercised by a database rather than a fake. The hermetic suite drives
+   * documentExtracts.js through a scripted executor, which pins the parameter
+   * types and the JSON round-trip in JavaScript and cannot tell whether SQL
+   * Server would accept a single statement -- a syntax error, a wrong column
+   * name or a broken JOIN all pass there.
+   *
+   * It also proves the property the design actually rests on. Re-importing an
+   * unchanged document must keep the first extract rather than restamping it,
+   * and in production that is enforced by UX_DocumentExtract_SourceFile, an
+   * index the in-memory store does not have and cannot stand in for.
+   */
+  await t.test("documentExtracts: add reads the row back, and the extract survives SQL", async () => {
+    const files = sourceFilesRepo(ex);
+    const docs = documentExtractsRepo(ex);
+
+    const file = await files.record({
+      fileName: `${FILE_PREFIX}-doc-a.pdf`, sha256: "a".repeat(64), bytes: 1024,
+      vaultPath: "2026/09/a.pdf", uploadedBy: "livetest@example",
+    });
+
+    const extract = {
+      blocks: [{ type: "paragraph", text: "The milestone slipped.", page: 1, level: null }],
+      facts: { dates: [{ iso: "2026-11-15", text: "15 November 2026", page: 1, context: "Go-live." }],
+               money: [{ text: "SAR 4,250,000", currency: "SAR", amount: "4,250,000", page: 1 }],
+               projectRefs: ["PRJ-1001"] },
+      summary: [{ text: "The milestone slipped.", page: 1, heading: "Risks", score: 6 }],
+      warnings: [],
+    };
+
+    const stored = await docs.add({
+      sourceFileId: file.sourceFileId, kind: "pdf", title: "Live PDF",
+      pageCount: 3, wordCount: 42, extract,
+    });
+
+    assert.equal(stored.title, "Live PDF");
+    assert.equal(stored.pageCount, 3, "PageCount came back as a number");
+    assert.equal(stored.wordCount, 42);
+    assert.equal(stored.fileName, `${FILE_PREFIX}-doc-a.pdf`, "add() JOINs SourceFile for the name");
+    assert.deepEqual(stored.extract, extract, "the whole extract survived NVARCHAR(MAX) unchanged");
+    assert.match(stored.extractedAt, /^\d{4}-\d{2}-\d{2}T/, "ExtractedAt reads back as ISO");
+  });
+
+  await t.test("documentExtracts: a pageless document stores NULL, never 0", async () => {
+    const files = sourceFilesRepo(ex);
+    const docs = documentExtractsRepo(ex);
+
+    const file = await files.record({
+      fileName: `${FILE_PREFIX}-doc-b.docx`, sha256: "b".repeat(64), bytes: 512,
+      vaultPath: null, uploadedBy: "livetest@example",
+    });
+    const stored = await docs.add({
+      sourceFileId: file.sourceFileId, kind: "docx", title: "Live Word",
+      pageCount: null, wordCount: 9,
+      extract: { blocks: [], facts: { dates: [], money: [], projectRefs: [] }, summary: [], warnings: [] },
+    });
+
+    assert.strictEqual(stored.pageCount, null, "a .docx has no pages, and 0 would be a lie");
+
+    /* Read the column directly: toStored() maps it, so asserting only the
+       mapped value would pass against a column holding 0. */
+    const { recordset } = await ex.query(
+      "SELECT PageCount FROM dbo.DocumentExtract WHERE SourceFileId = @id",
+      [{ name: "id", type: sql.BigInt, value: file.sourceFileId }]);
+    assert.strictEqual(recordset[0].PageCount, null, "the column itself holds NULL");
+  });
+
+  await t.test("documentExtracts: re-importing keeps the first extract and does not restamp it", async () => {
+    const files = sourceFilesRepo(ex);
+    const docs = documentExtractsRepo(ex);
+
+    const file = await files.record({
+      fileName: `${FILE_PREFIX}-doc-c.pdf`, sha256: "c".repeat(64), bytes: 2048,
+      vaultPath: null, uploadedBy: "livetest@example",
+    });
+    const empty = { blocks: [], facts: { dates: [], money: [], projectRefs: [] }, summary: [], warnings: [] };
+
+    const first = await docs.add({
+      sourceFileId: file.sourceFileId, kind: "pdf", title: "Original",
+      pageCount: 2, wordCount: 100, extract: empty,
+    });
+
+    /* A real gap, so an unchanged ExtractedAt means first-write-wins rather
+       than two writes landing in the same millisecond. */
+    await new Promise((r) => setTimeout(r, 25));
+
+    const again = await docs.add({
+      sourceFileId: file.sourceFileId, kind: "pdf", title: "RENAMED",
+      pageCount: 99, wordCount: 1, extract: empty,
+    });
+
+    assert.equal(again.title, "Original", "the second import must not overwrite the first");
+    assert.equal(again.pageCount, 2);
+    assert.equal(again.extractedAt, first.extractedAt, "ExtractedAt was restamped by a re-import");
+
+    const { recordset } = await ex.query(
+      "SELECT COUNT(*) AS n FROM dbo.DocumentExtract WHERE SourceFileId = @id",
+      [{ name: "id", type: sql.BigInt, value: file.sourceFileId }]);
+    assert.equal(recordset[0].n, 1, "UX_DocumentExtract_SourceFile did not hold it to one row");
+  });
+
+  await t.test("documentExtracts: list is newest first, and remove reports what it did", async () => {
+    const docs = documentExtractsRepo(ex);
+
+    const mine = (await docs.list()).filter((d) => d.fileName.startsWith(FILE_PREFIX));
+    assert.equal(mine.length, 3, `expected the three documents this suite wrote, got ${mine.length}`);
+
+    const times = mine.map((d) => d.extractedAt);
+    assert.deepEqual(times, [...times].sort().reverse(), "list() is not newest-first");
+
+    const target = mine[0];
+    assert.equal(await docs.remove(target.sourceFileId), true,
+      "remove() reported false for a row that exists");
+    assert.equal(await docs.remove(target.sourceFileId), false,
+      "remove() reported true for a row that had already gone");
+
+    const left = (await docs.list()).filter((d) => d.fileName.startsWith(FILE_PREFIX));
+    assert.equal(left.length, 2, "removing one document took others with it");
+  });
+
   await t.test("the suite leaves nothing behind", async () => {
     /* Every scenario writes under a livetest% filename and is responsible for
        its own rows. A cold run was once seen to finish 21/21 green while
@@ -1205,5 +1336,17 @@ test("the SQL path works end to end against a real instance", { skip: !live }, a
          OR IngestRunId IN (SELECT IngestRunId FROM dbo.IngestRun WHERE FileName LIKE 'livetest%')
     `);
     assert.equal(versions[0].n, 0, "dbo.ProjectVersion still holds rows this suite created");
+
+    /* DocumentExtract has neither column either, and it is reachable only
+       through SourceFileId. Worth asserting rather than trusting the cascade:
+       cleanup deletes it explicitly, and if that delete were ever reordered
+       after the SourceFile one it would fail on the foreign key instead of
+       leaving rows behind -- a different failure, but this is what catches
+       the version where someone "fixes" that by dropping the constraint. */
+    const { recordset: extracts } = await ex.query(`
+      SELECT COUNT(*) AS n FROM dbo.DocumentExtract
+       WHERE SourceFileId IN (SELECT SourceFileId FROM dbo.SourceFile WHERE FileName LIKE 'livetest%')
+    `);
+    assert.equal(extracts[0].n, 0, "dbo.DocumentExtract still holds rows this suite created");
   });
 });
