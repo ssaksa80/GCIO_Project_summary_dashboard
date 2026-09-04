@@ -51,11 +51,38 @@ const skip = process.platform !== "win32"
   ? `not Windows (${process.platform})`
   : !shellUsable ? `${SHELL} is not usable here` : false;
 
+/*
+ * One suite needs something `npm test` cannot assume it has.
+ *
+ * host-tooling.test.ps1 inspects a BUILT artifact: it looks in dist-bundle/ for
+ * a directory matching the version in package.json, and fails if there is none.
+ * dist-bundle/ is gitignored, so a fresh clone has no artifact and a version
+ * bump invalidates the one it does have - which would make `npm test` fail for
+ * a reason that has nothing to do with the change under test.
+ *
+ * Skipped rather than failed, and the reason names the command that fixes it.
+ * The precondition is duplicated from the suite rather than inferred from its
+ * output, because matching on an error string would silently stop skipping the
+ * day somebody rewords the message.
+ */
+const PRECONDITIONS = {
+  "host-tooling.test.ps1": () => {
+    const { version } = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+    const dir = path.join(REPO_ROOT, "dist-bundle");
+    const built = fs.existsSync(dir) && fs.readdirSync(dir).some(
+      (e) => e.startsWith(`gcio-patch-${version}-`) || e.startsWith(`gcio-bundle-${version}-`),
+    );
+    return built ? false : `no dist-bundle artifact for ${version} `
+      + "(run deploy/build-patch.ps1 or deploy/build-bundle.ps1 to cover this suite)";
+  },
+};
+
 /** Last lines of a suite's own output, for a failure message that explains itself. */
 const tail = (s, n = 25) => s.trim().split(/\r?\n/).slice(-n).join("\n");
 
 for (const suite of suites) {
-  test(`deploy suite: ${suite}`, { skip, timeout: SUITE_TIMEOUT_MS + 30_000 }, () => {
+  const unmet = skip ? false : PRECONDITIONS[suite]?.();
+  test(`deploy suite: ${suite}`, { skip: skip || unmet, timeout: SUITE_TIMEOUT_MS + 30_000 }, () => {
     const r = spawnSync(
       SHELL,
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(SUITE_DIR, suite)],
