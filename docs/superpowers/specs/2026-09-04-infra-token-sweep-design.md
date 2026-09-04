@@ -66,7 +66,7 @@ everything else needs an exact entry carrying a comment.
 
 | class | pattern | auto-permitted | exact entries |
 | --- | --- | --- | --- |
-| domain | `[a-z0-9-]+(\.[a-z0-9-]+)+` whose last label is in an explicit TLD set declared in the file (`com org net local internal lan corp example test invalid localhost ae io me gov edu app cloud ai`) | `.test` `.example` `.invalid` `.localhost` (RFC 6761); `example.com` `example.net` `example.org` (RFC 2606) | 10 |
+| domain | `[a-z0-9-]+(\.[a-z0-9-]+)+` whose last label is in an explicit TLD set declared in the file (`com org net local internal lan corp example test invalid localhost ae io gov edu`) | `.test` `.example` `.invalid` `.localhost` (RFC 6761); `example.com` `example.net` `example.org` (RFC 2606) | 10 |
 | ipv4 | four dotted octets | `127.0.0.0/8`, `0.0.0.0`, and `192.0.2.0/24` `198.51.100.0/24` `203.0.113.0/24` (RFC 5737) | 5 |
 | dn | `(DC\|OU\|CN)=` value | none | 17 |
 | machine | `[A-Z][A-Z0-9]{2,}[0-9][A-Z0-9-]*` | pure-hex tokens of length 6 or 8 | 10 |
@@ -93,6 +93,19 @@ characters drawn from `[0-9A-F]`. Both names this repository actually leaked
 fail that test: each contains at least one letter outside the hex alphabet, and
 one of them is thirteen characters long. Neither could have passed through the
 exclusion.
+
+**Two patterns are bounded away from code identifiers**, because both classes
+otherwise fire on ordinary source. The machine pattern must not touch `_`, or
+it reads `IPV4_RE` as a host name — which it did, in this very file, the moment
+the file became tracked and `git ls-files` began returning it. And `.app`,
+`.me`, `.ai` and `.cloud` are left out of the TLD set: they are real gTLDs, but
+`made.app` in the document tests is a variable and a field, and none of them is
+a plausible shape for an intranet of `.local`, `.com` and `.ae` names.
+
+That first case is worth recording as a method note, not just a bug. The sweep
+reads `git ls-files`, so an untracked file is invisible to it — including
+itself. Validating the sweep before staging it therefore tests a corpus that
+excludes the thing under test. Re-run it after `git add`.
 
 One entry is a known false positive and is listed as such: `1.6.0.1`, which is a
 version string in a comment in `deploy/test/preflight.test.ps1`, not an address.
