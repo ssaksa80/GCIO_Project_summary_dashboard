@@ -51,9 +51,19 @@ in. If it cannot load, it simply does not appear.
 
 ### Compatibility
 
-Nothing to do. Each bundle carries its own installer, so a new bundle always
-arrives with one that understands the new layout, and the verifier accepts both
-shapes. An older bundle installs exactly as it did before — just as slowly.
+Each bundle carries its own installer, so a new bundle always arrives with one
+that understands the new layout. An older bundle installs exactly as it did
+before — just as slowly.
+
+One thing needs a hand, once. verify-bundle.ps1 does NOT travel inside a bundle:
+it sits at the operator's staging root as shared tooling beside versioned
+bundles, so this release's change of shape silently invalidated whatever copy is
+there. A pre-1.11.0 verifier rejects a good 1.11.0 bundle with
+"MISSING: app/node_modules". install.ps1 never calls the verifier, so a deploy is
+unaffected — but refresh the staging root from deploy/verify-bundle.ps1 before
+verifying anything. The current verifier accepts both the old loose tree and the
+new archive. From the next release it ships beside the archive, so copying the
+build output to the staging root will refresh it without anyone remembering to.
 
 No schema, dependency or runtime change.
 

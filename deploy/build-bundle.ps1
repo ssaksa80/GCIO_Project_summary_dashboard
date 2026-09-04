@@ -184,13 +184,28 @@ try {
 Write-GcioLog 'packing archive'
 Compress-Archive -Path $Stage -DestinationPath "$Out/$Name.zip" -Force
 
-# code-update.ps1 ships OUTSIDE the archive, beside it: it bootstraps the deploy
-# by expanding the bundle zip, so it cannot live inside the thing it unzips.
-foreach ($f in 'code-update.ps1', 'Update-GCIO.cmd') {
-  if (Test-Path "$Here/$f") {
-    Copy-Item "$Here/$f" "$Out/" -Force
-    Write-GcioLog "placed $f beside the archive"
+# These ship OUTSIDE the archive, beside it.
+#
+# code-update.ps1 and Update-GCIO.cmd bootstrap the deploy by expanding the
+# bundle zip, so they cannot live inside the thing they unzip.
+#
+# verify-bundle.ps1 is here for a different reason, learned when 1.11.0 changed
+# the bundle's shape. The verifier lived ONLY at the operator's staging root, as
+# version-independent tooling sitting beside versioned bundles - so a change of
+# format silently invalidated it, and the stale copy rejected a perfectly good
+# 1.11.0 bundle with "MISSING: app/node_modules". A verifier has to travel with
+# the format it understands. Now that it ships beside the archive, copying
+# dist-bundle/* to the staging root refreshes it as a side effect.
+#
+# Not guarded by `if (Test-Path)`, for the reason spelled out above $HostScripts:
+# a silent skip turns a typo or a rename into a file that quietly stops shipping,
+# and this list had exactly that guard when the problem above went unnoticed.
+foreach ($f in 'code-update.ps1', 'Update-GCIO.cmd', 'verify-bundle.ps1') {
+  if (-not (Test-Path "$Here/$f")) {
+    Stop-Gcio "'$f' is on the beside-the-archive ship list but is not in deploy/. Fix the name or remove it from the list - do not let it silently not ship."
   }
+  Copy-Item "$Here/$f" "$Out/" -Force
+  Write-GcioLog "placed $f beside the archive"
 }
 
 Write-GcioLog "done -> $Out/$Name.zip"

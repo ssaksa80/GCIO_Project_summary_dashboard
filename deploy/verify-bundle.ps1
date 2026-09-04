@@ -41,6 +41,7 @@ $need = 'app/server/index.js', 'app/package-lock.json',
         'runtime/node/node.exe', 'VERSION', 'versions.json'
 foreach ($p in $need) {
   if (-not (Test-Path (Join-Path $Dir $p))) { Write-Error "MISSING: $p"; exit 1 }
+}
 
 # Dependencies arrive as ONE archive now; older bundles carry a loose tree.
 # Either satisfies this, neither does not. Checked as a pair rather than by
@@ -50,7 +51,6 @@ $nmDir = Join-Path $Dir 'app/node_modules'
 if (-not (Test-Path $nmZip) -and -not (Test-Path $nmDir)) {
   Write-Error 'MISSING: app/node_modules.zip (or a loose app/node_modules) - a bundle must carry its dependencies.'
   exit 1
-}
 }
 
 Push-Location $Dir

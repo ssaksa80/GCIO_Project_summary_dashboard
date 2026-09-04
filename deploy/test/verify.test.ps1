@@ -89,19 +89,71 @@ try {
   Remove-Item "$root/p/checksums.txt" -ErrorAction SilentlyContinue
   Check ((RunVerify $verifyPatch "$root/p") -ne 0) 'an artifact with no checksums.txt is refused'
 
+  # ------------------------------------- a bundle's dependencies, both shapes
+  #
+  # 1.11.0 collapsed node_modules into a single archive. The verifier must accept
+  # BOTH that and the loose tree older bundles carry, because the verifier and the
+  # bundle are separate artifacts and can be any two versions. That is not
+  # hypothetical: a pre-1.11.0 verifier left at the staging root rejected a good
+  # 1.11.0 bundle with "MISSING: app/node_modules".
+  #
+  # Synthetic on purpose. These run on a clean checkout, unlike the real-artifact
+  # checks below, which skip when nothing has been built - and which had been
+  # skipping for several releases without anyone noticing.
+  function NewBundle { param([string]$At, [ValidateSet('zip','tree','neither')][string]$Deps)
+    New-Item -ItemType Directory -Force `
+      "$At/app/server", "$At/app/client/dist", "$At/lib", "$At/runtime/node" | Out-Null
+    [IO.File]::WriteAllText("$At/app/server/index.js", 'server')
+    [IO.File]::WriteAllText("$At/app/package-lock.json", '{"packages":{"node_modules/x":{"version":"1"}}}')
+    [IO.File]::WriteAllText("$At/app/client/dist/index.html", '<html>')
+    [IO.File]::WriteAllText("$At/install.ps1", '# installer')
+    [IO.File]::WriteAllText("$At/lib/common.ps1", '# lib')
+    [IO.File]::WriteAllText("$At/runtime/node/node.exe", 'MZ')
+    [IO.File]::WriteAllText("$At/VERSION", '9.9.9')
+    [IO.File]::WriteAllText("$At/versions.json", '{}')
+    if ($Deps -eq 'tree') {
+      New-Item -ItemType Directory -Force "$At/app/node_modules/express" | Out-Null
+      [IO.File]::WriteAllText("$At/app/node_modules/express/index.js", 'dep')
+    } elseif ($Deps -eq 'zip') {
+      [IO.File]::WriteAllText("$At/app/node_modules.zip", 'stand-in for the dependency archive')
+    }
+    Rehash $At }
+
+  NewBundle "$root/b-zip"     'zip'
+  NewBundle "$root/b-tree"    'tree'
+  NewBundle "$root/b-neither" 'neither'
+  Check ((RunVerify $verifyBundle "$root/b-zip")     -eq 0) 'a bundle whose dependencies are ONE archive verifies'
+  Check ((RunVerify $verifyBundle "$root/b-tree")    -eq 0) 'a bundle with a loose node_modules tree still verifies'
+  Check ((RunVerify $verifyBundle "$root/b-neither") -ne 0) 'a bundle carrying neither shape is refused'
+
   # ------------------------------------------------ against the REAL artifacts
   #
   # Skipped rather than failed when they have not been built: this file must
   # stay runnable on a clean checkout.
+  # Whatever is actually built, newest by VERSION - not a pinned name. These were
+  # pinned to 1.5.0, which stopped being built several releases ago, so every
+  # check in this section had been printing [skip] and asserting nothing.
+  # Sorted as [version], not as a string: lexically, 1.9.0 beats 1.11.0.
   $repo = (Resolve-Path "$PSScriptRoot/../..").Path
-  $realPatch  = Join-Path $repo 'dist-bundle/gcio-patch-1.5.0-win-x64'
-  $realBundle = Join-Path $repo 'dist-bundle/gcio-bundle-1.5.0-win-x64'
+  function Newest { param([string]$Kind)
+    # checksums.txt is what makes a directory an ARTIFACT rather than debris.
+    # dist-bundle accumulates the wreckage of aborted builds - one of them is an
+    # app/client directory and nothing else - and picking the newest NAME walks
+    # straight into one, which is how reviving these checks first failed.
+    Get-ChildItem (Join-Path $repo 'dist-bundle') -Directory -Filter "gcio-$Kind-*-win-x64" -ErrorAction SilentlyContinue |
+      Where-Object { Test-Path (Join-Path $_.FullName 'checksums.txt') } |
+      Sort-Object { try { [version]($_.Name -replace "^gcio-$Kind-", '' -replace '-win-x64$', '') } catch { [version]'0.0.0' } } |
+      Select-Object -Last 1 -ExpandProperty FullName }
+  $realPatch  = Newest 'patch'
+  $realBundle = Newest 'bundle'
+  if ($realPatch)  { Write-Host "[info] real patch:  $(Split-Path $realPatch -Leaf)"  -ForegroundColor Cyan }
+  if ($realBundle) { Write-Host "[info] real bundle: $(Split-Path $realBundle -Leaf)" -ForegroundColor Cyan }
 
-  if (Test-Path $realPatch) {
+  if ($realPatch) {
     Check ((RunVerify $verifyPatch $realPatch) -eq 0) 'the REAL built patch verifies'
     # The tier check on a real bundle, without copying 269 MB: verify-patch
     # must refuse the real bundle directory.
-    if (Test-Path $realBundle) {
+    if ($realBundle) {
       Check ((RunVerify $verifyPatch $realBundle) -ne 0) 'verify-patch REFUSES the real full bundle'
     }
     # Tamper with a copy of the real patch - a genuine tree, genuine filenames.
@@ -115,9 +167,11 @@ try {
     Write-Host "[skip] real-artifact checks (build with deploy/build-patch.ps1 first)" -ForegroundColor Yellow
   }
 
-  if (Test-Path $realBundle) {
-    Check ((RunVerify $verifyBundle $realBundle) -eq 0) 'the REAL built bundle verifies (all 17k files)'
-    Check ((RunVerify $verifyBundle $realPatch) -ne 0) 'verify-bundle REFUSES a patch (no runtime, no node_modules)'
+  if ($realBundle) {
+    Check ((RunVerify $verifyBundle $realBundle) -eq 0) "the REAL built bundle verifies ($(Split-Path $realBundle -Leaf))"
+    if ($realPatch) {
+      Check ((RunVerify $verifyBundle $realPatch) -ne 0) 'verify-bundle REFUSES a patch (no runtime, no dependencies)'
+    }
   } else {
     Write-Host "[skip] real-bundle checks (build with deploy/build-bundle.ps1 first)" -ForegroundColor Yellow
   }

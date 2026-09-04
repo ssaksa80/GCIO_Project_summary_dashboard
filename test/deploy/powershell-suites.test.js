@@ -34,7 +34,15 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SUITE_DIR = path.join(REPO_ROOT, "deploy", "test");
 const SHELL = "powershell.exe";
-const SUITE_TIMEOUT_MS = 120_000;   // slowest today is ~28s; margin for a cold start
+const SUITE_TIMEOUT_MS = 300_000;   // measured: verify ~130-150s, host-tooling ~47s, seal-secret ~31s, rest under 20s
+/*
+ * verify.test.ps1 grew from ~10s to ~150s and it is not a regression. Its
+ * real-artifact checks were pinned to a version that stopped being built, so
+ * they had been printing [skip] for several releases. Repointed at whatever is
+ * actually in dist-bundle, they now hash a real bundle - ~2,000 files including
+ * a 37 MB dependency archive - across ~19 separate pwsh starts. That is the
+ * cost of the check being alive, so the limit moves rather than the check.
+ */
 
 /* Discovered from disk, not listed here: a new deploy suite gates from the
  * moment it is written. A hardcoded list is a second place to forget. */
