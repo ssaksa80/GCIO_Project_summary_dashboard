@@ -28,7 +28,11 @@ body::before {
   z-index: 0;
 }
 
-.shell { position: relative; z-index: 1; max-width: 1520px; margin: 0 auto; padding: 0 22px 90px; }
+/* Width comes from --r-maxw (responsive.css): 1520px up to 1919px, stepping
+   up to 2800px on a 4K display. Padding follows --r-pad so the gutters grow
+   with the canvas rather than pinning content to the screen edges. */
+.shell { position: relative; z-index: 1; max-width: var(--r-maxw); margin: 0 auto;
+         padding: 0 var(--r-pad) 90px; }
 
 h1, h2, h3 { margin: 0; font-weight: 700; }
 .display { font-family: var(--font-display); letter-spacing: -0.015em; }
@@ -55,7 +59,11 @@ a { color: var(--info); }
   border-bottom: 1px solid var(--hairline);
   box-shadow: 0 10px 30px -22px var(--glow-accent);
 }
-.topbar-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 0; max-width: 1520px; margin: 0 auto; }
+/* Must track .shell exactly, or the header stops lining up with the content
+   below it the moment the viewport crosses a breakpoint. */
+.topbar-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                padding: 10px var(--r-pad); max-width: var(--r-maxw); margin: 0 auto;
+                box-sizing: border-box; }
 .brand { display: flex; align-items: baseline; gap: 9px; }
 .brand-name { font-size: 17px; font-weight: 700; }
 .brand-sub { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
@@ -638,25 +646,80 @@ table.projects th .th-sort { width: 100%; white-space: nowrap; }
   content: ""; flex: 1; height: 1px; background: var(--hairline-soft);
 }
 
-/* ---- admin console -------------------------------------------------------
-   Reuses .backdrop and .card .modal from the upload panel; only the parts that
-   have no equivalent elsewhere are defined here. */
-.admin-console { max-width: 640px; width: min(640px, calc(100vw - 32px)); max-height: 86vh; overflow-y: auto; }
-.admin-console .panel-head { margin-bottom: 4px; }
-.admin-grant { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 14px 0 18px; }
+/* ---- admin console (full page) --------------------------------------------
+   Reuses the dashboard's card, chip and table vocabulary so the console does
+   not read as a different product. Layout is driven by the responsive tokens,
+   so it widens on the same breakpoints the dashboard does. */
+.admin-page { padding-top: 18px; }
+
+.admin-head { display: flex; align-items: flex-end; justify-content: space-between;
+              gap: 16px; flex-wrap: wrap; padding-bottom: 14px; }
+.admin-head-actions { display: flex; align-items: center; gap: 12px; }
+
+/* A tab strip, not a nav bar: there is no routing behind it. The active tab is
+   marked with weight and a rule rather than colour alone, so it survives a
+   monochrome rendering and does not depend on hue to be legible. */
+.admin-tabs { display: flex; gap: 4px; flex-wrap: wrap;
+              border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+.admin-tab { appearance: none; background: none; border: 0; cursor: pointer;
+             padding: 9px 16px; border-radius: 8px 8px 0 0; font-weight: 600;
+             color: var(--ink-2); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.admin-tab:hover { color: var(--ink); }
+.admin-tab.is-active { color: var(--ink); border-bottom-color: var(--accent, var(--info)); }
+
+/* Two columns where there is room, one where there is not. People and groups
+   are read together - a role can come from either - so they belong side by
+   side rather than stacked on a wide screen. */
+/* One column until there is genuinely room for two. .r-grid auto-fits on
+   --r-card-min, which at 1100px yields two ~509px columns - too narrow for
+   these tables, which would then scroll horizontally for no reason. The
+   explicit single column below 1280px overrides that; above it, two. */
+.admin-two { align-items: start; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1280px) { .admin-two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.admin-tiles { margin-top: 4px; }
+.admin-tile { padding: 14px 16px; }
+.admin-tile .r-h2 { margin: 2px 0; }
+
+.admin-page .panel + .panel,
+.admin-page section + section { margin-top: 20px; }
+
+.admin-grant { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0 18px; }
 .admin-grant legend { padding: 0 6px; }
 .admin-grant .field { display: block; margin-bottom: 8px; }
-.admin-grant input[type="text"],
-.admin-grant select { width: 100%; margin-top: 4px; }
+/* Form controls, styled the way .signin styles its own. Without this they
+   render as OS defaults - a 2px inset border, square corners and a grey fill -
+   which on a dark theme looks like a broken form rather than a plain one.
+   Scoped to .admin-page so the dashboard's own controls are untouched. */
+.admin-page input[type="text"],
+.admin-page input[type="search"],
+.admin-page select {
+  background: var(--surface-2); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 8px 11px; font: inherit; font-size: 13.5px;
+}
+.admin-page input[type="text"]:focus,
+.admin-page input[type="search"]:focus,
+.admin-page select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 18px -6px var(--glow-accent);
+}
+.admin-page input::placeholder { color: var(--muted); }
+.admin-grant input[type="text"], .admin-grant select { width: 100%; margin-top: 4px; }
+.admin-page .filter-row { align-items: flex-end; gap: 12px; margin-bottom: 14px; }
+.admin-page .filter-row .field { display: flex; flex-direction: column; gap: 4px; }
+.admin-page .filter-row input { min-width: 0; }
 
 /* A results list, not a menu: each row is a button so it is reachable by
-   keyboard in the same order it is read. */
-.admin-matches { list-style: none; margin: 0 0 10px; padding: 0; max-height: 220px; overflow-y: auto;
+   keyboard in the order it is read. */
+.admin-matches { list-style: none; margin: 0 0 10px; padding: 0; max-height: 240px; overflow-y: auto;
                  border: 1px solid var(--line); border-radius: 8px; }
 .admin-matches li + li { border-top: 1px solid var(--line); }
-.admin-matches button { display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0;
-                        background: none; border-radius: 0; }
+.admin-matches button { display: block; width: 100%; text-align: left; padding: 8px 10px;
+                        border: 0; background: none; border-radius: 0; }
 .admin-picked { padding-top: 4px; }
 
-.admin-grants { width: 100%; }
-.admin-grants td, .admin-grants th { padding: 6px 8px; }
+/* The console's tables are narrower than the portfolio table, which sets a
+   940px floor that would force a scrollbar here for no reason. */
+.admin-page table.projects { min-width: 0; }
+.admin-page table.projects td,
+.admin-page table.projects th { padding: 7px 8px; vertical-align: top; }

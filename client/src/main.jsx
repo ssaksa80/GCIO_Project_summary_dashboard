@@ -1,6 +1,7 @@
 import '@fontsource-variable/inter';
 import '@fontsource-variable/fraunces';
 import './themes.css';
+import './responsive.css';
 import './styles.css';
 
 import { StrictMode } from 'react';
