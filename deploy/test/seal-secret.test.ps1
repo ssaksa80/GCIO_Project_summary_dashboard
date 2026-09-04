@@ -189,7 +189,20 @@ process.stdout.write(makeSecretBox(loadOrCreateKey(process.argv[2])).open(proces
   # this machine's key. Approximated here by destroying the key - a different
   # host is the same situation from the blob's point of view.
   Remove-Item -LiteralPath $keyFile -Force
-  & node $openFile $keyFile $token 2>$null | Out-Null
+  # This call is SUPPOSED to fail, and node announces the failure on stderr.
+  # Windows PowerShell 5.1 turns native-command stderr into a TERMINATING
+  # NativeCommandError whenever $ErrorActionPreference is 'Stop', and `2>$null`
+  # does not prevent it - the error is raised as the records are produced,
+  # whatever the redirect target. So with the preference left alone the script
+  # died right here, one line before the assertion that matters, printing 33
+  # passes, no "all passed", and exit 1 - a shape indistinguishable from a real
+  # failure. pwsh 7 does not behave this way, so it only ever showed up on the
+  # shell the deployment actually uses. Relax the preference for this one call.
+  $prevEap = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & node $openFile $keyFile $token 2>$null | Out-Null
+  } finally { $ErrorActionPreference = $prevEap }
   Check ($LASTEXITCODE -ne 0) 'the token does not open once the key is gone'
 
 } finally {
