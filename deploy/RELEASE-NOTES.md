@@ -7,6 +7,39 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.9.1
+
+**A bundle deploy now spends about two and a half minutes expanding the
+archive instead of twelve.** Includes everything in 1.9.0; deploy this instead
+if you have not taken that one yet.
+
+The installer used PowerShell's `Expand-Archive`, which charges per file. The
+bundle is only 77.8 MB but holds 17,571 entries - 15,312 of them dependencies
+and 1,990 the bundled Node runtime. The application itself is 62 files.
+
+Measured on the real artifact:
+
+    Expand-Archive                  730s   (what it did)
+    bulk extraction                 143s   (what it does now)
+
+Roughly three and a half to five times faster depending on how warm the disk
+cache is. Checksum verification is unchanged at about 77 seconds, so a bundle
+deploy drops from around thirteen and a half minutes to under four.
+
+Correctness is unchanged and deliberately so:
+
+- **Any failure falls back to the old method.** An unusual but valid archive
+  cannot break an update that used to work; it just extracts slowly.
+- **Archives that try to write outside the destination are still refused**, and
+  a refusal is not retried through the fallback.
+- **A missing `lib/` folder no longer matters.** Extraction falls back to the
+  built-in rather than failing, which is what it did before this change.
+
+Nothing about the artifact format changed, so an older installer expands a new
+bundle exactly as before - just as slowly.
+
+No schema, dependency or runtime change.
+
 ## GCIO 1.9.0
 
 **The dashboard now uses a 4K display, and the admin console is a full page.**
