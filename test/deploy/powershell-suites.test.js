@@ -79,12 +79,22 @@ for (const suite of suites) {
      */
     const failed = (out.match(/\[FAIL\]/g) ?? []).length;
     const checks = (out.match(/\[ok\]/g) ?? []).length;
-    const verdict = /all passed/.test(out);
+    const passedVerdict = /all passed/.test(out);
+    const failedVerdict = /\d+ failed/.test(out);
+
+    // Name which of the three states this is. Saying only "did not finish
+    // cleanly" would put a genuine assertion failure and a suite that stopped
+    // partway under the same words, which is the confusion this file exists to
+    // remove.
+    const state = passedVerdict
+      ? "finished cleanly"
+      : failedVerdict
+        ? `ran to its end and reported ${failed} failing assertion(s)`
+        : "STOPPED PARTWAY - it printed no verdict, so every check after that point never ran";
 
     assert.ok(
-      r.status === 0 && verdict,
-      `${suite} did not finish cleanly (exit ${r.status}, ${checks} checks, ${failed} [FAIL], `
-      + `${verdict ? "reached its verdict" : "NO VERDICT - it stopped partway"}):\n${tail(out)}`,
+      r.status === 0 && passedVerdict,
+      `${suite}: ${state} (exit ${r.status}, ${checks} checks passed, ${failed} [FAIL]):\n${tail(out)}`,
     );
   });
 }
