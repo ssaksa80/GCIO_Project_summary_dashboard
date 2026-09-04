@@ -3,8 +3,10 @@
  * the server boots, the browser signs in, a known element is on the page,
  * and close() actually tears both down.
  *
- * Self-skips unless UI_LIVE=1, exactly like the live SQL suite, so `npm test`
- * stays hermetic:
+ * Self-skips unless UI_LIVE=1, exactly like the live SQL suite. That skip is no
+ * longer what keeps `npm test` hermetic, though: its glob excludes test/ui
+ * outright, so it never reaches this file either way. Run it directly, or via
+ * `npm run test:ui`:
  *
  *     UI_LIVE=1 node --test test/ui/harness.test.js
  */
@@ -13,7 +15,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { startDashboard, PROFILE_ROOT, sweepStaleProfiles } from "./harness.mjs";
+import { startDashboard, PROFILE_ROOT } from "./harness.mjs";
 
 const ui = process.env.UI_LIVE === "1";
 
@@ -32,32 +34,10 @@ test("the harness boots the real app in a real browser and signs in", { skip: !u
   assert.match(who, /pat/i, `expected the signed-in identity chip to mention the dev user, got "${who}"`);
 });
 
-/**
- * The sweep's whole safety property is that it deletes by pid liveness rather
- * than by "everything I find". `UI_LIVE=1 npm test` runs test/ui files in
- * parallel processes against one shared PROFILE_ROOT, so a sweep that deleted
- * indiscriminately would pull a live browser's profile out from under a
- * sibling test file.
- *
- * 999999 is not a valid Windows pid - they are multiples of 4 and far smaller -
- * so process.kill(999999, 0) reliably reports ESRCH.
- */
-test("the sweep removes dead-pid profile dirs and leaves live ones alone", async (t) => {
-  const dead = path.join(PROFILE_ROOT, "run-999999-0");
-  const live = path.join(PROFILE_ROOT, `run-${process.pid}-999`);
-  fs.mkdirSync(dead, { recursive: true });
-  fs.mkdirSync(live, { recursive: true });
-  fs.writeFileSync(path.join(dead, "marker"), "x");
-  t.after(() => {
-    fs.rmSync(dead, { recursive: true, force: true });
-    fs.rmSync(live, { recursive: true, force: true });
-  });
-
-  sweepStaleProfiles();
-
-  assert.equal(fs.existsSync(dead), false, "a profile dir whose owning pid is gone should be swept");
-  assert.equal(fs.existsSync(live), true, "a profile dir whose owning pid is alive must survive - a parallel test file may be using it");
-});
+/* The sweep test that used to sit here now lives in test/harness/sweep.test.js.
+   It needs no browser, and leaving it in this directory meant `npm test` - which
+   excludes test/ui - stopped running it, making the guard on the profile sweep's
+   pid check the least frequently run test in the repo. */
 
 /** Counted rather than asserted absolute: other software on this machine may
  *  hold pre-existing puppeteer profile dirs, and %TEMP% has around 65,000

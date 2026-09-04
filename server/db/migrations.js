@@ -9,7 +9,7 @@
 import { sql } from "./executor.js";
 
 /**
- * Ordered migrations. Never edit a shipped one — add the next number.
+ * Ordered migrations. Never edit a shipped one â€” add the next number.
  * @type {{id: number, name: string, sql: string}[]}
  */
 export const MIGRATIONS = [
@@ -219,7 +219,7 @@ export const MIGRATIONS = [
          concurrency test: with two boots racing, session A can evaluate its
          "IF EXISTS" as true, stall, and by the time its DROP INDEX actually
          runs, session B has already dropped and recreated the same-named
-         index — so A's DROP removes B's brand-new index and nothing ever
+         index â€” so A's DROP removes B's brand-new index and nothing ever
          recreates it, leaving the table with no index of that name at all.
          DROP_EXISTING replaces the index in one statement with no gap
          between the check and the act, so there is no window in which the
@@ -286,7 +286,7 @@ export const MIGRATIONS = [
     name: "ingest_durations",
     sql: `
       /* Worker-thread parsing was deferred on the grounds that the workbooks
-         are tiny. That is a measurement, and measurements expire — so record
+         are tiny. That is a measurement, and measurements expire â€” so record
          the measurement rather than the conclusion. When ParseMs starts
          climbing, the deferral stops being justified. */
       IF COL_LENGTH('dbo.IngestRun', 'ParseMs') IS NULL
@@ -316,8 +316,23 @@ export const MIGRATIONS = [
         ALTER TABLE dbo.IngestRun ADD IsColdStart BIT NOT NULL CONSTRAINT DF_IngestRun_ColdStart DEFAULT (0);
     `,
   },
+  /* Ids 13 and 14, and nothing at 12.
+
+     Both of these were written as migration 12, independently, on two
+     branches: document_extract on main and user_role_mapping on the p4
+     line. The runner skips on Id alone -- `if (done.has(migration.id))
+     continue;` -- and never consults Name, so keeping either one at 12
+     would have made a database that had already recorded 12 skip the
+     other one forever, leaving a table that nothing creates and a
+     feature that fails at runtime rather than at boot.
+
+     Renumbering BOTH is what makes the outcome independent of which 12 a
+     given database happens to hold: it applies 13 and 14 regardless, and
+     both bodies are guarded, so re-running the one it already has is a
+     no-op. The cost is a ledger row recording the same migration twice
+     under two ids, which is cosmetic. Do not reuse 12. */
   {
-    id: 12,
+    id: 13,
     name: "document_extract",
     sql: `
       /* Imported documents. Deliberately hangs off dbo.SourceFile rather than
@@ -355,6 +370,35 @@ export const MIGRATIONS = [
           ON dbo.DocumentExtract (SourceFileId);
     `,
   },
+  {
+    id: 14,
+    name: "user_role_mapping",
+    sql: `
+      /* Per-user role grants, so an admin can give one person a role without
+         asking the directory team for a group. Ports DEDB migration 006.
+
+         Principal is the bare sAMAccountName, lower-cased by the repo before
+         it is stored and before it is matched. AD is case-insensitive and a
+         person may sign in as jdoe, DOMAIN\jdoe or jdoe@example.local; all
+         three resolve to the same principal at sign-in, so all three must
+         resolve to the same row here, or a grant silently fails to apply.
+
+         The CHECK names the roles rather than deferring to the application: a
+         row written by hand carrying a role the app does not know would
+         resolve to no access, which reads as "the grant did not work" rather
+         than "the role is invalid".
+
+         GrantedBy is kept because a role grant is the one table where "who
+         did this" gets asked months later. */
+      IF OBJECT_ID('dbo.UserRoleMapping', 'U') IS NULL
+        CREATE TABLE dbo.UserRoleMapping (
+          Principal NVARCHAR(120) NOT NULL CONSTRAINT PK_UserRoleMapping PRIMARY KEY,
+          Role      VARCHAR(10)   NOT NULL CONSTRAINT CK_UserRoleMapping_Role CHECK (Role IN ('admin','pm','viewer')),
+          GrantedBy NVARCHAR(120) NULL,
+          GrantedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_UserRoleMapping_GrantedAt DEFAULT (SYSUTCDATETIME())
+        );
+    `,
+  },
 ];
 
 const LEDGER = `
@@ -379,7 +423,7 @@ export async function migrate(ex, { logger = console } = {}) {
   const applied = [];
   for (const migration of MIGRATIONS) {
     if (done.has(migration.id)) continue;
-    logger.info?.(`[db] applying migration ${migration.id} — ${migration.name}`);
+    logger.info?.(`[db] applying migration ${migration.id} â€” ${migration.name}`);
     await ex.query(migration.sql);
     await ex.query(
       "INSERT INTO dbo.SchemaMigration (Id, Name, AppliedAt) VALUES (@id, @name, SYSUTCDATETIME())",

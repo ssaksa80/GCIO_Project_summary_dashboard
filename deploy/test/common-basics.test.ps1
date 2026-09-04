@@ -56,7 +56,15 @@ try {
 
   # Mismatch must be fatal: this is the supply-chain check, and a warning that
   # scrolls past is not a check.
-  $rc = & pwsh -NoProfile -Command ". '$PSScriptRoot/../lib/common.ps1'; Test-GcioSha256 '$($f -replace '\\','/')' 'deadbeef'" 2>$null
+  # This child is SUPPOSED to fail, and it says so on stderr. Windows PowerShell
+  # 5.1 turns native stderr into a TERMINATING NativeCommandError while
+  # $ErrorActionPreference is 'Stop', and 2>$null does not prevent it - so the
+  # suite used to die here, four checks in, with no verdict and exit 1.
+  $prevEap = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $rc = & pwsh -NoProfile -Command ". '$PSScriptRoot/../lib/common.ps1'; Test-GcioSha256 '$($f -replace '\\','/')' 'deadbeef'" 2>$null
+  } finally { $ErrorActionPreference = $prevEap }
   Assert-Eq $LASTEXITCODE 1 'a mismatched checksum exits non-zero rather than warning'
 
   # ---- Get-GcioJsonValue ----

@@ -945,12 +945,29 @@ re-running the installer too, not just editing the file.
   someone who runs it deliberately while diagnosing. If you need it, point
   `SECDASH`-style connection variables at a scratch database, never at the one
   a host is serving from -- it truncates as part of its own setup.
-- **LDAP sign-in has never been exercised on this deployment.** `AUTH_MODE=ldap`
-  is configured against a directory this machine cannot reach, so the service
-  runs, serves `/healthz`, `/readyz` and `/metrics`, and ingests workbooks --
-  but no user has ever completed a sign-in against it. The authentication path
-  is covered by the in-process suites with a fake directory; it has not been
-  proved end to end against a real one.
+- **LDAP reaches the real directory; no real account has signed in yet.**
+  Superseded 2026-09-02. `AUTH_MODE=ldap` now points at a directory this host
+  can reach, and the connection half is proved against the real thing rather
+  than a fake: `dc02.example.local` resolves to 192.0.2.11, TCP 636 is open, and
+  `POST /api/auth/login` with a deliberately non-existent account returns **401
+  `bad_credentials` in 1.5s**. That response can only come from a completed
+  LDAPS connection, a successful TLS handshake with an accepted certificate, and
+  a bind the directory itself refused. Compare 0.3s for the DNS failure it used
+  to give -- the round trip is visible in the timing.
+
+  **What is still unproven is a SUCCESSFUL sign-in.** Nobody has authenticated a
+  real account, so group lookup, role mapping and session issue have not run
+  against live directory data. A wrong password and an unknown account are
+  proved; a right one is not. If a real sign-in returns **403 `no_access`**
+  rather than 401, the bind worked and the account is simply in no mapped group
+  -- that is role mapping, not the directory.
+
+  Getting here needed a service re-registration, not a config edit, and the trap
+  in section 7a is exactly why: the service had been frozen since install time
+  on placeholder values (`ldaps://dc01.example.local:636`, `DC=example,DC=local`)
+  while `.env` on disk had carried the correct directory settings for some time. The
+  symptom was a 503 naming a host nobody had configured. Editing `.env` would
+  never have fixed it.
 
 ## 9. Accessibility, and one deliberate departure from the brand palette
 
@@ -1011,10 +1028,10 @@ the dashboard and an open drawer.
 UI_LIVE=1 npm run test:ui
 ```
 
-**Use `test:ui`, not `UI_LIVE=1 npm test`.** Both run these files, but only
-`test:ui` passes `--test-concurrency=1`, and the bare `test` script's glob also
-matches `test/ui` — so the short form starts every UI file at once, a Chrome and
-a server per test, in parallel.
+**Use `test:ui`, or `npm run test:all` for everything.** `npm test` no longer
+runs these files at all: its glob excludes `test/ui`, because it does not pass
+`--test-concurrency=1` and the short form therefore used to start every UI file
+at once, a Chrome and a server per test, in parallel.
 
 These suites need a real browser and are sensitive to machine load. When the box
 is busy they fail on lost clicks and keystrokes rather than on anything about the

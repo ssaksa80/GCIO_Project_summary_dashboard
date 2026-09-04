@@ -28,6 +28,7 @@ import { buildPptxDeck } from "./exporters/pptx.js";
 import { buildTemplate, TEMPLATE_FILENAME } from "./template.js";
 import { looksLikeSupportedFile } from "./uploadGuard.js";
 import { attachSession, requireSession, requireRole } from "./auth/session.js";
+import { PRECEDENCE } from "./auth/authz.js";
 import { authRoutes } from "./auth/routes.js";
 import { securityHeaders, rateLimit } from "./middleware/securityHeaders.js";
 
@@ -86,6 +87,14 @@ export function createApp(deps) {
   const vault = deps.vault || null;
   const sessions = deps.sessions;
   const roleMapping = deps.roleMapping;
+  /* Per-user role grants. Optional, so every existing caller that wires only
+     roleMapping keeps working: resolveAccess reads an absent one as "no
+     grants" and falls back to directory groups alone. */
+  const userRoleMapping = deps.userRoleMapping || null;
+  /* Injected rather than imported, so the console's picker is testable without
+     a directory and a deployment with no service account gives a clear error
+     instead of a stack trace. */
+  const searchDirectory = deps.searchDirectory || null;
   /* A function, not a plain boolean: STORE=mssql's leader status can flip to
      false mid-run if this process loses its dedicated applock connection
      (server/db/leaderElection.js), and a scrape must see that without the
@@ -213,6 +222,7 @@ export function createApp(deps) {
 
   app.use(attachSession({ sessions, idleMinutes: config.sessionIdleMinutes }));
   app.use(authRoutes({
+    userRoleMapping,
     config, sessions, roleMapping, audit,
     ldapAuthenticate: deps.ldapAuthenticate,
     entraJwks: deps.entraJwks,
@@ -293,6 +303,94 @@ export function createApp(deps) {
    * is itself recorded: an audit trail that does not log its own readers
    * answers "who saw this" with silence.
    */
+  /* ---- admin console: who may use this application --------------------- */
+
+  const fail = (res, code, message, status = 422) =>
+    res.status(status).json({ error: { code, message } });
+
+  /**
+   * Would this change leave nobody holding a direct admin grant?
+   *
+   * Demoting or revoking yourself is revoking your own admin access, and if no
+   * other direct admin grant remains the console locks for everyone. The way
+   * back is a database edit or the seed group - a maintenance window to undo
+   * one click, so it is refused instead.
+   *
+   * Deliberately only counts DIRECT grants. Group-derived admins are not
+   * visible here and, more to the point, are not something this console can
+   * restore; treating them as a safety net would make the guard depend on a
+   * directory state nobody in this screen can see or change.
+   */
+  async function lastAdminGuard(req, principal, losesAdmin) {
+    if (!losesAdmin || !userRoleMapping) return null;
+    const map = await userRoleMapping.getMap();
+    const target = String(principal || "").toLowerCase().split("@")[0].split("\\").pop();
+    if (map[target] !== "admin") return null;
+    const others = Object.entries(map).filter(([p, r]) => r === "admin" && p !== target);
+    if (others.length) return null;
+    return {
+      code: "last_admin",
+      message: "this is the last account holding an admin grant; grant admin to someone else before removing your own, or you will lock yourself out",
+    };
+  }
+
+  /**
+   * Every per-user grant. Admin-only: who holds which role is exactly the map
+   * an attacker would want before picking an account to go after.
+   */
+  app.get("/api/admin/user-roles", requireRole("admin"), wrap(async (req, res) => {
+    if (!userRoleMapping) return res.json([]);
+    res.json(await userRoleMapping.list());
+  }));
+
+  /**
+   * Grant or change one person's role.
+   *
+   * Validated here rather than left to the table's CHECK: a constraint
+   * violation arrives as a 500 carrying a SQL message, which tells an admin
+   * nothing about which of the two fields was wrong.
+   */
+  app.post("/api/admin/user-roles", requireRole("admin"), wrap(async (req, res) => {
+    if (!userRoleMapping) return fail(res, "user_roles_unavailable", "per-user grants are not configured on this deployment", 503);
+    const principal = String(req.body?.principal || "").trim();
+    const role = String(req.body?.role || "").toLowerCase();
+    if (!principal || !PRECEDENCE.includes(role)) {
+      return fail(res, "bad_user_role", `principal is required and role must be one of ${PRECEDENCE.join(", ")}`);
+    }
+
+    const guard = await lastAdminGuard(req, principal, role !== "admin");
+    if (guard) return fail(res, guard.code, guard.message, 409);
+
+    await userRoleMapping.set(principal, role, req.session.principal);
+    await auditFrom(req, { actor: req.session.principal, action: "authz.grant", subject: `${principal} -> ${role}` });
+    res.json({ ok: true });
+  }));
+
+  /** Revoke a grant. The person keeps whatever their directory groups give. */
+  app.delete("/api/admin/user-roles/:principal", requireRole("admin"), wrap(async (req, res) => {
+    if (!userRoleMapping) return fail(res, "user_roles_unavailable", "per-user grants are not configured on this deployment", 503);
+    const principal = decodeURIComponent(req.params.principal);
+    const guard = await lastAdminGuard(req, principal, true);
+    if (guard) return fail(res, guard.code, guard.message, 409);
+
+    await userRoleMapping.remove(principal);
+    await auditFrom(req, { actor: req.session.principal, action: "authz.revoke", subject: principal });
+    res.json({ ok: true });
+  }));
+
+  /**
+   * Find someone to grant a role to.
+   *
+   * The picker exists so a grant lands on an account that demonstrably exists.
+   * A principal typed by hand is stored happily against a typo, reports
+   * nothing, and looks correct in the table while the person is still refused
+   * at sign-in.
+   */
+  app.get("/api/admin/directory", requireRole("admin"), wrap(async (req, res) => {
+    if (!searchDirectory) return fail(res, "directory_search_unavailable", "directory search is not configured on this deployment", 503);
+    res.json(await searchDirectory(String(req.query.q || "")));
+  }));
+
   app.get("/api/audit", requireRole("admin"), wrap(async (req, res) => {
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
     const action = req.query.action ? String(req.query.action) : null;

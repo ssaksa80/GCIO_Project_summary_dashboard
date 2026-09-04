@@ -31,14 +31,16 @@ import { postureRepo } from "./repos/posture.js";
 import { auditRepo } from "./repos/audit.js";
 import { sessionsRepo } from "./repos/sessions.js";
 import { roleMappingRepo } from "./repos/roleMapping.js";
+import { userRoleMappingRepo } from "./repos/userRoleMapping.js";
 import { sourceFilesRepo } from "./repos/sourceFiles.js";
 import { ingestRunsRepo } from "./repos/ingestRuns.js";
 import { projectVersionsRepo } from "./repos/projectVersions.js";
 import { documentExtractsRepo } from "./repos/documentExtracts.js";
 import { memoryDocuments, memorySourceFiles } from "./documents/memoryDocuments.js";
 import { createVault } from "./vault.js";
-import { createFileAudit, memorySessions, memoryRoleMapping, devAuthenticate } from "./devBackends.js";
+import { createFileAudit, memorySessions, memoryRoleMapping, memoryUserRoleMapping, devAuthenticate } from "./devBackends.js";
 import { makeEntraJwks } from "./auth/entraJwks.js";
+import { searchUsers } from "./auth/ldap.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -48,6 +50,12 @@ const ROOT = path.resolve(__dirname, "..");
 const SAMPLE_DIR = path.join(ROOT, "sample-data");
 
 const config = loadConfig(process.env);
+
+/* Printed here rather than from config.js: that module is loaded by most of the
+   test suite, and a module that logs during import makes every one of those
+   runs noisier. Warnings are things an operator should fix but that must not
+   stop the service -- a plaintext bind password is the current example. */
+for (const w of config.warnings) console.warn(`[gcio] WARNING: ${w}`);
 
 /* resolve, not join, and read from config rather than hardcoded: DATA_DIR may
    legitimately be absolute on a real deployment. A bundle installs code to
@@ -92,6 +100,7 @@ if (config.store === "mssql") {
     audit: auditRepo(ex),
     sessions: sessionsRepo(ex),
     roleMapping: roleMappingRepo(ex),
+    userRoleMapping: userRoleMappingRepo(ex),
     sourceFiles: sourceFilesRepo(ex),
     ingestRuns: ingestRunsRepo(ex),
     projectVersions: projectVersionsRepo(ex),
@@ -136,6 +145,11 @@ if (config.store === "mssql") {
     audit: repos.audit,
     sessions: repos.sessions,
     roleMapping: repos.roleMapping,
+    userRoleMapping: repos.userRoleMapping,
+    /* The console's picker. Bound to the running config so a deployment
+       with no service account fails with the reason rather than an empty
+       list that reads as "no such person". */
+    searchDirectory: (q) => searchUsers(q, config.ldap),
     ingestRuns: repos.ingestRuns,
     documents: repos.documents,
     /* The vault ledger. SqlStore already writes to it for workbooks; the
@@ -154,6 +168,13 @@ if (config.store === "mssql") {
       "gcio-dashboard-pms": "pm",
       "gcio-dashboard-admins": "admin",
     }),
+    /* In memory, so grants last only as long as the process. Enough for the
+       console to be developed and demonstrated without SQL Server. */
+    userRoleMapping: memoryUserRoleMapping(),
+    /* AUTH_MODE=dev has no directory to search. Left null so the route
+       answers "not configured" rather than returning an empty list that
+       reads as "nobody by that name". */
+    searchDirectory: null,
     /* No database, so no run history to show. The route says so rather than
        pretending the list is empty. */
     ingestRuns: null,
@@ -344,13 +365,17 @@ const app = createApp({
   store,
   config,
   entraJwks,
-  sessions: backends.sessions,
-  roleMapping: backends.roleMapping,
-  audit: backends.audit,
-  ingestRuns: backends.ingestRuns,
-  documents: backends.documents,
-  sourceFiles: backends.sourceFiles,
-  /* null on STORE=memory: no vault, and the document imports anyway. */
+  /* Spread, NOT enumerated. Every backend this file builds reaches createApp
+     by construction, so adding one to `backends` cannot silently fail to be
+     wired. Enumerating them cost a live 403: userRoleMapping was added to
+     `backends` and not to this list, so resolveAccess saw no per-user grants,
+     fell through to group roles, and refused a user whose grant was sitting in
+     the table. Nothing failed loudly - the feature was simply absent, and the
+     unit tests could not see it because they construct createApp directly. */
+  ...backends,
+  /* Still named: vault is a local in this file, not a member of `backends`,
+     so the spread above does not carry it. null on STORE=memory - no vault,
+     and the document imports anyway. */
   vault,
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,

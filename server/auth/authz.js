@@ -6,6 +6,8 @@
  * matches — membership of an unmapped group must never imply a default role.
  */
 import { AuthError, noAccess } from "./errors.js";
+/* ldap.js does not import authz.js, so this is a one-way edge, not a cycle. */
+import { toSam } from "./ldap.js";
 
 /** Highest first. */
 export const PRECEDENCE = ["admin", "pm", "viewer"];
@@ -61,7 +63,31 @@ export function resolveRole(groups, roleMap) {
 export async function resolveAccess({ principal, groups }, deps) {
   if (!principal) throw new AuthError(401, "no_principal", "sign-in failed");
   const roleMap = await deps.roleMapping.getMap();
-  const role = resolveRole(groups, roleMap);
+  const groupRole = resolveRole(groups, roleMap);
+
+  /* Per-user grants are the second source, so an admin can give one person a
+     role without asking the directory team for a group. Optional: callers that
+     predate it (and most tests) pass only roleMapping, and this must keep
+     working for them rather than becoming mandatory everywhere at once. */
+  const userMap = deps.userRoleMapping ? await deps.userRoleMapping.getMap() : {};
+  /* Through toSam, and this is not optional. identityFrom() in ldap.js sets the
+     principal to the userPrincipalName when the directory returns one, so a
+     person signing in as `jdoe` arrives here as `jdoe@example.local`, and on a
+     domain with several UPN suffixes the suffix is not even predictable. The
+     repo keys grants by the bare sAMAccountName because that is the one form
+     `jdoe`, `DOMAIN\jdoe` and `jdoe@example.local` all collapse to; looking up
+     the raw principal misses every grant on any directory that populates a UPN.
+     Cost a live 403 with the grant sitting visibly in the table. */
+  const userRole = userMap[toSam(String(principal)).toLowerCase()];
+
+  /* Highest of the two wins. A stale low grant must not demote someone their
+     group has promoted - revoking is done by removing the grant, not by
+     lowering it. */
+  const role = bestRole(groupRole, userRole);
+
+  /* Authenticating is not authorisation. Membership of an unmapped group must
+     never imply a default role, so someone the directory knows but nothing
+     grants gets 403 rather than a quiet read-only session. */
   if (!role) throw noAccess();
   return { role };
 }

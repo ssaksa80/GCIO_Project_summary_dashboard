@@ -1,6 +1,6 @@
 {
   "name": "gcio-project-summary-dashboard",
-  "version": "1.5.0",
+  "version": "1.8.2",
   "description": "GCIO Project Intelligence — 24x7 live executive portfolio dashboard with Excel ingestion, C-suite summarization, drill-down, and rich Excel/Word/HTML briefing exports.",
   "type": "module",
   "private": true,
@@ -9,10 +9,12 @@
     "start": "node server/index.js",
     "dev": "vite --config vite.config.js",
     "build": "vite build --config vite.config.js",
+    "grant-role": "node server/tools/grant-role.js",
     "sample-data": "node scripts/generate-sample-data.js",
     "test:db": "node --test test/db/live.test.js",
     "test:ui": "node --test --test-concurrency=1 \"test/ui/**/*.test.js\"",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/!(ui)/**/*.test.js\" \"test/*.test.js\"",
+    "test:all": "npm test && npm run test:ui"
   },
   "dependencies": {
     "@azure/msal-browser": "^3.28.1",

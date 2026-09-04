@@ -1309,3 +1309,149 @@ function Get-GcioBindAddress {
   } catch { }
   return ''
 }
+
+<#
+  Set a single KEY=VALUE in a .env file, in place.
+
+  Rewrites rather than appends, because install.ps1 leaves the LDAP service
+  account settings behind as a COMMENTED placeholder block. An appender would
+  add a second live copy below the commented one, and dotenv takes the last
+  occurrence -- so the file would end up with a key that looks unset to a reader
+  and set to something else to the app. Both the commented and uncommented forms
+  are therefore treated as the same setting and replaced in place, which also
+  makes this idempotent: running it twice leaves one line, not two.
+
+  Surrounding comments, blank lines and ordering are preserved. Line endings are
+  preserved by writing back with the same WriteAllLines the rest of deploy/ uses.
+
+  Returns nothing; throws if the file is missing.
+#>
+function Set-GcioEnvSetting {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { throw "no .env at $Path" }
+  $lines = [IO.File]::ReadAllLines($Path)
+  $out = [Collections.Generic.List[string]]::new()
+  $written = $false
+  # Anchored, and the key is escaped: a name containing regex metacharacters
+  # must not match a different setting.
+  $pattern = '^\s*#?\s*' + [Regex]::Escape($Name) + '\s*='
+  foreach ($line in $lines) {
+    if ($line -match $pattern) {
+      if (-not $written) { $out.Add("$Name=$Value"); $written = $true }
+      # later duplicates are dropped, so the file cannot keep a stale second copy
+    } else { $out.Add($line) }
+  }
+  if (-not $written) { $out.Add("$Name=$Value") }
+  [IO.File]::WriteAllLines($Path, $out)
+}
+
+<#
+  The Node one-liner seal-secret.ps1 pipes a password into.
+
+  Lives here rather than inline in the script so a test can render the REAL
+  template and execute it. It was inline once, and shipped with bare absolute
+  Windows paths in its import statements - which Node's ESM loader rejects with
+  ERR_UNSUPPORTED_ESM_URL_SCHEME ("protocol c:"). Nothing caught it, because the
+  only thing that ran the template was the interactive script nobody could test.
+
+  Two forms of the same directory are needed and they are not interchangeable:
+  imports must be file:// URLs, while resolveKeyFile takes a plain filesystem
+  path. Rendering both from one input is what keeps them from drifting apart.
+
+  The password arrives on STDIN, never argv - argv is readable by any process
+  listing, any EDR agent, and Windows command-line auditing.
+#>
+function Get-GcioSealerScript {
+  param([Parameter(Mandatory)][string]$AppRoot)
+  # [IO.Path]::AltDirectorySeparatorChar rather than a regex: '\' alone is not a
+  # valid pattern, and '\\' in a -replace is one escaped backslash, which is a
+  # trap worth stepping around entirely.
+  $slashed = $AppRoot.Replace('\', '/')
+  return @"
+import { makeSecretBox } from "file:///$slashed/server/crypto/secretBox.js";
+import { loadOrCreateKey, resolveKeyFile } from "file:///$slashed/server/crypto/masterKey.js";
+let input = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) input += chunk;
+const keyFile = resolveKeyFile("$slashed", process.env.GCIO_KEY_FILE);
+process.stdout.write(makeSecretBox(loadOrCreateKey(keyFile)).seal(input) + "\n");
+process.stderr.write("key: " + keyFile + "\n");
+"@
+}
+
+<#
+  Read one live KEY=VALUE out of a .env file, or $null.
+
+  "Live" means uncommented: a commented line is an absent setting, not its
+  value, which is the whole point of the placeholder block install.ps1 leaves
+  behind. When a key appears more than once the LAST live copy wins, matching
+  what dotenv actually loads - a reader who assumes "first" would show an
+  operator a value the app is not using.
+#>
+function Get-GcioEnvSetting {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Name
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { return $null }
+  $pattern = '^\s*' + [Regex]::Escape($Name) + '\s*=(.*)$'
+  $value = $null
+  foreach ($line in [IO.File]::ReadAllLines($Path)) {
+    if ($line -match $pattern) { $value = $Matches[1].Trim() }
+  }
+  return $value
+}
+
+<#
+  Turn what an operator typed into something the directory will accept as a
+  bind identity.
+
+  Mirrors bindIdentity() in server/auth/ldap.js so the value written to .env is
+  the same shape the app would have constructed. Already-qualified input is
+  returned untouched: appending a suffix to a UPN produces svc@a.test@b.test,
+  which fails as a credential error and reads like a wrong password.
+
+  The refusal matters more than the derivation. A DN made only of DC= and OU=
+  components names a CONTAINER, not an account - it is what you get by pasting
+  the base DN into a prompt labelled "Bind DN", which is exactly what happened
+  on this deployment. Binding as it fails with "invalid credentials", so the
+  operator goes looking for a password problem that does not exist. Catch it
+  here, while the person who typed it is still watching.
+#>
+function Resolve-GcioBindIdentity {
+  param(
+    [Parameter(Mandatory)][AllowEmptyString()][string]$User,
+    [string]$BaseDN,
+    [string]$Domain,
+    [string]$UpnSuffix
+  )
+  $u = $User.Trim()
+  if (-not $u) { throw 'a username is required' }
+
+  # Order matters: a full DN contains OU= and DC= too, so it has to be
+  # recognised before the container check rejects those components.
+  if ($u -match '(?i)^\s*CN\s*=') { return $u }
+  if ($u -match '(?i)(^|,)\s*(DC|OU)\s*=') {
+    throw ("'$u' looks like a directory path, not an account. It has no CN= " +
+           'component, so it names a container rather than a user - this is ' +
+           'the BASE DN, which is configured separately. Enter just the ' +
+           "account name (for example: svc_app), or a full DN beginning CN=.")
+  }
+  if ($u.Contains('@') -or $u.Contains('\')) { return $u }
+
+  $suffix = if ($UpnSuffix) { $UpnSuffix.Trim() }
+            elseif ($BaseDN) {
+              # DC=example,DC=test -> example.test
+              (($BaseDN -split ',' | ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '(?i)^DC=' } |
+                ForEach-Object { $_.Substring(3) }) -join '.')
+            } else { '' }
+
+  if ($suffix) { return "$u@$suffix" }
+  if ($Domain) { return "$Domain" + [char]92 + "$u" }
+  return $u
+}

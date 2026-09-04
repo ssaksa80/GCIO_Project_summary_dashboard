@@ -10,6 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isSealed, makeSecretBox } from "./crypto/secretBox.js";
+import { loadOrCreateKey, resolveKeyFile } from "./crypto/masterKey.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
@@ -55,8 +58,16 @@ function readVersion() {
  * @param {NodeJS.ProcessEnv} env
  * @returns {Readonly<object>}
  */
-export function loadConfig(env = process.env) {
+export function loadConfig(env = process.env, deps = {}) {
   const problems = [];
+  const warnings = [];
+
+  /* Opening a sealed secret shells out to PowerShell for DPAPI, so it is built
+     lazily and called only for values that actually carry the enc:v1: marker.
+     A plaintext password must not cost a subprocess on every boot, and the
+     test suite must not spawn one at all. Injectable for exactly that reason. */
+  const openSecret = deps.openSecret || ((token) =>
+    makeSecretBox(loadOrCreateKey(resolveKeyFile(ROOT, env.GCIO_KEY_FILE))).open(token));
   const need = (key) => {
     const value = String(env[key] || "").trim();
     if (!value) problems.push(`${key} is required`);
@@ -76,12 +87,49 @@ export function loadConfig(env = process.env) {
     problems.push("AUTH_MODE=dev is not permitted when NODE_ENV=production");
   }
 
-  const ldap = { url: "", baseDN: "", domain: "", upnSuffix: "", timeoutMs: Number(env.LDAP_TIMEOUT_MS || 10000) };
+  const ldap = { url: "", baseDN: "", domain: "", upnSuffix: "", bindDN: "", bindPassword: "",
+                 timeoutMs: Number(env.LDAP_TIMEOUT_MS || 10000) };
   if (authMode === "ldap") {
     ldap.url = need("LDAP_URL");
     ldap.baseDN = need("LDAP_BASE_DN");
     ldap.domain = String(env.LDAP_DOMAIN || "").trim();
     ldap.upnSuffix = String(env.LDAP_UPN_SUFFIX || "").trim();
+    /* Optional. Present -> search-then-bind as this account; absent -> the
+       original bind-as-user path. Never logged, never echoed: treated exactly
+       like DB_PASSWORD. */
+    ldap.bindDN = String(env.LDAP_BIND_DN || "").trim();
+    const rawBindPassword = String(env.LDAP_BIND_PASSWORD || "");
+    if (isSealed(rawBindPassword)) {
+      try {
+        ldap.bindPassword = openSecret(rawBindPassword);
+      } catch (err) {
+        /* Reporting this as an empty password would trip the half-config guard
+           below and send an operator hunting for a setting that is plainly
+           present in the file, while the real fault - usually a key.bin from a
+           different machine - goes unmentioned. */
+        problems.push(`LDAP_BIND_PASSWORD is sealed but could not be opened: ${err.message}`);
+      }
+    } else {
+      ldap.bindPassword = rawBindPassword;
+      if (rawBindPassword) {
+        warnings.push(
+          "LDAP_BIND_PASSWORD is stored in plaintext; run seal-secret.ps1 to encrypt it at rest",
+        );
+      }
+    }
+    /* Either one alone is a trap rather than a partial configuration.
+       authenticate() picks its strategy on bindDN alone, so a DN with no
+       password takes the search-then-bind path and binds with an empty one -
+       an ANONYMOUS bind, which AD accepts. The search then finds nothing and
+       every user gets 401 holding a correct password. A password with no DN is
+       quieter and equally wrong: it is ignored and the UPN guessing continues.
+       Both are configuration errors and belong here, not at 9am. */
+    if (ldap.bindDN && !ldap.bindPassword) {
+      problems.push("LDAP_BIND_DN is set but LDAP_BIND_PASSWORD is empty; set both to use a service account, or neither to bind as the user");
+    }
+    if (!ldap.bindDN && ldap.bindPassword) {
+      problems.push("LDAP_BIND_PASSWORD is set but LDAP_BIND_DN is empty; the credential would be ignored");
+    }
   }
 
   /* SSO is additive: it can be enabled alongside LDAP so people may use
@@ -112,6 +160,10 @@ export function loadConfig(env = process.env) {
   }
 
   return Object.freeze({
+    /* Surfaced rather than logged from here: config load is pure enough to be
+       called all over the test suite, and a module that prints during import
+       makes every one of those runs noisier. index.js prints these once. */
+    warnings: Object.freeze(warnings),
     nodeEnv,
     isProd,
     version: readVersion(),

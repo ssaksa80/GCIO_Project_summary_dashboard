@@ -3,6 +3,7 @@ import { getJSON, deleteJSON, useLiveEvents, NotAuthenticated } from "./lib/api.
 import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
+import AdminConsole from "./components/AdminConsole.jsx";
 import KpiStrip from "./components/KpiStrip.jsx";
 import SectionNav from "./components/SectionNav.jsx";
 import SectionSuccesses from "./components/SectionSuccesses.jsx";
@@ -59,6 +60,7 @@ export default function App() {
   const [meta, setMeta] = useState(null);
   const [drawerId, setDrawerId] = useState(() => params().get("project"));
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [error, setError] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
   /** null = still asking the server who we are. */
@@ -170,6 +172,7 @@ export default function App() {
         health={health}
         me={me}
         onUpload={() => setUploadOpen(true)}
+        onAdmin={() => setAdminOpen(true)}
         onSignOut={async () => {
           await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
           setMe({ authenticated: false });
@@ -245,6 +248,9 @@ export default function App() {
       )}
 
       {uploadOpen && <UploadPanel onClose={() => setUploadOpen(false)} onDone={refresh} />}
+      {/* A sibling of <main>, like the drawer and the upload panel: a fixed
+          modal carrying its own role="dialog", not page content. */}
+      {adminOpen && <AdminConsole me={me} onClose={() => setAdminOpen(false)} />}
     </div>
   );
 }
