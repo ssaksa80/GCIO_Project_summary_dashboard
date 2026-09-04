@@ -7,6 +7,28 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.8.1
+
+**Fixes a role grant being ignored at sign-in.** A person granted a role - from
+the Access console or from Grant-Role.cmd - could still be refused with "your
+account is not a member of any group granted access to this dashboard", while
+the grant was plainly visible in the list.
+
+Grants are stored against the bare account name, because that is the one form
+`jdoe`, `DOMAIN\jdoe` and `jdoe@example.local` all reduce to. But at sign-in
+the directory reports the user's userPrincipalName, so the lookup was being made
+with `jdoe@example.local` against a table keyed `jdoe`, and matched nothing.
+
+This affects any directory that populates userPrincipalName, and it is worse
+where a domain carries more than one UPN suffix, since the suffix is then not
+even the one configured in LDAP_UPN_SUFFIX.
+
+Existing grants need no attention - they were always stored correctly, and they
+start working the moment this release is deployed. No re-granting, no
+re-registration, no configuration change.
+
+No schema, dependency or runtime change. Ships as a patch.
+
 ## GCIO 1.8.0
 
 **A command on the host can now grant a role, so a locked-out deployment can
