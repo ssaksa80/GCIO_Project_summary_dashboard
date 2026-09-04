@@ -74,6 +74,33 @@ try { npm ci --omit=dev; $ec = $LASTEXITCODE } finally { Pop-Location }
 if ($ec) { Stop-Gcio "staged 'npm ci --omit=dev' failed (exit $ec) - the bundle would ship without its dependencies." }
 if (-not (Test-Path "$Stage/app/node_modules")) { Stop-Gcio 'staged node_modules is missing - refusing to ship a bundle that cannot run.' }
 
+# ------------------------------------------------- dependencies as ONE file
+#
+# node_modules is 15,312 of the bundle's 17,398 files - the application itself
+# is 62. Every stage of a deploy paid for that per-file count four times over:
+# deleting the previous unpack, extracting, checksumming, and copying into
+# place. Measured on a live host the delete alone ran at 0.1 MB/s and looked
+# exactly like a hung installer.
+#
+# Collapsing the tree into one archive takes all four passes down to ~2,000
+# files. install.ps1 expands it on the host, where it is a single sequential
+# read rather than 15,312 scattered ones.
+#
+# Compressed rather than stored: the outer archive would otherwise have to
+# deflate 200 MB of already-laid-out files, and this way the expensive part
+# happens once at build time instead of on every operator's machine.
+Write-GcioLog 'collapsing node_modules into a single archive'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$nmDir = Join-Path $Stage 'app/node_modules'
+$nmZip = Join-Path $Stage 'app/node_modules.zip'
+$nmFiles = (Get-ChildItem -LiteralPath $nmDir -Recurse -File).Count
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+  $nmDir, $nmZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+if (-not (Test-Path $nmZip)) { Stop-Gcio 'failed to archive node_modules - refusing to ship a bundle without dependencies.' }
+Remove-GcioTree $nmDir
+Write-GcioLog ("node_modules: {0:N0} files -> one archive of {1:N1} MB" -f $nmFiles, ((Get-Item $nmZip).Length / 1MB))
+if (Test-Path $nmDir) { Stop-Gcio 'the loose node_modules tree survived - the bundle would ship dependencies twice.' }
+
 # ---------------------------------------------------------------- runtime
 
 if (-not $SkipRuntimeFetch) {

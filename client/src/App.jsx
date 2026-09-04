@@ -4,6 +4,7 @@ import { scrollToSection } from "./lib/motion.jsx";
 import { fmtDate } from "./lib/format.js";
 import TopBar from "./components/TopBar.jsx";
 import AdminPage from "./components/AdminPage.jsx";
+import About from "./components/About.jsx";
 import KpiStrip from "./components/KpiStrip.jsx";
 import SectionNav from "./components/SectionNav.jsx";
 import SectionSuccesses from "./components/SectionSuccesses.jsx";
@@ -234,6 +235,10 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* The version, quietly, on the dashboard too - it is the first thing
+          anyone is asked for when reporting a problem. */}
+      <About />
 
       {drawerId && (
         <ProjectDrawer id={drawerId} onClose={() => setDrawerId(null)} onNavigate={setDrawerId} period={period} date={date} />

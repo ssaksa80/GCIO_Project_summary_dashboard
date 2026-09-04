@@ -140,7 +140,7 @@ if (-not (Get-LooseArtifacts $Here)) {
     $ex = Join-Path $Here ('_pkg-' + [IO.Path]::GetFileNameWithoutExtension($pkg.Name))
     Info "auto-extracting package $($pkg.Name)"
     try {
-      if (Test-Path $ex) { Remove-Item -Recurse -Force $ex }
+      if (Test-Path $ex) { Remove-GcioTree $ex }
       Expand-GcioArchive -Zip $pkg.FullName -Dest $ex -Force
     } catch { Warn2 "could not extract $($pkg.Name): $($_.Exception.Message)"; continue }
     $inner = @(Get-ChildItem $ex -Recurse -File -ErrorAction SilentlyContinue |
@@ -196,21 +196,48 @@ Info $gate.Message
 Step '2/4' "Apply the $kind"
 
 $dest = Join-Path $Here $zip.BaseName
-if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-Info "expanding to $dest"
-Expand-GcioArchive -Zip $zip.FullName -Dest $Here -Force
-if (-not (Test-Path $dest)) { Fail "expected $dest after extraction but it is not there - the archive may be truncated." }
+
+# An artifact already unpacked from THIS archive does not need unpacking again.
+# The marker is written only after verification passes, so its presence means
+# "these bytes were extracted from this zip and their checksums were checked".
+# Re-running a deploy - after a failed health check, or because the window was
+# closed - then costs seconds instead of repeating three passes over 17,000
+# files. The zip is hashed rather than compared on size and date: a rebuilt
+# artifact can land at the same size, and applying the wrong one is not a
+# mistake worth saving a second on.
+$marker = Join-Path $dest '.gcio-unpacked'
+$zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip.FullName).Hash.ToLower()
+$cached = (Test-Path $marker) -and ((Get-Content -LiteralPath $marker -Raw -EA SilentlyContinue).Trim() -eq $zipHash)
+
+if ($cached) {
+  Ok "already unpacked and verified from this archive - reusing $dest"
+} else {
+  if (Test-Path $dest) {
+    # Remove-Item walks this through the pipeline one object per file; on a
+    # bundle that measured 0.1 MB/s and looked exactly like a hang.
+    Info "clearing the previous unpack"
+    Remove-GcioTree $dest
+  }
+  Info "expanding to $dest"
+  Expand-GcioArchive -Zip $zip.FullName -Dest $Here -Force
+  if (-not (Test-Path $dest)) { Fail "expected $dest after extraction but it is not there - the archive may be truncated." }
+}
 
 # The verifier may sit beside this script or inside the artifact. Prefer
 # whichever exists, and NEVER silently skip: an unverified artifact is exactly
 # what checksums.txt exists to prevent.
 $verifier = @("$Here\verify-$kind.ps1", "$dest\verify-$kind.ps1") |
   Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($verifier) {
+if ($cached) {
+  Ok 'checksums already verified for this archive'
+} elseif ($verifier) {
   Info "verifying with $(Split-Path $verifier -Leaf)"
   & powershell -NoProfile -ExecutionPolicy Bypass -File $verifier -Dir $dest
   if ($LASTEXITCODE -ne 0) { Fail 'the artifact failed verification - refusing to apply it. Re-copy the release and try again.' }
   Ok 'checksums verified'
+  # Written ONLY here, after a pass. A marker written at extraction time would
+  # let a corrupt unpack be reused forever without ever being checked.
+  Set-Content -LiteralPath $marker -Value $zipHash -Encoding ascii
 } else {
   Warn2 "no verify-$kind.ps1 found beside the artifact or inside it - applying UNVERIFIED"
 }

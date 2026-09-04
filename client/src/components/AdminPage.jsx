@@ -17,6 +17,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 
+import About from "./About.jsx";
+
 import Health from "./admin/Health.jsx";
 import Ownership from "./admin/Ownership.jsx";
 import Access from "./admin/Access.jsx";
@@ -128,6 +130,10 @@ export default function AdminPage({ me, onClose }) {
         </div>}
         <Screen me={me} onError={setError} />
       </main>
+
+      {/* Quiet, and on every screen: the version is the first thing
+          anyone is asked for when reporting a problem. */}
+      <About />
     </div>
   );
 }

@@ -769,3 +769,20 @@ table.projects th .th-sort { width: 100%; white-space: nowrap; }
 .log-line.alarm { color: var(--critical-ink); }
 .admin-log-filter { flex: 1; min-width: 180px; }
 .admin-log-filter input { width: 100%; }
+
+/* ---- about footer ---------------------------------------------------------
+   Quiet by intent: present on every screen including sign-in, and never the
+   thing the eye lands on first. */
+.about-foot { display: flex; align-items: center; justify-content: center; gap: 9px;
+              padding: 18px 22px 26px; color: var(--muted); font-size: 11.5px; }
+.about-link { background: none; border: 0; padding: 0; cursor: pointer;
+              font: inherit; font-weight: 600; color: var(--info); text-decoration: underline; }
+.about-modal { max-width: 420px; width: min(420px, calc(100vw - 32px)); }
+.about-title { font-size: 18px; margin-bottom: 2px; }
+.about-version { margin-top: 0; }
+.about-body { font-size: 13px; line-height: 1.55; color: var(--ink-2); margin: 0 0 12px; }
+.about-credit { display: grid; gap: 2px; padding-top: 12px; margin: 4px 0 16px;
+                border-top: 1px solid var(--line); color: var(--muted);
+                font-size: 11px; line-height: 1.3; }
+.about-credit strong { color: var(--ink); font-size: 12.5px; letter-spacing: .02em; }
+.about-actions { display: flex; justify-content: flex-end; }

@@ -127,6 +127,29 @@ export function createApp(deps) {
   app.get("/healthz", (req, res) => {
     res.json({ status: "ok", uptimeSec: Math.round((Date.now() - startedAt) / 1000), version });
   });
+  /**
+   * Public build metadata, for the About footer.
+   *
+   * Mounted here, AHEAD of the session gate, exactly as DEDB mounts its
+   * equivalent: the footer renders on the sign-in screen too, and a version
+   * number is the first thing anyone is asked for when reporting a problem.
+   * Requiring a session to learn the version would mean the people most likely
+   * to need it - the ones who cannot get in - are the ones who cannot see it.
+   *
+   * Deliberately narrow. Nothing here is sensitive: a name, a version, a
+   * description and the Node major. No hostnames, no configuration, no counts
+   * that would tell an anonymous caller anything about the portfolio.
+   */
+  app.get("/api/about", (req, res) => {
+    res.json({
+      name: "GCIO Project Intelligence",
+      version,
+      node: process.versions.node,
+      description: "A 24x7 live executive portfolio dashboard: Excel ingestion, C-suite summarisation, drill-down, and briefing exports.",
+      support: "Raise issues with the CIO office. Access is granted by directory group membership or by an administrator in the Access console.",
+    });
+  });
+
   app.get("/readyz", (req, res) => {
     if (!store.projectCount) {
       return res.status(503).json({ ready: false, reason: "no data has been ingested yet" });

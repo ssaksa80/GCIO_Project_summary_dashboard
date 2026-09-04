@@ -1530,3 +1530,80 @@ function Expand-GcioArchive {
     Expand-Archive -LiteralPath $Zip -DestinationPath $Dest -Force
   }
 }
+
+<#
+  Delete a directory tree, quickly.
+
+  Remove-Item -Recurse -Force walks the tree through the PowerShell pipeline,
+  materialising an object per file. On a bundle's 17,244 extracted files that
+  measured 0.1 MB/s on a live host - the deploy appeared to hang, and the
+  operator saw "Removed 8820 of 17244 files" creeping upward with no way to
+  know whether it was stuck or working.
+
+  Three strategies, fastest first, each falling through on failure:
+
+    1. [IO.Directory]::Delete(p, $true) - one recursive call inside .NET, no
+       per-file objects. Fastest by a wide margin.
+    2. robocopy /MIR from an empty directory - the fastest known Windows tree
+       delete, and it copes with paths beyond MAX_PATH that .NET refuses.
+    3. Remove-Item - what this replaces. Slow, but it is a working path and a
+       deploy must never fail because a delete was merely awkward.
+
+  Returns nothing. A tree that is already absent is success, not an error.
+#>
+function Remove-GcioTree {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+
+  try {
+    [IO.Directory]::Delete((Resolve-Path -LiteralPath $Path).Path, $true)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+  } catch { }
+
+  # A long path or a locked handle gets here. robocopy mirrors an empty folder
+  # over the target, which deletes without ever enumerating in PowerShell.
+  try {
+    $empty = Join-Path ([IO.Path]::GetTempPath()) ('gcio-empty-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $empty | Out-Null
+    & robocopy $empty $Path /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 *> $null
+    Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+  } catch { }
+
+  Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+<#
+  Copy a directory tree, quickly.
+
+  Copy-Item -Recurse has the same per-file cost as Remove-Item, and install.ps1
+  uses it to put app/ into the install directory - a second pass over the same
+  17,000 files. robocopy with /MT copies on several threads and skips the
+  pipeline entirely.
+
+  robocopy's exit codes are not like everything else: 0-7 are success (8+ is
+  failure), and treating a non-zero exit as an error here would fail a deploy
+  that copied perfectly. That misreading is common enough to be worth naming.
+#>
+function Copy-GcioTree {
+  param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Destination,
+    [switch]$Mirror
+  )
+  if (-not (Test-Path -LiteralPath $Source)) { throw "source not found: $Source" }
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+  $args = @($Source, $Destination, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1', '/MT:16')
+  if ($Mirror) { $args += '/PURGE' }
+
+  try {
+    & robocopy @args *> $null
+    if ($LASTEXITCODE -lt 8) { return }
+    Write-GcioWarn "robocopy returned $LASTEXITCODE copying $Source - falling back to Copy-Item"
+  } catch {
+    Write-GcioWarn "robocopy unavailable ($($_.Exception.Message)) - falling back to Copy-Item"
+  }
+  Copy-Item -Recurse -Force -LiteralPath (Join-Path $Source '*') -Destination $Destination
+}

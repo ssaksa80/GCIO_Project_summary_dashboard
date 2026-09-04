@@ -316,7 +316,33 @@ if ($Bundle) {
     if (-not (Test-Path $src)) { continue }
     $dst = Join-Path $InstallDir $d
     if (Test-Path $dst) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dst } }
-    Copy-Item -Recurse -Force $src $dst
+    # robocopy, not Copy-Item: this is the second full pass over the same
+    # ~17,000 files and Copy-Item pays the same per-file pipeline cost that
+    # made the delete look like a hang. Falls back inside Copy-GcioTree.
+    Copy-GcioTree -Source $src -Destination $dst
+  }
+
+  # Dependencies ship as ONE archive rather than 15,312 loose files, and are
+  # expanded here on the host - a single sequential read instead of thousands of
+  # scattered ones. A bundle carrying neither the archive nor a loose tree
+  # cannot run, so that is a refusal rather than a warning: the alternative is a
+  # service that starts, fails to resolve its first import, and rolls back with
+  # a stack trace about a missing module instead of the actual cause.
+  $nmZip = Join-Path $InstallDir 'app/node_modules.zip'
+  $nmDir = Join-Path $InstallDir 'app/node_modules'
+  if (Test-Path $nmZip) {
+    Write-GcioLog 'expanding dependencies'
+    if (Test-Path $nmDir) { Invoke-GcioFileOp { Remove-GcioTree $nmDir } }
+    Expand-GcioArchive -Zip $nmZip -Dest $nmDir -Force
+    # Removed once expanded: keeping it doubles the install's size on disk for
+    # no purpose, and a stale copy would be re-expanded by the next install even
+    # after the tree had been repaired by hand.
+    Remove-Item -LiteralPath $nmZip -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path (Join-Path $nmDir 'express'))) {
+      Stop-Gcio 'dependencies did not expand - node_modules is incomplete and the service would not start.'
+    }
+  } elseif (-not (Test-Path $nmDir)) {
+    Stop-Gcio 'the bundle carries neither node_modules.zip nor a node_modules tree - it cannot run.'
   }
 
   Install-GcioHostTooling
