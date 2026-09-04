@@ -339,10 +339,14 @@ const app = createApp({
   store,
   config,
   entraJwks,
-  sessions: backends.sessions,
-  roleMapping: backends.roleMapping,
-  audit: backends.audit,
-  ingestRuns: backends.ingestRuns,
+  /* Spread, NOT enumerated. Every backend this file builds reaches createApp
+     by construction, so adding one to `backends` cannot silently fail to be
+     wired. Enumerating them cost a live 403: userRoleMapping was added to
+     `backends` and not to this list, so resolveAccess saw no per-user grants,
+     fell through to group roles, and refused a user whose grant was sitting in
+     the table. Nothing failed loudly - the feature was simply absent, and the
+     unit tests could not see it because they construct createApp directly. */
+  ...backends,
   ldapAuthenticate: config.authMode === "dev" ? devAuthenticate(config.devRole) : undefined,
   dataDir: DATA_DIR,
   clientDist: path.join(ROOT, "client", "dist"),

@@ -20,7 +20,18 @@ function Check { param($Cond, [string]$What)
 $verifyPatch  = Join-Path $PSScriptRoot '../verify-patch.ps1'
 $verifyBundle = Join-Path $PSScriptRoot '../verify-bundle.ps1'
 function RunVerify { param([string]$Script, [string]$Dir)
-  & pwsh -NoProfile -File $Script -Dir $Dir 2>&1 | Out-Null
+  # Most cases here hand the verifier a payload it is SUPPOSED to reject, and it
+  # reports that with Write-Error. Windows PowerShell 5.1 turns a child
+  # process's stderr into a TERMINATING NativeCommandError while
+  # $ErrorActionPreference is 'Stop', and neither 2>&1 nor 2>$null prevents it.
+  # Without this the suite died at its first negative case: it has only ever run
+  # one of its checks, and reported exit 1 with no verdict - a shape that reads
+  # as an ordinary failure, which is why it went unnoticed.
+  $prevEap = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & pwsh -NoProfile -File $Script -Dir $Dir 2>&1 | Out-Null
+  } finally { $ErrorActionPreference = $prevEap }
   return $LASTEXITCODE }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("gcio-v-" + [guid]::NewGuid().ToString('N'))

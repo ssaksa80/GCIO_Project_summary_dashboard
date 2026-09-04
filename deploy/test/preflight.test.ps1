@@ -95,5 +95,7 @@ Check ((Get-GcioReleaseCommitSha -LogLines @("aaa1`tfix: nothing here")) -eq '')
 Check ((Get-GcioReleaseCommitSha -LogLines @("aaa1`tdocs: describe the release 1.5.0 process")) -eq '') 'prose mentioning a release is not treated as one'
 Check ((Get-GcioReleaseCommitSha -LogLines @("aaa1`trelease 1.5.0 (#312)")) -eq 'aaa1') 'a squash-merge suffix does not break detection'
 
+Check $false 'MUTATION A: a deliberately failing assertion'
+
 if ($script:fails) { Write-Host "`n$($script:fails) failed" -ForegroundColor Red; exit 1 }
 Write-Host "`nall passed" -ForegroundColor Green
