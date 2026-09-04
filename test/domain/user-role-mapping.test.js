@@ -153,3 +153,45 @@ test("bestRole already ranks the three roles this app has", () => {
   assert.equal(bestRole("viewer", "pm"), "pm");
   assert.equal(bestRole(null, undefined), null);
 });
+
+/*
+ * The defect that reached a real host.
+ *
+ * identityFrom() in auth/ldap.js sets principal to the userPrincipalName when
+ * the directory returns one, so a person signing in as "jdoe" arrives at
+ * resolveAccess as "jdoe@example.local". The repo keys grants by the BARE
+ * sAMAccountName, because that is the only form all three inputs collapse to.
+ * Looking the principal up without the same normalisation therefore misses
+ * every grant on any directory that populates userPrincipalName - which is
+ * most of them.
+ *
+ * Every test above passed a bare principal, so they were self-consistent and
+ * silent about this. It surfaced as a 403 on a live sign-in with a grant that
+ * was visibly present in the table.
+ */
+test("a grant is found when the directory reports a UPN as the principal", async () => {
+  const { role } = await resolveAccess(
+    { principal: "jdoe@example.local", groups: [] },
+    deps({}, { jdoe: "admin" }),
+  );
+  assert.equal(role, "admin", "the principal must be reduced to a sAMAccountName before the grant is looked up");
+});
+
+test("and when it reports a NetBIOS-qualified principal", async () => {
+  const { role } = await resolveAccess(
+    { principal: "EXAMPLE\\jdoe", groups: [] },
+    deps({}, { jdoe: "pm" }),
+  );
+  assert.equal(role, "pm");
+});
+
+test("a UPN whose local part differs from the account name does not collide", async () => {
+  /* toSam takes everything before the @. Two people whose UPN local parts
+     match but who are different accounts would otherwise share a grant; this
+     pins that a grant for one is not handed to a principal that merely looks
+     similar. */
+  await assert.rejects(
+    () => resolveAccess({ principal: "someone.else@example.local", groups: [] }, deps({}, { jdoe: "admin" })),
+    (err) => err.status === 403,
+  );
+});

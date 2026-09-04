@@ -6,6 +6,8 @@
  * matches — membership of an unmapped group must never imply a default role.
  */
 import { AuthError, noAccess } from "./errors.js";
+/* ldap.js does not import authz.js, so this is a one-way edge, not a cycle. */
+import { toSam } from "./ldap.js";
 
 /** Highest first. */
 export const PRECEDENCE = ["admin", "pm", "viewer"];
@@ -68,7 +70,15 @@ export async function resolveAccess({ principal, groups }, deps) {
      predate it (and most tests) pass only roleMapping, and this must keep
      working for them rather than becoming mandatory everywhere at once. */
   const userMap = deps.userRoleMapping ? await deps.userRoleMapping.getMap() : {};
-  const userRole = userMap[String(principal).toLowerCase()];
+  /* Through toSam, and this is not optional. identityFrom() in ldap.js sets the
+     principal to the userPrincipalName when the directory returns one, so a
+     person signing in as `jdoe` arrives here as `jdoe@example.local`, and on a
+     domain with several UPN suffixes the suffix is not even predictable. The
+     repo keys grants by the bare sAMAccountName because that is the one form
+     `jdoe`, `DOMAIN\jdoe` and `jdoe@example.local` all collapse to; looking up
+     the raw principal misses every grant on any directory that populates a UPN.
+     Cost a live 403 with the grant sitting visibly in the table. */
+  const userRole = userMap[toSam(String(principal)).toLowerCase()];
 
   /* Highest of the two wins. A stale low grant must not demote someone their
      group has promoted - revoking is done by removing the grant, not by
