@@ -38,8 +38,15 @@ const SKIP_EXT = new Set([".xlsx", ".xls", ".pdf", ".docx", ".zip", ".png", ".jp
 const SKIP_FILE = new Set(["package-lock.json"]);
 
 /* Last label must be one of these for a dotted token to count as a domain at
- * all. Anything outside the set is a filename, a version, or prose. */
-const TLDS = new Set("com org net local internal lan corp example test invalid localhost ae io me gov edu app cloud ai".split(" "));
+ * all. Anything outside the set is a filename, a version, or prose.
+ *
+ * .app, .me, .ai and .cloud are deliberately absent. They are real gTLDs, but
+ * they collide with ordinary property access in JavaScript - `made.app` in the
+ * document tests is a variable and a field, not a host - and none of them is a
+ * plausible shape for this deployment's infrastructure, which is an intranet
+ * of .local, .com and .ae names. Coverage lost is coverage this repository
+ * cannot use; the false positives were constant. */
+const TLDS = new Set("com org net local internal lan corp example test invalid localhost ae io gov edu".split(" "));
 
 /* RFC 6761 reserves these for testing and documentation; they can never be
  * real. RFC 2606 does the same for the three example.* second-level names. */
@@ -94,7 +101,10 @@ const IPV4_RE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
 /* No whitespace straight after "=" - a real DN never has it, and prose like
  * "a DN with no CN= names a container" otherwise parses as a DN value. */
 const DN_RE = /(?:DC|OU|CN)=(?![ \t])[^,"'`\n\r]*/gi;
-const MACHINE_RE = /(?<![A-Z0-9])[A-Z][A-Z0-9]{2,}[0-9][A-Z0-9-]*/g;
+/* Not bounded by "_": a host name is never a fragment of a SCREAMING_SNAKE
+ * identifier. Without this the file flags its own `IPV4_RE` - which it did,
+ * the moment it became tracked and `git ls-files` started returning it. */
+const MACHINE_RE = /(?<![A-Z0-9_])[A-Z][A-Z0-9]{2,}[0-9][A-Z0-9-]*(?![A-Z0-9_])/g;
 const USERPATH_RE = /(?:[A-Za-z]:[\\/]+Users[\\/]+|\/[a-z]\/Users\/)([A-Za-z0-9._<>-]+)/gi;
 
 const isReservedIp = (ip) => {
