@@ -7,6 +7,53 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.10.0
+
+**The admin console now has eleven screens.** Health, Ownership, Access,
+Sessions, Audit, Settings, Connection, Database, Logs, Security and Ingest.
+Includes the faster deploy from 1.9.1.
+
+New in this release:
+
+- **Health** - is the database up, is the directory configured, which
+  migrations have run, and how many projects are loaded. The four things you
+  would otherwise get by reading a log file on the host.
+- **Ownership** - who owns each section of the brief. A grant names a person or
+  a directory group; ownership is matched by name against whoever signs in and
+  every group they belong to.
+- **Settings** - session timeouts, log level and the brief title, stored in the
+  database. Each says whether it applies immediately or at the next restart,
+  and saving tells you which of the two just happened.
+- **Connection** - what this deployment points at, and a button that tests the
+  directory using the service account. That test is the one that separates
+  "the directory is unreachable" from "that person typed the wrong password".
+- **Database** - schema version, every migration applied, and row counts.
+- **Logs** - the tail of the application, error and deploy logs, with a filter,
+  without needing a remote session on the host.
+- **Security** - how people authenticate, whether that happens over TLS,
+  whether the stored credential is sealed, how sessions expire, and every route
+  to admin. If that last count reaches zero nobody can reach the console.
+
+Three things are deliberately different from DEDB, and each says so on screen:
+
+- **Connection is read-only.** GCIO reads its configuration from `.env`, which
+  the service wrapper freezes at install time, so editable fields would appear
+  to save and change nothing. Change `.env` and re-register the service.
+- **Row counts are estimates**, not exact counts. An exact count would scan
+  every table, and a status screen must not be able to slow the database it is
+  reporting on.
+- **Email, Templates, Critical Alert and the Project Tracker screens are not
+  included.** GCIO has no mail subsystem and no second product, so those are
+  DEDB features rather than DEDB logic; building them would be new product
+  rather than a port.
+
+**Deployment.** Migration 13 adds two tables, so this is a schema change and
+ships as a bundle. Nothing existing changes: the new tables start empty, and
+every screen works with nothing in them.
+
+No secret is shown anywhere in the console. Connection and Security report only
+whether a password is set and whether it is sealed at rest.
+
 ## GCIO 1.9.1
 
 **A bundle deploy now spends about two and a half minutes expanding the
