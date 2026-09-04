@@ -59,6 +59,19 @@ $libCandidates = @("$Here\lib\common.ps1", "$Here\..\lib\common.ps1")
 $lib = $libCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($lib) { . $lib }
 
+# Extraction must not become the thing that needs lib/. Before this script used
+# Expand-GcioArchive it called Expand-Archive, a built-in that is always there;
+# making the fast path mandatory would turn a missing lib/ from a degraded run
+# into a failed one. If the shared function is absent, fall straight back to the
+# built-in - slower, and it works.
+if (-not (Get-Command Expand-GcioArchive -ErrorAction SilentlyContinue)) {
+  function Expand-GcioArchive {
+    param([Parameter(Mandatory)][string]$Zip, [Parameter(Mandatory)][string]$Dest,
+          [switch]$Force, [scriptblock]$FastExtractor)
+    Expand-Archive -LiteralPath $Zip -DestinationPath $Dest -Force
+  }
+}
+
 function Step { param([string]$N, [string]$M) Write-Host "`n===== $N  $M =====" -ForegroundColor Cyan }
 function Info { param([string]$M) Write-Host "[gcio] $M" }
 function Ok   { param([string]$M) Write-Host "[ok] $M" -ForegroundColor Green }
@@ -128,7 +141,7 @@ if (-not (Get-LooseArtifacts $Here)) {
     Info "auto-extracting package $($pkg.Name)"
     try {
       if (Test-Path $ex) { Remove-Item -Recurse -Force $ex }
-      Expand-Archive -Path $pkg.FullName -DestinationPath $ex -Force
+      Expand-GcioArchive -Zip $pkg.FullName -Dest $ex -Force
     } catch { Warn2 "could not extract $($pkg.Name): $($_.Exception.Message)"; continue }
     $inner = @(Get-ChildItem $ex -Recurse -File -ErrorAction SilentlyContinue |
       Where-Object { $_.Name -match '^gcio-(patch|bundle)-.*\.zip$' })
@@ -185,7 +198,7 @@ Step '2/4' "Apply the $kind"
 $dest = Join-Path $Here $zip.BaseName
 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
 Info "expanding to $dest"
-Expand-Archive -Path $zip.FullName -DestinationPath $Here -Force
+Expand-GcioArchive -Zip $zip.FullName -Dest $Here -Force
 if (-not (Test-Path $dest)) { Fail "expected $dest after extraction but it is not there - the archive may be truncated." }
 
 # The verifier may sit beside this script or inside the artifact. Prefer

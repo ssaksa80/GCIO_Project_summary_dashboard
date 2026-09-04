@@ -1455,3 +1455,78 @@ function Resolve-GcioBindIdentity {
   if ($Domain) { return "$Domain" + [char]92 + "$u" }
   return $u
 }
+
+<#
+  Expand a zip, quickly, without giving up the safety net.
+
+  Expand-Archive charges per file, and a bundle is 17,571 entries of which
+  15,312 are node_modules. Measured on the real 77.8 MB artifact:
+
+      Expand-Archive                      730.4s
+      ZipFile::ExtractToDirectory         205.3s
+      per-entry loop with progress        462.6s
+
+  So this uses bulk extraction, which is 3.6x faster than what it replaces. It
+  is also 2.3x faster than DEDB's per-entry version, whose own comment says it
+  exists to render a progress bar rather than to be quick - worth knowing
+  before copying it wholesale.
+
+  ANY failure falls back to Expand-Archive. That idea IS DEDB's and it is the
+  right one: an odd-but-valid archive must never brick an update that used to
+  work, and the slow path is still a working path.
+
+  Zip-slip is handled by ExtractToDirectory itself, which refuses entries
+  resolving outside the destination. That is asserted in
+  deploy/test/expand-archive.test.ps1 rather than assumed, because if it were
+  untrue this change would silently drop a security property DEDB implements by
+  hand.
+
+  -FastExtractor exists so the fallback can be tested by injection. Simulating
+  it with a corrupt archive would fail both paths and prove nothing.
+#>
+function Expand-GcioArchive {
+  param(
+    [Parameter(Mandatory)][string]$Zip,
+    [Parameter(Mandatory)][string]$Dest,
+    [switch]$Force,
+    [scriptblock]$FastExtractor
+  )
+  if (-not (Test-Path -LiteralPath $Zip)) { throw "archive not found: $Zip" }
+
+  $fast = if ($FastExtractor) { $FastExtractor } else {
+    {
+      param($z, $d, $f)
+      try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop } catch { }
+      # The three-argument overload takes an overwrite flag but does not exist
+      # on Windows PowerShell 5.1's .NET Framework, so it is looked up rather
+      # than called blind; without it, a clean destination gives the same
+      # result, and the call sites already remove theirs.
+      $m = [System.IO.Compression.ZipFile].GetMethod('ExtractToDirectory', [Type[]]@([string], [string], [bool]))
+      if ($m) {
+        # [object[]] with each argument cast explicitly. PowerShell wraps values
+        # placed in a plain @() into PSObject, and Invoke then fails with
+        # "PSObject cannot be converted to type 'System.String'" - which the
+        # catch below would swallow into a silent fall back to the slow path.
+        # That is exactly what happened: the real bundle took 402s instead of
+        # 207s and nothing said why.
+        [void]$m.Invoke($null, [object[]]@([string]$z, [string]$d, [bool]$f))
+      }
+      else { [System.IO.Compression.ZipFile]::ExtractToDirectory([string]$z, [string]$d) }
+    }
+  }
+
+  $zipFull = (Resolve-Path -LiteralPath $Zip).Path
+  New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+  $destFull = (Resolve-Path -LiteralPath $Dest).Path
+
+  try {
+    & $fast $zipFull $destFull $Force.IsPresent
+  } catch {
+    $msg = "$($_.Exception.Message)"
+    # A traversal entry is a refusal, not a malfunction. Falling back would
+    # hand the archive to a second extractor and hope it declines too.
+    if ($msg -match 'outside the destination|zip-slip|Extracting Zip entry would have resulted') { throw }
+    Write-GcioWarn "fast extraction of $(Split-Path $Zip -Leaf) failed ($msg) - falling back to Expand-Archive"
+    Expand-Archive -LiteralPath $Zip -DestinationPath $Dest -Force
+  }
+}
