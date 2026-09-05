@@ -103,6 +103,25 @@ try {
   Check (-not (Test-Path $escaped)) 'a zip-slip entry does not write outside the destination'
   Check $threw 'and the extraction fails loudly rather than quietly skipping it'
 
+  # ---- the SAME guarantees, through the progress path ----------------------
+  #
+  # -ProgressActivity swaps in an extractor that walks entries by hand, which
+  # opts out of the traversal check ExtractToDirectory does for free. That check
+  # is restated in the extractor, so it needs its own test: the slip case above
+  # exercises the default path and would keep passing with the guard deleted.
+  $destP = Join-Path $root 'prog'
+  Expand-GcioArchive -Zip $zip -Dest $destP -Force -ProgressActivity 'testing'
+  Check (Test-Path (Join-Path $destP 'app/server/index.js')) 'the progress path extracts a nested file'
+  Check ((Get-Content (Join-Path $destP 'app/server/index.js') -Raw).Trim() -eq 'SERVER') 'with its content intact'
+  Check ((Get-ChildItem $destP -Recurse -File).Count -eq (Get-ChildItem $dest -Recurse -File).Count) 'and the same number of files as the default path'
+
+  $destPS  = Join-Path $root 'out5/inner'
+  $escaped5 = Join-Path $root 'out5/escaped.txt'
+  $threwP = $false
+  try { Expand-GcioArchive -Zip $slipZip -Dest $destPS -ProgressActivity 'testing' } catch { $threwP = $true }
+  Check (-not (Test-Path $escaped5)) 'the progress path does not write outside the destination'
+  Check $threwP 'and it fails loudly rather than skipping the entry quietly'
+
   # ---- a missing archive is an error, not a silent no-op -------------------
   $threw2 = $false
   try { Expand-GcioArchive -Zip (Join-Path $root 'nope.zip') -Dest (Join-Path $root 'out5') } catch { $threw2 = $true }

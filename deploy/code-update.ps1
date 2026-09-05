@@ -66,8 +66,11 @@ if ($lib) { . $lib }
 # built-in - slower, and it works.
 if (-not (Get-Command Expand-GcioArchive -ErrorAction SilentlyContinue)) {
   function Expand-GcioArchive {
+    # $ProgressActivity is accepted and ignored. This stand-in exists so a
+    # missing lib/ degrades rather than fails, and an unknown parameter would
+    # turn it straight back into the failure it was written to prevent.
     param([Parameter(Mandatory)][string]$Zip, [Parameter(Mandatory)][string]$Dest,
-          [switch]$Force, [scriptblock]$FastExtractor)
+          [switch]$Force, [scriptblock]$FastExtractor, [string]$ProgressActivity)
     Expand-Archive -LiteralPath $Zip -DestinationPath $Dest -Force
   }
 }
@@ -206,7 +209,11 @@ $dest = Join-Path $Here $zip.BaseName
 # artifact can land at the same size, and applying the wrong one is not a
 # mistake worth saving a second on.
 $marker = Join-Path $dest '.gcio-unpacked'
-$zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip.FullName).Hash.ToLower()
+# Get-GcioSha256, not Get-FileHash: the cmdlet arrived in PowerShell 4.0 and is
+# absent on at least one real deploy host, where this threw and quietly cost the
+# unpack cache on every run. common.ps1 is already sourced above and carries the
+# fallback.
+$zipHash = Get-GcioSha256 $zip.FullName
 $cached = (Test-Path $marker) -and ((Get-Content -LiteralPath $marker -Raw -EA SilentlyContinue).Trim() -eq $zipHash)
 
 if ($cached) {
@@ -219,7 +226,7 @@ if ($cached) {
     Remove-GcioTree $dest
   }
   Info "expanding to $dest"
-  Expand-GcioArchive -Zip $zip.FullName -Dest $Here -Force
+  Expand-GcioArchive -Zip $zip.FullName -Dest $Here -Force -ProgressActivity 'expanding'
   if (-not (Test-Path $dest)) { Fail "expected $dest after extraction but it is not there - the archive may be truncated." }
 }
 

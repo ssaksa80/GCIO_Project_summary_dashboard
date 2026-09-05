@@ -333,7 +333,7 @@ if ($Bundle) {
   if (Test-Path $nmZip) {
     Write-GcioLog 'expanding dependencies'
     if (Test-Path $nmDir) { Invoke-GcioFileOp { Remove-GcioTree $nmDir } }
-    Expand-GcioArchive -Zip $nmZip -Dest $nmDir -Force
+    Expand-GcioArchive -Zip $nmZip -Dest $nmDir -Force -ProgressActivity 'expanding dependencies'
     # Removed once expanded: keeping it doubles the install's size on disk for
     # no purpose, and a stale copy would be re-expanded by the next install even
     # after the tree had been repaired by hand.
