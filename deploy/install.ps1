@@ -315,11 +315,11 @@ if ($Bundle) {
     $src = Join-Path $Here $d
     if (-not (Test-Path $src)) { continue }
     $dst = Join-Path $InstallDir $d
-      if (Test-Path $dst) { Invoke-GcioFileOp { Remove-GcioTree $dst } }
+      if (Test-Path $dst) { Invoke-GcioFileOp { Remove-GcioTree $dst -Activity "clearing $d" } }
     # robocopy, not Copy-Item: this is the second full pass over the same
     # ~17,000 files and Copy-Item pays the same per-file pipeline cost that
     # made the delete look like a hang. Falls back inside Copy-GcioTree.
-    Copy-GcioTree -Source $src -Destination $dst
+    Copy-GcioTree -Source $src -Destination $dst -Activity "installing $d"
   }
 
   # Dependencies ship as ONE archive rather than 15,312 loose files, and are

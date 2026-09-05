@@ -446,7 +446,7 @@ function Backup-GcioAppCopy {
   # measured deploy spent much of 43.8 minutes here and in the clear below, at a
   # rate indistinguishable from a hang.
   if (Test-Path $dest) { Invoke-GcioFileOp { Remove-GcioTree $dest } }
-  Copy-GcioTree -Source (Join-Path $InstallDir 'app') -Destination $dest
+  Copy-GcioTree -Source (Join-Path $InstallDir 'app') -Destination $dest -Activity 'backing up the current app'
 }
 
 <#
@@ -501,7 +501,7 @@ function Restore-GcioApp {
     # The rollback path is the worst possible place to be slow: the service is
     # down and the operator is waiting. Move-Item below is already a rename, so
     # this clear was the only slow half.
-    if (Test-Path $app) { Invoke-GcioFileOp { Remove-GcioTree $app } }
+    if (Test-Path $app) { Invoke-GcioFileOp { Remove-GcioTree $app -Activity 'clearing the failed install' } }
     Invoke-GcioFileOp { Move-Item $bak $app }
   }
 }
@@ -516,7 +516,7 @@ function Remove-OldGcioBackups {
     # backup. This runs AFTER the health gate: on a measured deploy the
     # installer stayed alive for minutes purging ~50,000 backup files while
     # the app was already up and serving.
-    Invoke-GcioFileOp { Remove-GcioTree (Join-Path $InstallDir "app.bak-$ts") }
+    Invoke-GcioFileOp { Remove-GcioTree (Join-Path $InstallDir "app.bak-$ts") -Activity "purging backup $ts" }
   }
 }
 
@@ -1532,6 +1532,19 @@ function Test-GcioConsole {
   # where being wrong costs nothing but cosmetics.
   try { return -not [Console]::IsOutputRedirected } catch { return $false }
 }
+<#
+  End a progress line that never reached its total.
+
+  Write-GcioProgress leaves the cursor mid-line until Done reaches Total. Any
+  loop that exits early - a throw, a filter, an entry that does not count -
+  would otherwise leave the next message appended to the bar. Cheap to call
+  unconditionally; does nothing when no bar is open.
+#>
+function Close-GcioProgress {
+  if ($script:GcioProgressKey -and (Test-GcioConsole)) { Write-Host '' }
+  $script:GcioProgressKey = ''
+  $script:GcioProgressLast = -1
+}
 function Write-GcioProgress {
   param(
     [Parameter(Mandatory)][string]$Activity,
@@ -1597,10 +1610,15 @@ function Expand-GcioArchive {
         if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
           throw "Extracting Zip entry would have resulted in a file outside the destination directory: $($e.FullName)"
         }
-        # A directory entry has a FullName but no Name.
-        if (-not $e.Name) { [void][IO.Directory]::CreateDirectory($target); continue }
-        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $f)
+        # A directory entry has a FullName but no Name. It still counts: skipping
+        # the progress call for these left the bar at 99% (2102/2134) with no
+        # closing newline, so the next log line printed onto the end of it.
+        if (-not $e.Name) {
+          [void][IO.Directory]::CreateDirectory($target)
+        } else {
+          [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+          [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $f)
+        }
         Write-GcioProgress -Activity $ProgressActivity -Done $i -Total $total
       }
     } finally { $zip.Dispose() }
@@ -1664,10 +1682,65 @@ function Expand-GcioArchive {
 
   Returns nothing. A tree that is already absent is success, not an error.
 #>
-function Remove-GcioTree {
+<#
+  Run robocopy and report 0-100% while it works.
+
+  robocopy's own arguments are NOT changed - it stays on the fast path that was
+  measured, with its file list suppressed. Progress comes from watching the
+  destination instead: Start-Process gives a handle to poll and still yields the
+  exit code the callers check.
+
+  Polling costs a directory enumeration per tick, which is not free on a
+  15,000-file tree, so the interval is deliberately slack. A previous
+  measurement run competed with a live deploy for the same disk and cut its
+  throughput by two thirds; a progress bar must not do that to the thing it is
+  measuring.
+#>
+function Invoke-GcioRoboWithProgress {
+  param(
+    [Parameter(Mandatory)][string[]]$RoboArgs,
+    [string]$Activity,
+    [string]$WatchPath,
+    [int]$Total,
+    [switch]$Shrinking
+  )
+  if (-not $Activity -or $Total -le 0) {
+    & robocopy @RoboArgs *> $null
+    return $LASTEXITCODE
+  }
+  $count = {
+    try { @([IO.Directory]::EnumerateFiles($WatchPath, '*', [IO.SearchOption]::AllDirectories)).Count }
+    catch { 0 }
+  }
+  $p = Start-Process -FilePath 'robocopy' -ArgumentList $RoboArgs -NoNewWindow -PassThru `
+                     -RedirectStandardOutput ([IO.Path]::GetTempFileName())
+  while (-not $p.HasExited) {
+    $n = & $count
+    $done = if ($Shrinking) { [Math]::Max(0, $Total - $n) } else { $n }
+    Write-GcioProgress -Activity $Activity -Done $done -Total $Total
+    Start-Sleep -Milliseconds 1500
+  }
+  Write-GcioProgress -Activity $Activity -Done $Total -Total $Total
+  return $p.ExitCode
+}
+
+function Measure-GcioTreeFiles {
   param([Parameter(Mandatory)][string]$Path)
+  try { return @([IO.Directory]::EnumerateFiles($Path, '*', [IO.SearchOption]::AllDirectories)).Count }
+  catch { return 0 }
+}
+
+function Remove-GcioTree {
+  param([Parameter(Mandatory)][string]$Path, [string]$Activity)
   if (-not (Test-Path -LiteralPath $Path)) { return }
 
+  $sw = $null
+  if ($Activity) {
+    $n = Measure-GcioTreeFiles $Path
+    Write-GcioLog ("{0} ({1:N0} files)" -f $Activity, $n)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+  }
+  try {
   try {
     [IO.Directory]::Delete((Resolve-Path -LiteralPath $Path).Path, $true)
     if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -1685,6 +1758,9 @@ function Remove-GcioTree {
   } catch { }
 
   Remove-Item -LiteralPath $Path -Recurse -Force
+  } finally {
+    if ($sw) { $sw.Stop(); Write-GcioLog ("{0} - done in {1:N1}s" -f $Activity, $sw.Elapsed.TotalSeconds) }
+  }
 }
 
 <#
@@ -1703,18 +1779,24 @@ function Copy-GcioTree {
   param(
     [Parameter(Mandatory)][string]$Source,
     [Parameter(Mandatory)][string]$Destination,
-    [switch]$Mirror
+    [switch]$Mirror,
+    [string]$Activity
   )
   if (-not (Test-Path -LiteralPath $Source)) { throw "source not found: $Source" }
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
-  $args = @($Source, $Destination, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1', '/MT:16')
-  if ($Mirror) { $args += '/PURGE' }
+  # Not $args: that is an automatic variable, and the wrapper below passes this
+  # array to Start-Process by name.
+  $roboArgs = @($Source, $Destination, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1', '/MT:16')
+  if ($Mirror) { $roboArgs += '/PURGE' }
 
   try {
-    & robocopy @args *> $null
-    if ($LASTEXITCODE -lt 8) { return }
-    Write-GcioWarn "robocopy returned $LASTEXITCODE copying $Source - falling back to Copy-Item"
+    $total = if ($Activity) { Measure-GcioTreeFiles $Source } else { 0 }
+    $code = Invoke-GcioRoboWithProgress -RoboArgs $roboArgs -Activity $Activity `
+              -WatchPath $Destination -Total $total
+    Close-GcioProgress
+    if ($code -lt 8) { return }
+    Write-GcioWarn "robocopy returned $code copying $Source - falling back to Copy-Item"
   } catch {
     Write-GcioWarn "robocopy unavailable ($($_.Exception.Message)) - falling back to Copy-Item"
   }

@@ -7,6 +7,46 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.11.2
+
+**The install stage now says what it is doing.** 1.11.1 made it fast; it was
+still silent while it worked, which is the same complaint that started this
+whole line of work.
+
+### The gap
+
+1.11.1 put progress on expanding the bundle, verifying it, and expanding
+dependencies. Between `installing the full bundle into C:\gcio` and the
+dependency expand there was nothing at all - about 47 seconds on a measured
+deploy, spent backing up the current app, clearing it, and copying the new one.
+Three passes over roughly 15,000 files each, all invisible.
+
+Copying now reports a real percentage, taken by watching the destination while
+robocopy runs. robocopy's own arguments are unchanged: it stays on exactly the
+fast path 1.11.1 measured, and the progress is read from outside it.
+
+Clearing reports what it is about to remove and how long it took, rather than a
+percentage. Its fast path is a single synchronous directory delete that cannot
+be polled from PowerShell while it runs, and the only way to draw a bar over it
+would be to switch to a slower delete so it could be watched. Paying real
+seconds for a cosmetic bar is the wrong trade; on the measured deploy that step
+took 15 seconds.
+
+### A bar that stopped at 99%
+
+    [gcio] expanding [###################] 99% (2102/2134)[gcio] verifying...
+
+Directory entries in an archive were extracted but not counted, so the total was
+never reached, the closing newline was never written, and the next message
+printed onto the end of the bar. They are counted now. Close-GcioProgress also
+exists to end a bar whose loop stops early for any other reason.
+
+### Compatibility
+
+Nothing to do. No schema, dependency or runtime change. Progress output is
+cosmetic: every file operation behaves exactly as it did in 1.11.1, and a
+redirected log still gets one line per 10% rather than thousands.
+
 ## GCIO 1.11.1
 
 **A bundle install should now take minutes rather than the better part of an
