@@ -7,6 +7,34 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.11.3
+
+**Health rows no longer say UNKNOWN when they mean something else.**
+
+The status badge had three states and needed five. Anything that was not
+plainly up or down rendered as UNKNOWN, which lumped together three unrelated
+situations:
+
+    Uptime              a value, not a condition       -> now shows no badge
+    Database            not configured                 -> now says so
+    Directory (LDAP)    not configured                 -> now says so
+    Migrations applied  none applied yet               -> now says so
+    Projects            no data yet                    -> now says so
+
+On a health screen this distinction is the whole point. "Not configured" says
+the setup is incomplete and names the fix. "Unknown" says the system tried to
+look and could not find out, which is a fault worth investigating. Only one of
+those should interrupt anyone, and a fresh install was showing the alarming
+word for all four.
+
+Uptime is the clearest case: it is a number. It reported UNKNOWN for having
+nothing to report.
+
+### Compatibility
+
+Display only. No API, schema, dependency or runtime change, and the underlying
+health data is unchanged - only how a row with no up/down condition is labelled.
+
 ## GCIO 1.11.2
 
 **The install stage now says what it is doing.** 1.11.1 made it fast; it was
