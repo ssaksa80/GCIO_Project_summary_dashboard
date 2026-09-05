@@ -64,6 +64,9 @@ const ALLOWED_DOMAINS = new Set([
   "example.local",                // documentation placeholder (.local is NOT reserved)
   "dc01.example.local",           // placeholder DC, the installer default
   "dc02.example.local",           // placeholder DC, distinct from dc01 in runbook 7a
+  "github.com",                   // gitleaks release URL in the secret-scan workflow
+  "config.local",                 // a gitignore filename convention, named in .gitleaks.toml
+  "prod-nw.corp",                 // a sibling repo's placeholder host, quoted in .gitleaks.toml
 ]);
 
 const ALLOWED_IPS = new Set([
