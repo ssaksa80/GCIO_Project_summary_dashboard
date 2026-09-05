@@ -360,7 +360,22 @@ a.btn { text-decoration: none; }
 }
 .lane-bar.slipped { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 60%, transparent), var(--warn)); box-shadow: none; }
 .lane-bar.held { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 6px, var(--well) 6px, var(--well) 12px); }
-.lane-tag { font-size: 10px; font-weight: 700; color: var(--accent-ink); white-space: nowrap; }
+/* Above .lane-slip, which follows .lane-bar in the DOM and -- with every one
+   of these at z-index auto -- therefore paints over it. A project whose target
+   date sits near the start of the horizon has a slip overlay beginning at
+   almost 0%, so the hatching covered the whole bar and the date underneath it
+   was unreadable. Only lanes whose amber fill happened to run past the label
+   escaped, which is why this looked intermittent rather than broken.
+
+   .lane-bar carries no z-index, so it opens no stacking context and this lifts
+   the tag above the sibling overlay rather than only within the bar. The
+   shadow is the belt to that braces: the hatch is 55% opaque over an amber
+   fill, so even on top the text needs its own edge to stay legible. */
+.lane-tag {
+  position: relative; z-index: 2;
+  font-size: 10px; font-weight: 700; color: var(--accent-ink); white-space: nowrap;
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--well) 70%, transparent);
+}
 .lane-bar.held .lane-tag { color: var(--ink-2); }
 .lane-slip {
   position: absolute; top: 0; bottom: 0;
