@@ -441,8 +441,12 @@ function Backup-GcioAppCopy {
   # Replace a stale same-second backup rather than merging into it: Copy-Item
   # -Force merges directories, which would leave the "backup" a blend of two
   # versions. Unreachable in normal use, but a backup must be a snapshot.
-  if (Test-Path $dest) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dest } }
-  Copy-Item -Recurse -Force (Join-Path $InstallDir 'app') $dest
+  # Remove-GcioTree / Copy-GcioTree, not the cmdlets. app/ is ~15,000 files once
+  # node_modules is expanded, and this pair runs on every bundle install: a
+  # measured deploy spent much of 43.8 minutes here and in the clear below, at a
+  # rate indistinguishable from a hang.
+  if (Test-Path $dest) { Invoke-GcioFileOp { Remove-GcioTree $dest } }
+  Copy-GcioTree -Source (Join-Path $InstallDir 'app') -Destination $dest
 }
 
 <#
@@ -464,8 +468,8 @@ function Copy-GcioPatchOverlay {
     $s = Join-Path $PatchApp $sub
     $d = Join-Path $InstallApp $sub
     if (Test-Path $s) {
-      if (Test-Path $d) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $d } }
-      Copy-Item -Recurse -Force $s $d
+        if (Test-Path $d) { Invoke-GcioFileOp { Remove-GcioTree $d } }
+        Copy-GcioTree -Source $s -Destination $d
     }
   }
   foreach ($f in 'package.json', 'package-lock.json') {
@@ -475,8 +479,8 @@ function Copy-GcioPatchOverlay {
   $s = Join-Path $PatchApp 'client\dist'
   $d = Join-Path $InstallApp 'client\dist'
   if (Test-Path $s) {
-    if (Test-Path $d) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $d } }
-    Copy-Item -Recurse -Force $s $d
+    if (Test-Path $d) { Invoke-GcioFileOp { Remove-GcioTree $d } }
+    Copy-GcioTree -Source $s -Destination $d
   }
 }
 
@@ -494,7 +498,10 @@ function Restore-GcioApp {
   $app = Join-Path $InstallDir 'app'
   $bak = Join-Path $InstallDir "app.bak-$Ts"
   if (Test-Path $bak) {
-    if (Test-Path $app) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $app } }
+    # The rollback path is the worst possible place to be slow: the service is
+    # down and the operator is waiting. Move-Item below is already a rename, so
+    # this clear was the only slow half.
+    if (Test-Path $app) { Invoke-GcioFileOp { Remove-GcioTree $app } }
     Invoke-GcioFileOp { Move-Item $bak $app }
   }
 }
@@ -504,7 +511,12 @@ function Remove-OldGcioBackups {
   $stamps = @(Get-GcioBackups -InstallDir $InstallDir)
   if ($stamps.Count -le $Keep) { return }
   foreach ($ts in ($stamps | Select-Object -Skip $Keep)) {
-    Remove-Item -Recurse -Force (Join-Path $InstallDir "app.bak-$ts") -ErrorAction SilentlyContinue
+    # Remove-GcioTree treats an absent path as success, so the old
+    # -ErrorAction SilentlyContinue is no longer needed to tolerate a missing
+    # backup. This runs AFTER the health gate: on a measured deploy the
+    # installer stayed alive for minutes purging ~50,000 backup files while
+    # the app was already up and serving.
+    Invoke-GcioFileOp { Remove-GcioTree (Join-Path $InstallDir "app.bak-$ts") }
   }
 }
 

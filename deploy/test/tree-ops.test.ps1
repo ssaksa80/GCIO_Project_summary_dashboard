@@ -96,6 +96,40 @@ try {
   try { Copy-GcioTree -Source (Join-Path $root 'nope') -Destination (Join-Path $root 'out') } catch { $threw2 = $true }
   Check $threw2 'copying a source that does not exist throws'
 
+  # ---- the fast paths must actually BE the paths the installer takes --------
+  #
+  # A source-level assertion, which this repo is right to distrust: a grep that
+  # matches nothing passes for free. It is here because the property IS a source
+  # property. Remove-Item -Recurse and Remove-GcioTree produce identical results;
+  # the only difference is that one of them took most of a 43.8-minute deploy. No
+  # behavioural test can separate them, so nothing else would notice a revert.
+  #
+  # The anti-vacuity guard is the second assertion in each pair: the body must
+  # also CONTAIN the fast helper. A regex that silently matched nothing would
+  # pass the "does not contain the slow cmdlet" half and fail this one.
+  function BodyOf([string]$Path, [string]$Name) {
+    $text = Get-Content -Raw -LiteralPath $Path
+    $m = [regex]::Match($text, "(?ms)^function\s+$([regex]::Escape($Name))\s*\{.*?^\}")
+    if ($m.Success) { return $m.Value } else { return "" }
+  }
+
+  $commonPs1 = Join-Path $PSScriptRoot '../lib/common.ps1'
+  $installPs1 = Join-Path $PSScriptRoot '../install.ps1'
+  $slow = '(Remove|Copy)-Item\s+-Recurse'
+
+  foreach ($fn in 'Backup-GcioAppCopy', 'Copy-GcioPatchOverlay', 'Restore-GcioApp', 'Remove-OldGcioBackups') {
+    $body = BodyOf $commonPs1 $fn
+    Check ($body -match 'Gcio(Tree|FileOp)') "$fn was found and read (probe works, so a clean result means something)"
+    Check ($body -notmatch $slow) "$fn does not walk a 15,000-file tree through the PowerShell pipeline"
+    Check ($body -match '(Remove|Copy)-GcioTree') "$fn uses the fast helper"
+  }
+
+  # install.ps1 is not function-structured, so this is file-wide. It legitimately
+  # contains Copy-Item -Force for single files, which the pattern does not match.
+  $inst = Get-Content -Raw -LiteralPath $installPs1
+  Check ($inst -match 'Remove-GcioTree') 'install.ps1 was found and read'
+  Check ($inst -notmatch $slow) 'install.ps1 clears and copies trees with the fast helpers'
+
 } finally {
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 }

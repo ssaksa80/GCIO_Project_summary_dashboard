@@ -95,8 +95,8 @@ function Install-GcioHostTooling {
   $lib = Join-Path $Here 'lib'
   if (Test-Path $lib) {
     $dst = Join-Path $InstallDir 'lib'
-    if (Test-Path $dst) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dst } }
-    Copy-Item -Recurse -Force $lib $dst
+    if (Test-Path $dst) { Invoke-GcioFileOp { Remove-GcioTree $dst } }
+    Copy-GcioTree -Source $lib -Destination $dst
   }
 }
 
@@ -315,7 +315,7 @@ if ($Bundle) {
     $src = Join-Path $Here $d
     if (-not (Test-Path $src)) { continue }
     $dst = Join-Path $InstallDir $d
-    if (Test-Path $dst) { Invoke-GcioFileOp { Remove-Item -Recurse -Force $dst } }
+      if (Test-Path $dst) { Invoke-GcioFileOp { Remove-GcioTree $dst } }
     # robocopy, not Copy-Item: this is the second full pass over the same
     # ~17,000 files and Copy-Item pays the same per-file pipeline cost that
     # made the delete look like a hang. Falls back inside Copy-GcioTree.

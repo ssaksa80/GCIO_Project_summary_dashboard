@@ -7,6 +7,57 @@ looks like a regression but is not.
 
 `deploy/preflight-release.ps1` fails a release whose version has no section here.
 
+## GCIO 1.11.1
+
+**A bundle install should now take minutes rather than the better part of an
+hour.** 1.11.0 made the *artifact* fast; this makes the *install* fast, which
+turned out to be a different thing.
+
+### What 1.11.0 missed
+
+1.11.0 collapsed dependencies into one archive and replaced the slow file
+operations with fast ones - in the code that unpacks the bundle. The code that
+installs it was never changed, and that is where a deploy spends its time.
+
+A measured 1.11.0 deploy on a live host took **43.8 minutes**. Almost none of it
+was the dependency expand. It went on three full passes over a ~15,000-file tree,
+all still using PowerShell cmdlets that walk every file through the pipeline:
+
+    back up the current app to app.bak-*     ~15,000 files
+    clear app/ and runtime/ before copying   ~15,000 files
+    purge old backups after the health gate  ~50,000 files
+
+The last one runs after the health check passes, so the installer stayed alive
+for minutes after the application was already up and serving - which looks
+exactly like a hung deploy and was reported as one.
+
+All of them now use the same fast helpers 1.11.0 introduced. Those measured 74
+to 100 seconds against roughly 2,300 for the cmdlets on the same trees.
+
+### Also faster where it matters most
+
+The rollback path was on the slow route too. That is the worst place for it: the
+service is down and someone is waiting to find out whether the old version is
+coming back. Restoring is now a fast clear plus a rename.
+
+The patch overlay and the host-tooling copy were changed for the same reason.
+
+### Backups
+
+Purging old backups tolerates an already-absent directory rather than
+suppressing the error, so a half-cleaned install no longer leaves a deploy
+reporting a failure it recovered from.
+
+### Compatibility
+
+Nothing to do. No schema, dependency or runtime change, and no change to what a
+bundle contains - only to how quickly it is put in place. Rollback,
+patch installs and bundle installs all behave exactly as before.
+
+Note for anyone verifying by hand: refresh verify-bundle.ps1 at your staging
+root from this release, as 1.11.0's notes describe. From this release on it
+ships beside the archive, so copying the build output refreshes it for you.
+
 ## GCIO 1.11.0
 
 **A bundle deploy now takes about five minutes instead of the better part of
